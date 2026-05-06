@@ -432,38 +432,38 @@ static const char APP_HTML[] PROGMEM = R"HTML(<!doctype html><html lang="en">
 :root{--di-cyan:#4df9ff;--di-cyan-dim:rgba(77,249,255,.1);--di-cyan-border:rgba(77,249,255,.3);--di-black:#000;--di-surface:#0a0a0a;--di-panel:#050505;--di-text:#fff;--di-muted:rgba(255,255,255,.45);--di-danger:#f25f5c;--di-mono:"JetBrains Mono","Fira Code","Consolas",monospace}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font:14px/1.45 "Inter","Segoe UI",sans-serif;background:var(--di-black);color:var(--di-text);min-height:100vh}
-.shell{max-width:1240px;margin:0 auto;padding:14px}
-.hero{background:var(--di-surface);border:1px solid var(--di-cyan-border);border-radius:0;padding:14px;margin-bottom:14px}
-.brand{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
-.title{font:700 1.9rem/1 var(--di-mono);letter-spacing:.02em;text-transform:lowercase}.title:before{content:"□ ";color:var(--di-cyan)}
-.sub{color:var(--di-muted);max-width:62ch;margin-top:6px;font:600 .78rem/1.4 var(--di-mono);letter-spacing:.04em;text-transform:lowercase}
-.pillbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.pill{padding:6px 9px;border-radius:0;border:1px solid var(--di-cyan-border);background:var(--di-panel);font:600 .72rem/1 var(--di-mono);letter-spacing:.08em;color:var(--di-muted);text-transform:uppercase}
+.shell{max-width:1080px;margin:0 auto;padding:10px}
+.hero{background:var(--di-surface);border:1px solid var(--di-cyan-border);border-radius:0;padding:10px;margin-bottom:10px}
+.brand{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
+.title{font:700 1.45rem/1 var(--di-mono);letter-spacing:0;text-transform:lowercase}.title:before{content:"□ ";color:var(--di-cyan)}
+.sub{display:none}
+.pillbar{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.pill{padding:5px 7px;border-radius:0;border:1px solid var(--di-cyan-border);background:var(--di-panel);font:600 .66rem/1 var(--di-mono);letter-spacing:.04em;color:var(--di-muted);text-transform:uppercase}
 .pill.on,.pill.hot{background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan)}.pill.warn{background:var(--di-panel);border-color:var(--di-cyan);color:var(--di-text)}
-.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
-.tab{display:inline-flex;align-items:center;justify-content:center;min-height:38px;padding:10px 12px;border-radius:0;border:1px solid var(--di-cyan-border);background:var(--di-black);color:var(--di-muted);text-decoration:none;font:700 .78rem/1 var(--di-mono);text-transform:uppercase;letter-spacing:.08em}
+.tabs{display:flex;gap:6px;overflow-x:auto;margin-top:10px;padding-bottom:2px;-webkit-overflow-scrolling:touch}
+.tab{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:42px;padding:10px 12px;border-radius:0;border:1px solid var(--di-cyan-border);background:var(--di-black);color:var(--di-muted);text-decoration:none;font:700 .74rem/1 var(--di-mono);text-transform:uppercase;letter-spacing:.04em}
 .tab:hover,.tab.active{background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan)}
-.grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}
-.stack{display:grid;gap:16px}.section{display:none}.section.active{display:grid;gap:16px}
-.card{background:var(--di-surface);border:1px solid var(--di-cyan-border);border-radius:0;padding:14px}
-.card h2{font:700 .92rem/1.1 var(--di-mono);letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px;color:var(--di-text)}.card h2:before{content:"□ ";color:var(--di-cyan)}.meta{color:var(--di-muted);font:600 .72rem/1.35 var(--di-mono);letter-spacing:.04em;text-transform:lowercase;margin-bottom:12px}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row+.row{margin-top:10px}
-.grow{flex:1 1 160px}.split{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.triple{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-label{display:grid;gap:6px;font:700 .7rem/1 var(--di-mono);text-transform:uppercase;letter-spacing:.1em;color:var(--di-muted)}
-input,select,button,textarea{border-radius:0;border:1px solid var(--di-cyan-border);padding:10px 11px;background:var(--di-black);color:var(--di-text);font:600 .88rem/1.2 "Inter","Segoe UI",sans-serif;outline:none}
+.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:10px}
+.stack{display:grid;gap:10px}.section{display:none}.section.active{display:grid;gap:10px}
+.card{background:var(--di-surface);border:1px solid var(--di-cyan-border);border-radius:0;padding:10px}
+.card h2{font:700 .82rem/1.1 var(--di-mono);letter-spacing:.05em;text-transform:uppercase;margin-bottom:10px;color:var(--di-text)}.card h2:before{content:"□ ";color:var(--di-cyan)}.meta{display:none}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row+.row{margin-top:8px}
+.grow{flex:1 1 150px}.split{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.triple{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+label{display:grid;gap:5px;font:700 .66rem/1 var(--di-mono);text-transform:uppercase;letter-spacing:.06em;color:var(--di-muted)}
+input,select,button,textarea{border-radius:0;border:1px solid var(--di-cyan-border);min-height:44px;padding:10px;background:var(--di-black);color:var(--di-text);font:600 .9rem/1.2 "Inter","Segoe UI",sans-serif;outline:none}
 input:focus,select:focus,textarea:focus{border-color:var(--di-cyan);box-shadow:0 0 0 1px var(--di-cyan)}
-button{cursor:pointer;background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan);font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+button{cursor:pointer;background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan);font-weight:800;text-transform:uppercase;letter-spacing:.04em}
 button:hover{background:rgba(77,249,255,.16)}button.alt{background:var(--di-black);border-color:var(--di-cyan-border);color:var(--di-text)}button.good,button.bad{background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan)}
-button.wide{width:100%}.actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.heroMeter{padding:16px;border-radius:0;background:var(--di-black);border:1px solid var(--di-cyan-border);color:var(--di-text);text-align:center}.heroMeter .big{font:700 2.6rem/1 var(--di-mono);color:var(--di-cyan)}
-.sceneGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.sceneBtn{height:84px;font-size:1rem}.miniScene{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-.patchHead{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.channels{display:grid;grid-template-columns:58px 1fr 44px 44px;gap:8px 10px;align-items:center}
-.chLabel{font:700 .72rem/1 var(--di-mono);color:var(--di-muted);letter-spacing:.04em}.outVal{font:700 .78rem/1 var(--di-mono);text-align:right;color:var(--di-muted)}.outVal.hot{color:var(--di-cyan)}.webVal{font:700 .78rem/1 var(--di-mono);text-align:right}
+button.wide{width:100%}.actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.heroMeter{padding:12px;border-radius:0;background:var(--di-black);border:1px solid var(--di-cyan-border);color:var(--di-text);text-align:center}.heroMeter .big{font:700 2rem/1 var(--di-mono);color:var(--di-cyan)}
+.sceneGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.sceneBtn{height:68px;font-size:.9rem}.miniScene{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.patchHead{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}.channels{display:grid;grid-template-columns:52px 1fr 38px 38px;gap:7px;align-items:center}
+.chLabel{font:700 .68rem/1 var(--di-mono);color:var(--di-muted);letter-spacing:.02em}.outVal{font:700 .72rem/1 var(--di-mono);text-align:right;color:var(--di-muted)}.outVal.hot{color:var(--di-cyan)}.webVal{font:700 .72rem/1 var(--di-mono);text-align:right}
 input[type=range]{width:100%;accent-color:var(--di-cyan)}
-.nets{display:flex;flex-wrap:wrap;gap:8px}.net{padding:7px 10px;border-radius:0;border:1px solid var(--di-cyan-border);background:var(--di-black);cursor:pointer;font-size:.82rem}
-pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border:1px solid var(--di-cyan-border);border-radius:0;padding:12px;font:12px/1.45 var(--di-mono);max-height:300px;overflow:auto;color:var(--di-text)}
-.footerNote{font:600 .76rem/1.45 var(--di-mono);color:var(--di-muted);letter-spacing:.04em}
-@media (max-width:900px){.grid,.split,.triple{grid-template-columns:1fr}.sceneGrid,.miniScene{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.nets{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}.net{padding:9px;border-radius:0;border:1px solid var(--di-cyan-border);background:var(--di-black);cursor:pointer;font-size:.8rem;text-align:left;overflow:hidden;text-overflow:ellipsis}
+pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border:1px solid var(--di-cyan-border);border-radius:0;padding:10px;font:11px/1.4 var(--di-mono);max-height:260px;overflow:auto;color:var(--di-text)}
+.footerNote{font:600 .7rem/1.35 var(--di-mono);color:var(--di-muted);letter-spacing:.02em}
+@media (max-width:760px){body{font-size:13px}.shell{padding:6px}.hero{padding:8px;margin-bottom:8px}.brand{display:block}.pillbar{overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px}.pill{flex:0 0 auto}.grid,.split,.triple{grid-template-columns:1fr}.section.active,.stack{gap:8px}.card{padding:9px}.actions{grid-template-columns:1fr}.sceneGrid,.miniScene{grid-template-columns:repeat(2,minmax(0,1fr))}.channels{grid-template-columns:42px 1fr 32px 32px;gap:6px}.chLabel{font-size:.62rem}.footerNote{margin-top:6px}.heroMeter .big{font-size:1.7rem}}
 </style>
 </head>
 <body>
@@ -489,9 +489,9 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
       <a class="tab" data-route="/control" href="/control">Control</a>
       <a class="tab" data-route="/patch" href="/patch">Patch</a>
       <a class="tab" data-route="/scenes" href="/scenes">Scenes</a>
-      <a class="tab" data-route="/network" href="/network">Network</a>
+      <a class="tab" data-route="/network" href="/network">WiFi</a>
       <a class="tab" data-route="/system" href="/system">System</a>
-      <a class="tab" data-route="/performance" href="/performance">Performance</a>
+      <a class="tab" data-route="/performance" href="/performance">Show</a>
     </nav>
   </div>
 
@@ -502,8 +502,8 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
           <h2>Core Control</h2>
           <div class="meta">Direct mode, dimmer, outputs, and network behavior.</div>
           <div class="split">
-            <label>Output Mode<select id="modeSel"><option value="0">WEB_ONLY</option><option value="1">ARTNET_ONLY</option><option value="2">MERGE_HTP</option></select></label>
-            <label>Network Profile<select id="netModeSel"><option value="0">AP_STA</option><option value="1">STA_ONLY</option><option value="2">AP_ONLY</option></select></label>
+            <label>Mode<select id="modeSel"><option value="0">WEB_ONLY</option><option value="1">ARTNET_ONLY</option><option value="2">MERGE_HTP</option></select></label>
+            <label>WiFi Mode<select id="netModeSel"><option value="0">AP_STA</option><option value="1">STA_ONLY</option><option value="2">AP_ONLY</option></select></label>
           </div>
           <div class="row" style="margin-top:12px">
             <label class="grow">Master Dimmer<input id="master" type="range" min="0" max="255" value="255"></label>
@@ -511,9 +511,9 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
           </div>
           <div class="actions" style="margin-top:12px">
             <button class="bad" onclick="blackout()">Blackout</button>
-            <button class="good" onclick="fullOn()">Full On</button>
+            <button class="good" onclick="fullOn()">Full</button>
             <button class="alt" id="aoBtn" onclick="toggleArtOut()">Art-Net OUT</button>
-            <button class="alt" id="webBtn" onclick="toggleWeb()">Web Stack</button>
+            <button class="alt" id="webBtn" onclick="toggleWeb()">Web</button>
           </div>
         </div>
       </div>
@@ -563,24 +563,24 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
     <div class="grid">
       <div class="stack">
         <div class="card">
-          <h2>Transport</h2>
+          <h2>WiFi</h2>
+          <div class="meta">Join a local network and scan available SSIDs.</div>
+          <div class="split">
+            <label>SSID<input id="staSsid" placeholder="Studio WiFi"></label>
+            <label>Password<input id="staPass" type="password" placeholder="Password"></label>
+          </div>
+          <div class="row" style="margin-top:8px"><button onclick="wifiSet()">Join</button><button class="alt" onclick="wifiScan()">Scan</button><button class="alt" onclick="wifiForget()">Forget</button><div class="footerNote" id="scanState"></div></div>
+          <div class="nets" id="networks" style="margin-top:8px"></div>
+        </div>
+        <div class="card">
+          <h2>Universe</h2>
           <div class="meta">Universe, routing, and protocol-facing configuration.</div>
           <div class="triple">
             <label>Net<input id="netInput" type="number" min="0" max="127"></label>
             <label>Subnet<input id="subInput" type="number" min="0" max="15"></label>
             <label>Universe<input id="uniInput" type="number" min="0" max="15"></label>
           </div>
-          <div class="row" style="margin-top:12px"><button onclick="saveUniverse()">Save Universe</button><div class="footerNote" id="uni15">15-bit: 0</div></div>
-        </div>
-        <div class="card">
-          <h2>WiFi Client</h2>
-          <div class="meta">Join a local network and scan available SSIDs.</div>
-          <div class="split">
-            <label>SSID<input id="staSsid" placeholder="Local network"></label>
-            <label>Password<input id="staPass" type="password" placeholder="Password"></label>
-          </div>
-          <div class="row" style="margin-top:12px"><button onclick="wifiSet()">Connect</button><button class="alt" onclick="wifiForget()">Forget</button><button class="alt" onclick="wifiScan()">Scan</button><div class="footerNote" id="scanState"></div></div>
-          <div class="nets" id="networks" style="margin-top:12px"></div>
+          <div class="row" style="margin-top:8px"><button onclick="saveUniverse()">Save</button><div class="footerNote" id="uni15">15-bit: 0</div></div>
         </div>
       </div>
       <div class="stack">
@@ -591,8 +591,8 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
             <label>Node Name<input id="nodeName" placeholder="vizzz.di"></label>
             <label>AP SSID<input id="apSsid" placeholder="vizzz.di"></label>
           </div>
-          <div class="row" style="margin-top:12px"><label class="grow">AP Password<input id="apPass" type="password" placeholder="Password"></label></div>
-          <div class="row" style="margin-top:12px"><button onclick="saveNode()">Save Identity</button></div>
+          <div class="row" style="margin-top:8px"><label class="grow">AP Password<input id="apPass" type="password" placeholder="Password"></label></div>
+          <div class="row" style="margin-top:8px"><button onclick="saveNode()">Save</button></div>
         </div>
       </div>
     </div>
@@ -630,14 +630,14 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
   <section class="section" data-route="/performance">
     <div class="grid">
       <div class="card">
-        <h2>Performance Deck</h2>
+        <h2>Show</h2>
         <div class="meta">Big actions only: scenes, master, blackout, full on.</div>
-        <div class="actions"><button class="bad" onclick="blackout()">Blackout</button><button class="good" onclick="fullOn()">Full On</button></div>
-        <div class="row" style="margin-top:12px"><label class="grow">Master Dimmer<input id="perfMaster" type="range" min="0" max="255" value="255"></label></div>
-        <div class="heroMeter" style="margin-top:12px"><div class="big" id="perfPct">100%</div><div>show level</div></div>
+        <div class="actions"><button class="bad" onclick="blackout()">Blackout</button><button class="good" onclick="fullOn()">Full</button></div>
+        <div class="row" style="margin-top:8px"><label class="grow">Master<input id="perfMaster" type="range" min="0" max="255" value="255"></label></div>
+        <div class="heroMeter" style="margin-top:8px"><div class="big" id="perfPct">100%</div><div>level</div></div>
       </div>
       <div class="card">
-        <h2>Scene Triggers</h2>
+        <h2>Scenes</h2>
         <div class="meta">Single-tap recalls with the shared fade setting.</div>
         <div class="row"><label class="grow">Fade ms<input id="perfFade" type="number" value="1000"></label></div>
         <div class="sceneGrid" id="perfScenes" style="margin-top:12px"></div>
@@ -671,7 +671,7 @@ function updatePills(s){
 }
 function syncFields(s){
   $('modeSel').value=String(s.mode); $('netModeSel').value=String(s.net_mode); $('netInput').value=s.net; $('subInput').value=s.subnet; $('uniInput').value=s.uni; $('uni15').textContent='15-bit: '+s.uni15; $('statusDump').textContent=JSON.stringify(s,null,2); $('diagDump').textContent=`mode=${s.mode_name}\nnetwork=${s.net_mode_name}\nartnet=${s.artnet_active}\nsacn=${s.sacn_active}\nweb=${s.web}\nout_target=${s.ao_target}`;
-  artOutEnabled=!!s.ao; webEnabled=!!s.web; $('aoBtn').textContent='Art-Net OUT: '+(artOutEnabled?'ON':'OFF'); $('webBtn').textContent='Web Stack: '+(webEnabled?'ON':'OFF');
+  artOutEnabled=!!s.ao; webEnabled=!!s.web; $('aoBtn').textContent='Art OUT '+(artOutEnabled?'ON':'OFF'); $('webBtn').textContent='Web '+(webEnabled?'ON':'OFF');
   if(!$('staSsid').value && s.sta_ssid) $('staSsid').placeholder=s.sta_ssid; if(!$('nodeName').value) $('nodeName').placeholder=s.name; if(!$('apSsid').value) $('apSsid').placeholder=s.ssid; updateMasterDisplays(s.dim||255);
 }
 function renderChannels(base){$('channels').innerHTML=[...Array(32)].map((_,i)=>{const ch=base+i,w=pageWeb[i]??0,o=pageOut[i]??0;return `<div class="chLabel">Ch ${ch}</div><input type="range" min="0" max="255" value="${w}" oninput="setChannel(${ch},+this.value);this.nextElementSibling.textContent=this.value"><div class="webVal">${w}</div><div class="outVal${o>w?' hot':''}">${o}</div>`;}).join('');}
@@ -685,7 +685,7 @@ function recallScene(i){hit('/scene/recall?n='+i+'&fade='+(+$('fadeInput').value
 function recallPerf(i){hit('/scene/recall?n='+i+'&fade='+(+$('perfFade').value||0));}
 function saveScene(i){hit('/scene/save?n='+i);}
 function saveUniverse(){hit(`/artnet/set?net=${$('netInput').value}&subnet=${$('subInput').value}&uni=${$('uniInput').value}`);}
-function toggleArtOut(){artOutEnabled=!artOutEnabled; hit('/artout/set?en='+(artOutEnabled?1:0)); $('aoBtn').textContent='Art-Net OUT: '+(artOutEnabled?'ON':'OFF');}
+function toggleArtOut(){artOutEnabled=!artOutEnabled; hit('/artout/set?en='+(artOutEnabled?1:0)); $('aoBtn').textContent='Art OUT '+(artOutEnabled?'ON':'OFF');}
 function toggleWeb(){const next=webEnabled?0:1; if(confirm('This will reboot the device. Continue?')) hit('/web/set?en='+next);}
 function rebootNow(){if(confirm('Reboot device now?')) hit('/reboot');}
 function refreshStatusDump(){if(state) $('statusDump').textContent=JSON.stringify(state,null,2);}

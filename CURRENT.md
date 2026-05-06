@@ -4,7 +4,7 @@ Read this before changing the firmware. Keep it short and replace stale facts.
 
 ## Last verified baseline
 
-`ad355c6` - `fix: make wifi scan reliable`
+`f5da829` - `docs: update wifi scan checkpoint`
 Branch: `main`
 
 ## What works
@@ -14,6 +14,7 @@ Branch: `main`
 - Native Unity tests cover `vidili_core.h` helpers.
 - DMX output uses `DMX_NUM_1`, GPIO25 TX, GPIO21 DIR.
 - Browser console exposes control, patch, scenes, network, system, and VJ routes.
+- Embedded UI is intentionally minimal/mobile-first: hidden helper copy, compact cards, horizontal tabs, large touch targets, and WiFi first on `/network`.
 - WiFi scan enables STA/AP+STA as needed and reports scan failures/timeouts to the UI instead of looping forever.
 - WebSocket `/ws` pushes status roughly every 400 ms.
 - Art-Net and sACN input share the configured universe.
@@ -47,5 +48,6 @@ Branch: `main`
 
 - 2026-05-06: Uploaded current `vizzz.di` firmware to ESP32 on `/dev/ttyUSB0`; upload succeeded and hard-reset via RTS. Board MAC: `d4:e9:f4:bc:5a:64`.
 - 2026-05-06: Flashed WiFi scan fix to same board; upload succeeded and hard-reset via RTS. Re-test `/network` -> Scan on the ESP AP.
+- 2026-05-06: Flashed minimal/mobile UI build to same board; upload succeeded and hard-reset via RTS.
 - Next: flash the second ESP when connected, then put both on studio WiFi from `/network` using unique node names/AP SSIDs.
 - For TouchDesigner control, use Art-Net UDP `6454`; set each node to `ARTNET_ONLY` for TD-only control or `MERGE_HTP` if the web layer should still participate. Same universe mirrors both nodes; separate universes controls them independently.
