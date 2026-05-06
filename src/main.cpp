@@ -21,6 +21,8 @@ static constexpr uint32_t   DMX_PERIOD_MS     = 23;
 static constexpr TickType_t DMX_SEND_WAIT     = pdMS_TO_TICKS(30);
 static constexpr uint32_t   ARTNET_TIMEOUT_MS = 3000;
 static constexpr uint16_t   ARTNET_PORT       = 6454;
+static constexpr uint32_t   SACN_TIMEOUT_MS   = 3000;
+static constexpr uint16_t   SACN_PORT         = 5568;
 
 // ── Paging / Scenes ───────────────────────────────────────────────────────────
 static constexpr uint16_t PAGE_SIZE   = 32;
@@ -115,16 +117,19 @@ static AsyncWebServer server(80);
 static AsyncWebSocket ws("/ws");
 static ArtnetWifi     artnet;
 static WiFiUDP        artOutUdp;
+static WiFiUDP        sacnUdp;
 static dmx_port_t     dmxPort = DMX_NUM_1;
 
 static uint8_t dmxFrame [MAX_CH + 1];
 static uint8_t webVals  [MAX_CH];   // web layer — protected by gLock
 static uint8_t artVals  [MAX_CH];   // Art-Net IN — written from UDP task, race accepted
+static uint8_t sacnVals [MAX_CH];   // sACN IN
 static uint8_t outVals  [MAX_CH];   // final computed output
 static uint8_t holdVals [MAX_CH];   // last Art-Net values for hold-on-timeout
 static uint8_t sceneBuf [MAX_CH];
 
 static volatile uint32_t lastArtnetMs = 0;
+static volatile uint32_t lastSacnMs   = 0;
 static uint8_t masterDimmer = 255;  // 0=off, 255=full — resets to full on boot
 
 // Fade — access only while holding gLock
@@ -230,6 +235,23 @@ static bool artnetActive() {
   return lastArtnetMs && (millis() - lastArtnetMs < ARTNET_TIMEOUT_MS);
 }
 
+static bool sacnActive() {
+  return lastSacnMs && (millis() - lastSacnMs < SACN_TIMEOUT_MS);
+}
+
+static void refreshSacnSocket() {
+  sacnUdp.stop();
+  // Unicast/broadcast fallback
+  sacnUdp.begin(SACN_PORT);
+
+  // Join universe multicast group when STA is connected.
+  if (WiFi.status() == WL_CONNECTED) {
+    uint16_t u = universe();
+    IPAddress group(239, 255, uint8_t(u >> 8), uint8_t(u & 0xFF));
+    (void)sacnUdp.beginMulticast(group, SACN_PORT);
+  }
+}
+
 // ── Scenes ────────────────────────────────────────────────────────────────────
 static void loadScene(uint8_t n, uint8_t* dst) {
   prefs.begin("scenes", true);
@@ -269,17 +291,28 @@ static void updateFade_locked() {
 }
 
 // ── Output ────────────────────────────────────────────────────────────────────
-static void computeOutput(const uint8_t* web, const uint8_t* art, bool aActive) {
+static void computeOutput(const uint8_t* web, const uint8_t* art, const uint8_t* sacn, bool aActive, bool sActive) {
+  static uint8_t netIn[MAX_CH];
+  bool netActive = aActive || sActive;
+
+  if (aActive && sActive) {
+    for (int i = 0; i < MAX_CH; i++) netIn[i] = max(art[i], sacn[i]);
+  } else if (aActive) {
+    memcpy(netIn, art, MAX_CH);
+  } else if (sActive) {
+    memcpy(netIn, sacn, MAX_CH);
+  }
+
   switch (mode) {
     case MODE_WEB:
       memcpy(outVals, web, MAX_CH);
       break;
     case MODE_ARTNET:
-      memcpy(outVals, aActive ? art : holdVals, MAX_CH);
+      memcpy(outVals, netActive ? netIn : holdVals, MAX_CH);
       break;
     default: // MODE_HTP
-      if (aActive)
-        for (int i = 0; i < MAX_CH; i++) outVals[i] = max(web[i], art[i]);
+      if (netActive)
+        for (int i = 0; i < MAX_CH; i++) outVals[i] = max(web[i], netIn[i]);
       else
         memcpy(outVals, web, MAX_CH);
   }
@@ -327,6 +360,44 @@ static void onDmxFrame(uint16_t uni, uint16_t len, uint8_t /*seq*/, uint8_t* dat
   memcpy(artVals, data, n);
   if (n < MAX_CH) memset(artVals + n, 0, MAX_CH - n);
   lastArtnetMs = millis();
+}
+
+// ── sACN (E1.31) IN ─────────────────────────────────────────────────────────
+static void pollSacn() {
+  static uint8_t pkt[638]; // enough for E1.31 packet with full universe
+
+  for (int size = sacnUdp.parsePacket(); size > 0; size = sacnUdp.parsePacket()) {
+    int n = sacnUdp.read(pkt, min(int(sizeof(pkt)), size));
+    if (n < 126) continue;
+
+    // ACN Packet Identifier
+    static const uint8_t acnPid[12] = {
+      0x41, 0x53, 0x43, 0x2D, 0x45, 0x31, 0x2E, 0x31, 0x37, 0x00, 0x00, 0x00
+    };
+    if (memcmp(pkt + 4, acnPid, sizeof(acnPid)) != 0) continue;
+
+    // Root Vector (Data Packet = 0x00000004)
+    if (!(pkt[18] == 0x00 && pkt[19] == 0x00 && pkt[20] == 0x00 && pkt[21] == 0x04)) continue;
+    // Framing Vector (Data Packet = 0x00000002)
+    if (!(pkt[40] == 0x00 && pkt[41] == 0x00 && pkt[42] == 0x00 && pkt[43] == 0x02)) continue;
+    // DMP Vector (set property)
+    if (pkt[117] != 0x02) continue;
+
+    uint16_t uni = (uint16_t(pkt[113]) << 8) | pkt[114];
+    if (uni != universe()) continue;
+
+    uint16_t propCount = (uint16_t(pkt[123]) << 8) | pkt[124];
+    if (propCount < 2) continue; // includes start code
+    if (125 + propCount > uint16_t(n)) continue;
+
+    const uint8_t* props = pkt + 125;
+    if (props[0] != 0x00) continue; // only DMX data start code
+
+    uint16_t dmxLen = min<uint16_t>(MAX_CH, propCount - 1);
+    memcpy(sacnVals, props + 1, dmxLen);
+    if (dmxLen < MAX_CH) memset(sacnVals + dmxLen, 0, MAX_CH - dmxLen);
+    lastSacnMs = millis();
+  }
 }
 
 // ── Editor HTML ───────────────────────────────────────────────────────────────
@@ -739,6 +810,7 @@ static String statusJSON() {
     "\"mode\":%u,"
     "\"mode_name\":\"%s\","
     "\"artnet_active\":%s,"
+    "\"sacn_active\":%s,"
     "\"ao\":%s,"
     "\"web\":%s,"
     "\"dim\":%u,"
@@ -753,6 +825,7 @@ static String statusJSON() {
     universe(),
     uint8_t(mode), modeName(mode),
     artnetActive()  ? "true" : "false",
+    sacnActive()    ? "true" : "false",
     artOutEnabled   ? "true" : "false",
     webEnabled      ? "true" : "false",
     masterDimmer,
@@ -878,7 +951,9 @@ static void setupWeb() {
     if (r->hasArg("net"))    artNet    = uint8_t(constrain(r->arg("net").toInt(),    0, 127));
     if (r->hasArg("subnet")) artSubnet = uint8_t(constrain(r->arg("subnet").toInt(), 0, 15));
     if (r->hasArg("uni"))    artUni    = uint8_t(constrain(r->arg("uni").toInt(),    0, 15));
-    saveConfig(); r->send(204);
+    saveConfig();
+    refreshSacnSocket();
+    r->send(204);
   });
 
   server.on("/artout/set", HTTP_GET, [](AsyncWebServerRequest* r){
@@ -986,11 +1061,13 @@ void setup() {
   startWiFi();
   if (needSaveConfig) { saveConfig(); needSaveConfig = false; }
   artOutUdp.begin(0);
+  refreshSacnSocket();
   if (webEnabled) setupWeb();
 
   artnet.begin(nodeName.c_str());
   artnet.setArtDmxCallback(onDmxFrame);
   lastArtnetMs = 0;
+  lastSacnMs = 0;
 
   Serial.printf("\n=== vi_di_li ===\n");
   Serial.printf("AP SSID  : %s\n", apSsid.c_str());
@@ -1004,6 +1081,7 @@ void setup() {
   Serial.printf("Net Mode : %s\n", netModeName(netMode));
   Serial.printf("Art-Net  : net=%u sub=%u uni=%u (15-bit=%u)\n",
     artNet, artSubnet, artUni, universe());
+  Serial.printf("sACN     : universe=%u port=%u\n", universe(), SACN_PORT);
   Serial.printf("Art-Out  : %s\n", artOutEnabled ? "enabled" : "disabled");
   Serial.printf("Web      : %s\n", webEnabled ? "enabled" : "disabled");
 }
@@ -1012,6 +1090,15 @@ void loop() {
   if (pendingReboot) { delay(150); ESP.restart(); }
 
   artnet.read();
+  pollSacn();
+
+  // Rejoin sACN multicast when WiFi link state changes.
+  static wl_status_t prevWiFiStatus = WL_IDLE_STATUS;
+  wl_status_t curWiFiStatus = WiFi.status();
+  if (curWiFiStatus != prevWiFiStatus) {
+    prevWiFiStatus = curWiFiStatus;
+    refreshSacnSocket();
+  }
 
   const uint32_t now = millis();
 
@@ -1029,7 +1116,7 @@ void loop() {
       memcpy(snapWeb, webVals, MAX_CH);
     }
 
-    computeOutput(snapWeb, artVals, artnetActive());
+    computeOutput(snapWeb, artVals, sacnVals, artnetActive(), sacnActive());
     sendDMX();
     sendArtNetOut();
   }
