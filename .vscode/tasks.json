@@ -1,0 +1,39 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "PlatformIO: Build",
+            "type": "shell",
+            "command": "~/.platformio/penv/bin/pio",
+            "args": [
+                "run"
+            ],
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "PlatformIO: Upload",
+            "type": "shell",
+            "command": "sg",
+            "args": [
+                "dialout",
+                "-c",
+                "~/.platformio/penv/bin/pio run --target upload"
+            ],
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "PlatformIO: Test",
+            "type": "shell",
+            "command": "~/.platformio/penv/bin/pio",
+            "args": [
+                "test",
+                "-e",
+                "native"
+            ],
+            "group": "test",
+            "problemMatcher": []
+        }
+    ]
+}
