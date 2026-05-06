@@ -179,11 +179,15 @@ static uint8_t cueIndex = 0;
 static bool cueRunning = false;
 static uint32_t cueNextMs = 0;
 
-enum FxMode : uint8_t { FX_NONE = 0, FX_STROBE = 1, FX_CHASE = 2, FX_PULSE = 3 };
+enum FxMode : uint8_t { FX_NONE = 0, FX_STROBE = 1, FX_CHASE = 2, FX_PULSE = 3, FX_SINE = 4, FX_SPARKLE = 5 };
 static FxMode fxMode = FX_NONE;
 static bool fxEnabled = false;
 static uint16_t fxBpm = 120;
 static uint8_t fxDepth = 255;
+static uint8_t colorR = 255;
+static uint8_t colorG = 255;
+static uint8_t colorB = 255;
+static bool colorEnabled = false;
 static uint32_t lastTapMs = 0;
 static uint32_t tapIntervals[4] = {0, 0, 0, 0};
 static uint8_t tapCount = 0;
@@ -486,19 +490,39 @@ static void initVjDefaults() {
 }
 
 static void triggerCueStep(uint8_t idx) {
-  if (idx >= cueCount) return;
-  uint8_t target[MAX_CH];
-  loadScene(cueList[idx].scene, target);
+  uint8_t scene = 0;
+  uint32_t fade = 0;
+  uint32_t dwell = 0;
   if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) return;
-  startFade_locked(target, cueList[idx].fadeMs);
+  if (idx >= cueCount) {
+    xSemaphoreGive(gLock);
+    return;
+  }
+  scene = cueList[idx].scene;
+  fade = cueList[idx].fadeMs;
+  dwell = cueList[idx].dwellMs;
   xSemaphoreGive(gLock);
-  cueNextMs = millis() + cueList[idx].fadeMs + cueList[idx].dwellMs;
+
+  uint8_t target[MAX_CH];
+  loadScene(scene, target);
+
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) return;
+  startFade_locked(target, fade);
+  cueNextMs = millis() + fade + dwell;
+  xSemaphoreGive(gLock);
 }
 
 static void tickCueEngine(uint32_t now) {
-  if (!cueRunning || cueCount == 0 || now < cueNextMs) return;
+  uint8_t nextIdx = 0;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) != pdTRUE) return;
+  if (!cueRunning || cueCount == 0 || now < cueNextMs) {
+    xSemaphoreGive(gLock);
+    return;
+  }
   cueIndex = (cueIndex + 1) % cueCount;
-  triggerCueStep(cueIndex);
+  nextIdx = cueIndex;
+  xSemaphoreGive(gLock);
+  triggerCueStep(nextIdx);
 }
 
 static uint8_t fxLevelForChannel(uint16_t ch, uint32_t now) {
@@ -522,6 +546,22 @@ static uint8_t fxLevelForChannel(uint16_t ch, uint32_t now) {
     return (lane == activeLane) ? 255 : uint8_t(255 - fxDepth);
   }
 
+  if (fxMode == FX_SINE) {
+    float phase = float(now % beatMs) / float(beatMs);
+    float s = 0.5f + 0.5f * sinf(phase * 6.2831853f);
+    uint8_t dyn = uint8_t(s * 255.0f);
+    uint8_t floorLevel = uint8_t(255 - fxDepth);
+    return max<uint8_t>(floorLevel, dyn);
+  }
+
+  if (fxMode == FX_SPARKLE) {
+    // Deterministic sparkle per channel/time slice to avoid RNG contention.
+    uint32_t slot = (now / max<uint32_t>(10, beatMs / 16));
+    uint32_t h = (uint32_t(ch + 1) * 1103515245UL) ^ (slot * 2654435761UL);
+    bool on = (h & 0x0F) == 0;
+    return on ? 255 : uint8_t(255 - fxDepth);
+  }
+
   // Triangle pulse 0..255 scaled by depth.
   uint32_t phase = now % beatMs;
   uint16_t tri = (phase < beatMs / 2)
@@ -532,6 +572,15 @@ static uint8_t fxLevelForChannel(uint16_t ch, uint32_t now) {
   return max<uint8_t>(floorLevel, pulse);
 }
 
+static void applyColorWash_locked() {
+  if (!colorEnabled) return;
+  for (uint16_t i = 0; i + 2 < MAX_CH; i += 3) {
+    webVals[i] = colorR;
+    webVals[i + 1] = colorG;
+    webVals[i + 2] = colorB;
+  }
+}
+
 static bool oscReadPaddedString(const uint8_t* pkt, int n, int& off, char* out, size_t outLen) {
   if (off >= n || outLen == 0) return false;
   int i = 0;
@@ -539,6 +588,7 @@ static bool oscReadPaddedString(const uint8_t* pkt, int n, int& off, char* out, 
   out[i] = '\0';
   while (off < n && pkt[off] != 0) off++;
   if (off >= n) return false;
+  off++; // consume null terminator
   while (off < n && (off % 4) != 0) off++;
   return i > 0;
 }
@@ -548,6 +598,13 @@ static bool oscReadInt(const uint8_t* pkt, int n, int& off, int32_t& out) {
   out = (int32_t(pkt[off]) << 24) | (int32_t(pkt[off + 1]) << 16) |
         (int32_t(pkt[off + 2]) << 8) | int32_t(pkt[off + 3]);
   off += 4;
+  return true;
+}
+
+static bool oscReadFloat(const uint8_t* pkt, int n, int& off, float& out) {
+  int32_t raw = 0;
+  if (!oscReadInt(pkt, n, off, raw)) return false;
+  memcpy(&out, &raw, sizeof(out));
   return true;
 }
 
@@ -561,9 +618,17 @@ static void pollOsc() {
     char addr[48], tags[16];
     if (!oscReadPaddedString(pkt, n, off, addr, sizeof(addr))) continue;
     if (!oscReadPaddedString(pkt, n, off, tags, sizeof(tags))) continue;
-    if (tags[0] != ',' || tags[1] != 'i') continue;
+    if (tags[0] != ',') continue;
     int32_t v = 0;
-    if (!oscReadInt(pkt, n, off, v)) continue;
+    if (tags[1] == 'i') {
+      if (!oscReadInt(pkt, n, off, v)) continue;
+    } else if (tags[1] == 'f') {
+      float fv = 0.0f;
+      if (!oscReadFloat(pkt, n, off, fv)) continue;
+      v = int32_t(fv);
+    } else {
+      continue;
+    }
 
     if (strncmp(addr, "/ch/", 4) == 0) {
       int ch = atoi(addr + 4);
@@ -594,16 +659,48 @@ static void pollOsc() {
         xSemaphoreGive(gLock);
       }
     } else if (strcmp(addr, "/cue/run") == 0) {
-      cueRunning = (v != 0) && cueCount > 0;
-      if (cueRunning) {
-        cueIndex = 0;
-        triggerCueStep(cueIndex);
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
+        cueRunning = (v != 0) && cueCount > 0;
+        if (cueRunning) {
+          cueIndex = 0;
+          xSemaphoreGive(gLock);
+          triggerCueStep(0);
+          continue;
+        }
+        xSemaphoreGive(gLock);
       }
     } else if (strcmp(addr, "/fx/mode") == 0) {
-      fxMode = FxMode(constrain(v, 0, 3));
-      fxEnabled = (fxMode != FX_NONE);
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+        fxMode = FxMode(constrain(v, 0, 5));
+        fxEnabled = (fxMode != FX_NONE);
+        xSemaphoreGive(gLock);
+      }
     } else if (strcmp(addr, "/fx/bpm") == 0) {
-      fxBpm = uint16_t(constrain(v, 20, 240));
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+        fxBpm = uint16_t(constrain(v, 20, 240));
+        xSemaphoreGive(gLock);
+      }
+    } else if (strcmp(addr, "/color/r") == 0) {
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+        colorR = uint8_t(constrain(v, 0, 255));
+        colorEnabled = true;
+        applyColorWash_locked();
+        xSemaphoreGive(gLock);
+      }
+    } else if (strcmp(addr, "/color/g") == 0) {
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+        colorG = uint8_t(constrain(v, 0, 255));
+        colorEnabled = true;
+        applyColorWash_locked();
+        xSemaphoreGive(gLock);
+      }
+    } else if (strcmp(addr, "/color/b") == 0) {
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+        colorB = uint8_t(constrain(v, 0, 255));
+        colorEnabled = true;
+        applyColorWash_locked();
+        xSemaphoreGive(gLock);
+      }
     }
   }
 }
@@ -952,12 +1049,22 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
         <div class="actions"><button class="bad" onclick="blackout()">Blackout</button><button class="good" onclick="fullOn()">Full</button></div>
         <div class="row" style="margin-top:8px"><label class="grow">Master<input id="perfMaster" type="range" min="0" max="255" value="255"></label></div>
         <div class="heroMeter" style="margin-top:8px"><div class="big" id="perfPct">100%</div><div>level</div></div>
-        <div class="row" style="margin-top:8px"><label class="grow">FX Mode<select id="fxModeSel"><option value="none">none</option><option value="strobe">strobe</option><option value="chase">chase</option><option value="pulse">pulse</option></select></label></div>
+        <div class="row" style="margin-top:8px"><label class="grow">FX Mode<select id="fxModeSel"><option value="none">none</option><option value="strobe">strobe</option><option value="chase">chase</option><option value="pulse">pulse</option><option value="sine">sine</option><option value="sparkle">sparkle</option></select></label></div>
         <div class="split" style="margin-top:8px">
           <label>BPM<input id="fxBpm" type="number" min="20" max="240" value="120"></label>
           <label>Depth<input id="fxDepth" type="number" min="0" max="255" value="255"></label>
         </div>
         <div class="actions" style="margin-top:8px"><button onclick="applyFx()">Apply FX</button><button class="alt" onclick="tapFx()">Tap BPM</button></div>
+        <div class="split" style="margin-top:8px">
+          <label>R<input id="colorR" type="number" min="0" max="255" value="255"></label>
+          <label>G<input id="colorG" type="number" min="0" max="255" value="255"></label>
+        </div>
+        <div class="split" style="margin-top:8px">
+          <label>B<input id="colorB" type="number" min="0" max="255" value="255"></label>
+          <label>Color<input id="colorEn" type="checkbox" checked></label>
+        </div>
+        <div class="actions" style="margin-top:8px"><button onclick="applyColor()">Apply Color</button><button class="alt" onclick="colorPreset('amber')">Amber</button></div>
+        <div class="actions" style="margin-top:8px"><button class="alt" onclick="colorPreset('cyan')">Cyan</button><button class="alt" onclick="colorPreset('magenta')">Magenta</button></div>
       </div>
       <div class="card">
         <h2>Scenes</h2>
@@ -1053,6 +1160,12 @@ async function loadPeers(){const r=await qs('/peers');if(!r){$('peerCount').text
 function targetPeer(ip){if(!confirm('Route Art-Net OUT directly to '+ip+'? (enables unicast, overrides broadcast)'))return;fetch('/artout/peer?ip='+encodeURIComponent(ip),{cache:'no-store'}).then(()=>fetch('/artout/set?en=1',{cache:'no-store'}));artOutEnabled=true;$('aoBtn').textContent='Art OUT ON';$('aoTarget').textContent=ip;}
 function applyFx(){hit('/fx/set?en=1&mode='+encodeURIComponent($('fxModeSel').value)+'&bpm='+(+$('fxBpm').value||120)+'&depth='+(+$('fxDepth').value||255));}
 function tapFx(){hit('/fx/tap');}
+function applyColor(){hit('/color/set?en='+(($('colorEn').checked)?1:0)+'&r='+(+$('colorR').value||0)+'&g='+(+$('colorG').value||0)+'&b='+(+$('colorB').value||0));}
+function colorPreset(name){
+  const p={amber:[255,140,20],cyan:[0,220,255],magenta:[255,0,220]}[name]||[255,255,255];
+  $('colorR').value=p[0]; $('colorG').value=p[1]; $('colorB').value=p[2]; $('colorEn').checked=true;
+  applyColor();
+}
 function cueRun(en){hit('/cue/run?en='+en);}
 function cueNext(){hit('/cue/next');}
 function setCueStep(){
@@ -1074,6 +1187,7 @@ async function refreshVj(){
   const [fx,cue,groups]=await Promise.all([qs('/fx/status'),qs('/cue/status'),qs('/groups')]);
   if(!fx||!cue||!groups) return;
   $('fxModeSel').value=fx.mode_name||'none'; $('fxBpm').value=fx.bpm||120; $('fxDepth').value=fx.depth||255;
+  $('colorR').value=fx.r??255; $('colorG').value=fx.g??255; $('colorB').value=fx.b??255; $('colorEn').checked=!!fx.color_en;
   $('cueCount').value=cue.count||1;
   $('vjDump').textContent=JSON.stringify({fx, cue, groups:groups.groups?.slice(0,4)},null,2);
 }
@@ -1248,14 +1362,21 @@ static String monitorJSON() {
 
 static String groupsJSON() {
   char buf[900];
+  GroupDef snap[MAX_GROUPS];
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
+    memcpy(snap, groups, sizeof(snap));
+    xSemaphoreGive(gLock);
+  } else {
+    memset(snap, 0, sizeof(snap));
+  }
   int pos = snprintf(buf, sizeof(buf), "{\"count\":%u,\"groups\":[", MAX_GROUPS);
   for (uint8_t i = 0; i < MAX_GROUPS; i++) {
     if (i) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
     char eName[24];
-    jsonEsc(eName, sizeof(eName), groups[i].name);
+    jsonEsc(eName, sizeof(eName), snap[i].name);
     pos += snprintf(buf + pos, sizeof(buf) - pos,
       "{\"id\":%u,\"name\":\"%s\",\"start\":%u,\"end\":%u,\"enabled\":%s}",
-      i, eName, groups[i].start, groups[i].end, groups[i].enabled ? "true" : "false");
+      i, eName, snap[i].start, snap[i].end, snap[i].enabled ? "true" : "false");
   }
   snprintf(buf + pos, sizeof(buf) - pos, "]}");
   return buf;
@@ -1266,35 +1387,76 @@ static const char* fxModeName(FxMode m) {
     case FX_STROBE: return "strobe";
     case FX_CHASE:  return "chase";
     case FX_PULSE:  return "pulse";
+    case FX_SINE:   return "sine";
+    case FX_SPARKLE:return "sparkle";
     default:        return "none";
   }
 }
 
 static String cueJSON() {
   char buf[1200];
+  CueStep snap[MAX_CUES];
+  uint8_t snapCount = 0;
+  uint8_t snapIndex = 0;
+  bool snapRunning = false;
+  uint32_t snapNext = 0;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
+    memcpy(snap, cueList, sizeof(snap));
+    snapCount = cueCount;
+    snapIndex = cueIndex;
+    snapRunning = cueRunning;
+    snapNext = cueNextMs;
+    xSemaphoreGive(gLock);
+  }
   int pos = snprintf(buf, sizeof(buf),
     "{\"running\":%s,\"count\":%u,\"index\":%u,\"next_ms\":%lu,\"steps\":[",
-    cueRunning ? "true" : "false", cueCount, cueIndex, (unsigned long)cueNextMs);
-  for (uint8_t i = 0; i < cueCount && i < MAX_CUES; i++) {
+    snapRunning ? "true" : "false", snapCount, snapIndex, (unsigned long)snapNext);
+  for (uint8_t i = 0; i < snapCount && i < MAX_CUES; i++) {
     if (i) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
     pos += snprintf(buf + pos, sizeof(buf) - pos,
       "{\"idx\":%u,\"scene\":%u,\"dwell\":%lu,\"fade\":%lu}",
-      i, cueList[i].scene, (unsigned long)cueList[i].dwellMs, (unsigned long)cueList[i].fadeMs);
+      i, snap[i].scene, (unsigned long)snap[i].dwellMs, (unsigned long)snap[i].fadeMs);
   }
   snprintf(buf + pos, sizeof(buf) - pos, "]}");
   return buf;
 }
 
 static String fxJSON() {
-  char buf[220];
+  char buf[300];
+  FxMode m = FX_NONE;
+  bool en = false;
+  uint16_t bpm = 120;
+  uint8_t depth = 255;
+  uint8_t r = 255, g = 255, b = 255;
+  bool cEn = false;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
+    m = fxMode;
+    en = fxEnabled;
+    bpm = fxBpm;
+    depth = fxDepth;
+    r = colorR;
+    g = colorG;
+    b = colorB;
+    cEn = colorEnabled;
+    xSemaphoreGive(gLock);
+  }
   snprintf(buf, sizeof(buf),
-    "{\"enabled\":%s,\"mode\":%u,\"mode_name\":\"%s\",\"bpm\":%u,\"depth\":%u,\"osc_port\":%u}",
-    fxEnabled ? "true" : "false", uint8_t(fxMode), fxModeName(fxMode), fxBpm, fxDepth, OSC_PORT);
+    "{\"enabled\":%s,\"mode\":%u,\"mode_name\":\"%s\",\"bpm\":%u,\"depth\":%u,\"color_en\":%s,\"r\":%u,\"g\":%u,\"b\":%u,\"osc_port\":%u}",
+    en ? "true" : "false", uint8_t(m), fxModeName(m), bpm, depth, cEn ? "true" : "false", r, g, b, OSC_PORT);
   return buf;
 }
 
 static String nodeManifestJSON() {
   bool staCon = (WiFi.status() == WL_CONNECTED);
+  FxMode snapFxMode = FX_NONE;
+  bool snapFxEnabled = false;
+  bool snapColorEnabled = false;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
+    snapFxMode = fxMode;
+    snapFxEnabled = fxEnabled;
+    snapColorEnabled = colorEnabled;
+    xSemaphoreGive(gLock);
+  }
   char eName[80], eSsid[80], eStaSsid[80], eFw[80];
   jsonEsc(eName,    sizeof(eName),    nodeName);
   jsonEsc(eSsid,    sizeof(eSsid),    apSsid);
@@ -1318,13 +1480,14 @@ static String nodeManifestJSON() {
     "\"network\":{\"mode\":\"%s\",\"ap_ip\":\"%s\",\"sta_connected\":%s,\"sta_ip\":\"%s\"},"
     "\"hardware\":{\"board\":\"ESP32 DevKit\",\"dmx_uart\":\"DMX_NUM_1\",\"dmx_tx_gpio\":%d,\"dmx_dir_gpio\":%d,\"max_channels\":%d,\"dmx_period_ms\":%lu},"
     "\"protocols\":["
-      "{\"id\":\"http\",\"role\":\"control\",\"routes\":[\"/\",\"/control\",\"/patch\",\"/scenes\",\"/network\",\"/system\",\"/performance\",\"/vj\",\"/status\",\"/page\",\"/monitor\",\"/node/manifest\",\"/manifest.json\"]},"
+      "{\"id\":\"http\",\"role\":\"control\",\"routes\":[\"/\",\"/control\",\"/patch\",\"/scenes\",\"/network\",\"/system\",\"/performance\",\"/vj\",\"/status\",\"/page\",\"/monitor\",\"/groups\",\"/group/set\",\"/group/apply\",\"/cue/status\",\"/cue/count\",\"/cue/set\",\"/cue/run\",\"/cue/next\",\"/fx/status\",\"/fx/set\",\"/fx/tap\",\"/color/set\",\"/node/manifest\",\"/manifest.json\"]},"
       "{\"id\":\"websocket\",\"role\":\"live-status\",\"endpoint\":\"/ws\",\"push_ms\":400},"
       "{\"id\":\"artnet\",\"role\":\"input-output\",\"port\":%u,\"universe\":%u,\"output_target\":\"%s\",\"output_enabled\":%s},"
       "{\"id\":\"sacn\",\"role\":\"input\",\"port\":%u,\"universe\":%u},"
+      "{\"id\":\"osc\",\"role\":\"input\",\"transport\":\"udp\",\"port\":%u},"
       "{\"id\":\"dmx512\",\"role\":\"physical-output\",\"channels\":%d}"
     "],"
-    "\"state\":{\"output_mode\":\"%s\",\"master\":%u,\"artnet_active\":%s,\"sacn_active\":%s,\"web_enabled\":%s},"
+    "\"state\":{\"output_mode\":\"%s\",\"master\":%u,\"artnet_active\":%s,\"sacn_active\":%s,\"web_enabled\":%s,\"fx_mode\":\"%s\",\"fx_enabled\":%s,\"color_enabled\":%s},"
     "\"sync\":{\"source\":\"firmware\",\"live_status\":\"/ws\",\"durable_config\":\"ESP32 Preferences NVS\",\"git_policy\":\"verify, commit, push origin/main\"}"
     "}",
     PRODUCT_NAME,
@@ -1335,8 +1498,9 @@ static String nodeManifestJSON() {
     DMX_TX, DMX_DIR, MAX_CH, (unsigned long)DMX_PERIOD_MS,
     ARTNET_PORT, universe(), outTarget.c_str(), artOutEnabled ? "true" : "false",
     SACN_PORT, universe(),
+    OSC_PORT,
     MAX_CH,
-    modeName(mode), masterDimmer, artnetActive() ? "true" : "false", sacnActive() ? "true" : "false", webEnabled ? "true" : "false"
+    modeName(mode), masterDimmer, artnetActive() ? "true" : "false", sacnActive() ? "true" : "false", webEnabled ? "true" : "false", fxModeName(snapFxMode), snapFxEnabled ? "true" : "false", snapColorEnabled ? "true" : "false"
   );
   return buf;
 }
@@ -1585,6 +1749,7 @@ static void setupWeb() {
   server.on("/group/set", HTTP_GET, [](AsyncWebServerRequest* r){
     if (!r->hasArg("g")) { r->send(400, "text/plain", "missing g"); return; }
     uint8_t g = uint8_t(constrain(r->arg("g").toInt(), 0, MAX_GROUPS - 1));
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     if (r->hasArg("name")) {
       String n = r->arg("name");
       n.toCharArray(groups[g].name, sizeof(groups[g].name));
@@ -1592,6 +1757,7 @@ static void setupWeb() {
     if (r->hasArg("start")) groups[g].start = uint16_t(constrain(r->arg("start").toInt(), 1, MAX_CH));
     if (r->hasArg("end")) groups[g].end = uint16_t(constrain(r->arg("end").toInt(), groups[g].start, MAX_CH));
     if (r->hasArg("en")) groups[g].enabled = r->arg("en").toInt() != 0;
+    xSemaphoreGive(gLock);
     r->send(204);
   });
 
@@ -1599,9 +1765,14 @@ static void setupWeb() {
     if (!r->hasArg("g") || !r->hasArg("v")) { r->send(400, "text/plain", "missing arg"); return; }
     uint8_t g = uint8_t(constrain(r->arg("g").toInt(), 0, MAX_GROUPS - 1));
     uint8_t v = uint8_t(constrain(r->arg("v").toInt(), 0, 255));
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
+    if (!groups[g].enabled) {
+      xSemaphoreGive(gLock);
+      r->send(409, "text/plain", "group disabled");
+      return;
+    }
     uint16_t s = constrain(groups[g].start, 1, MAX_CH);
     uint16_t e = constrain(groups[g].end, s, MAX_CH);
-    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     for (uint16_t ch = s; ch <= e; ch++) webVals[ch - 1] = v;
     xSemaphoreGive(gLock);
     r->send(204);
@@ -1611,56 +1782,73 @@ static void setupWeb() {
 
   server.on("/cue/count", HTTP_GET, [](AsyncWebServerRequest* r){
     if (!r->hasArg("c")) { r->send(400, "text/plain", "missing c"); return; }
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     cueCount = uint8_t(constrain(r->arg("c").toInt(), 1, MAX_CUES));
     if (cueIndex >= cueCount) cueIndex = 0;
+    xSemaphoreGive(gLock);
     r->send(204);
   });
 
   server.on("/cue/set", HTTP_GET, [](AsyncWebServerRequest* r){
     if (!r->hasArg("i")) { r->send(400, "text/plain", "missing i"); return; }
     uint8_t i = uint8_t(constrain(r->arg("i").toInt(), 0, MAX_CUES - 1));
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     if (r->hasArg("scene")) cueList[i].scene = uint8_t(constrain(r->arg("scene").toInt(), 0, SCENE_COUNT - 1));
     if (r->hasArg("dwell")) cueList[i].dwellMs = uint32_t(max(0L, r->arg("dwell").toInt()));
     if (r->hasArg("fade"))  cueList[i].fadeMs  = uint32_t(max(0L, r->arg("fade").toInt()));
+    xSemaphoreGive(gLock);
     r->send(204);
   });
 
   server.on("/cue/run", HTTP_GET, [](AsyncWebServerRequest* r){
     if (!r->hasArg("en")) { r->send(400, "text/plain", "missing en"); return; }
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     cueRunning = (r->arg("en").toInt() != 0) && cueCount > 0;
     if (cueRunning) {
       cueIndex = 0;
-      triggerCueStep(cueIndex);
+      xSemaphoreGive(gLock);
+      triggerCueStep(0);
+      r->send(204);
+      return;
     }
+    xSemaphoreGive(gLock);
     r->send(204);
   });
 
   server.on("/cue/next", HTTP_GET, [](AsyncWebServerRequest* r){
-    if (cueCount == 0) { r->send(400, "text/plain", "no cues"); return; }
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
+    if (cueCount == 0) { xSemaphoreGive(gLock); r->send(400, "text/plain", "no cues"); return; }
     cueIndex = (cueIndex + 1) % cueCount;
-    triggerCueStep(cueIndex);
+    uint8_t next = cueIndex;
+    xSemaphoreGive(gLock);
+    triggerCueStep(next);
     r->send(204);
   });
 
   server.on("/fx/status", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, fxJSON()); });
 
   server.on("/fx/set", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     if (r->hasArg("mode")) {
       String m = r->arg("mode");
       if (m == "strobe") fxMode = FX_STROBE;
       else if (m == "chase") fxMode = FX_CHASE;
       else if (m == "pulse") fxMode = FX_PULSE;
+      else if (m == "sine") fxMode = FX_SINE;
+      else if (m == "sparkle") fxMode = FX_SPARKLE;
       else fxMode = FX_NONE;
     }
     if (r->hasArg("en")) fxEnabled = r->arg("en").toInt() != 0;
     if (r->hasArg("bpm")) fxBpm = uint16_t(constrain(r->arg("bpm").toInt(), 20, 240));
     if (r->hasArg("depth")) fxDepth = uint8_t(constrain(r->arg("depth").toInt(), 0, 255));
     if (fxMode == FX_NONE) fxEnabled = false;
+    xSemaphoreGive(gLock);
     r->send(204);
   });
 
   server.on("/fx/tap", HTTP_GET, [](AsyncWebServerRequest* r){
     uint32_t now = millis();
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     if (lastTapMs > 0) {
       uint32_t dt = now - lastTapMs;
       if (dt >= 150 && dt <= 2000) {
@@ -1673,6 +1861,18 @@ static void setupWeb() {
       }
     }
     lastTapMs = now;
+    xSemaphoreGive(gLock);
+    r->send(204);
+  });
+
+  server.on("/color/set", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
+    if (r->hasArg("r")) colorR = uint8_t(constrain(r->arg("r").toInt(), 0, 255));
+    if (r->hasArg("g")) colorG = uint8_t(constrain(r->arg("g").toInt(), 0, 255));
+    if (r->hasArg("b")) colorB = uint8_t(constrain(r->arg("b").toInt(), 0, 255));
+    if (r->hasArg("en")) colorEnabled = r->arg("en").toInt() != 0;
+    if (colorEnabled) applyColorWash_locked();
+    xSemaphoreGive(gLock);
     r->send(204);
   });
 
