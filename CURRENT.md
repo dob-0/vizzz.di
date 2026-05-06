@@ -55,5 +55,6 @@ Branch: `main`
 - 2026-05-06: RAM optimization pass validated: RAM 50,140 bytes (15.3%), flash 889,701 bytes (67.9%).
 - 2026-05-06: Flashed RAM-optimized build to ESP32 `d4:e9:f4:bc:5a:64`; upload succeeded and hard-reset via RTS.
 - 2026-05-06: Full ESP optimization pass validated: RAM 49,420 bytes (15.1%), flash 837,901 bytes (63.9%).
+- 2026-05-06: Flashed full ESP-optimized build to ESP32 `d4:e9:f4:bc:5a:64`; upload succeeded and hard-reset via RTS.
 - Next: flash the second ESP when connected, then put both on studio WiFi from `/network` using unique node names/AP SSIDs.
 - For TouchDesigner control, use Art-Net UDP `6454`; set each node to `ARTNET_ONLY` for TD-only control or `MERGE_HTP` if the web layer should still participate. Same universe mirrors both nodes; separate universes controls them independently.
