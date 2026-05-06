@@ -4,7 +4,7 @@ Read this before changing the firmware. Keep it short and replace stale facts.
 
 ## Last verified baseline
 
-`52a783d` - `style: simplify mobile console ui`
+`383c81d` - `perf: reduce static ram usage`
 Branch: `main`
 
 ## What works
