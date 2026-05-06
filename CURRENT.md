@@ -4,7 +4,7 @@ Read this before changing the firmware. Keep it short and replace stale facts.
 
 ## Last verified baseline
 
-`15ef754` - `docs: update ram optimization checkpoint`
+`00be502` - `perf: optimize esp32 runtime footprint`
 Branch: `main`
 
 ## What works
@@ -16,8 +16,10 @@ Branch: `main`
 - Browser console exposes control, patch, scenes, network, system, and VJ routes.
 - Embedded UI is intentionally minimal/mobile-first: hidden helper copy, compact cards, horizontal tabs, large touch targets, and WiFi first on `/network`.
 - WiFi scan enables STA/AP+STA as needed and reports scan failures/timeouts to the UI instead of looping forever.
-- Static RAM is optimized to 50,140 bytes (15.3%); short-lived scene/protocol/output scratch buffers use stack space instead of permanent globals.
-- WebSocket `/ws` pushes status roughly every 400 ms.
+- Static RAM is optimized to 49,420 bytes (15.1%); short-lived scene/protocol/output scratch buffers use stack space instead of permanent globals.
+- Flash is optimized to 837,901 bytes (63.9%) by disabling C++ exceptions, disabling Arduino core debug logging, and removing the ArtnetWifi dependency.
+- Art-Net IN uses the local `pollArtNet()` WiFiUDP ArtDMX parser; keep it small/non-blocking.
+- WebSocket `/ws` pushes status roughly every 400 ms using a stack JSON buffer to avoid periodic `String` heap churn.
 - Art-Net and sACN input share the configured universe.
 - Art-Net OUT can broadcast the final output for receiver nodes.
 - Firmware node manifest is served at `/node/manifest` and `/manifest.json`.
@@ -52,5 +54,6 @@ Branch: `main`
 - 2026-05-06: Flashed minimal/mobile UI build to same board; upload succeeded and hard-reset via RTS.
 - 2026-05-06: RAM optimization pass validated: RAM 50,140 bytes (15.3%), flash 889,701 bytes (67.9%).
 - 2026-05-06: Flashed RAM-optimized build to ESP32 `d4:e9:f4:bc:5a:64`; upload succeeded and hard-reset via RTS.
+- 2026-05-06: Full ESP optimization pass validated: RAM 49,420 bytes (15.1%), flash 837,901 bytes (63.9%).
 - Next: flash the second ESP when connected, then put both on studio WiFi from `/network` using unique node names/AP SSIDs.
 - For TouchDesigner control, use Art-Net UDP `6454`; set each node to `ARTNET_ONLY` for TD-only control or `MERGE_HTP` if the web layer should still participate. Same universe mirrors both nodes; separate universes controls them independently.
