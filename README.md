@@ -1,4 +1,4 @@
-# vi_di_li
+# vizzz.di
 
 ESP32 WiFi -> DMX512 firmware node. It outputs DMX512 through a MAX485
 transceiver, accepts Art-Net and sACN input, broadcasts Art-Net for node sync,
@@ -36,7 +36,7 @@ DMX output.
 ## Quick Start
 
 1. Build and flash with PlatformIO.
-2. Connect to AP `vi_di_li` or the generated `vi_di_li_XXXXXX` AP.
+2. Connect to AP `vizzz.di` or the generated `vizzz.di_XXXXXX` AP.
 3. Open `http://10.0.0.1`.
 4. Use `/vj` or `/performance` for the performance deck.
 5. Use `/system` or `/node/manifest` to inspect the firmware-node contract.
@@ -46,8 +46,9 @@ Default AP password: `Poghka888$`.
 ## Build
 
 PlatformIO is installed at `/home/nnn/.platformio/penv/bin/pio` in this
-workspace. The project sets `core_dir = .platformio-core` so PlatformIO writes
-project-local cache/lock files instead of the read-only user PlatformIO home.
+workspace. The project sets `name = vizzz.di` and `core_dir = .platformio-core`
+so PlatformIO writes project-local cache/lock files instead of the read-only
+user PlatformIO home.
 
 ```bash
 # Build firmware
@@ -97,15 +98,16 @@ Art-Net to other nodes on the same network.
 
 ## Node Manifest
 
-The manifest schema is `vi_di_li.node.manifest.v1`. It exposes identity,
-firmware tag, network state, hardware pins, DMX constraints, supported
-protocols, API routes, and the source-control policy:
+The product name is `vizzz.di`. The manifest schema remains
+`vi_di_li.node.manifest.v1` for compatibility. It exposes identity, firmware
+tag, network state, hardware pins, DMX constraints, supported protocols, API
+routes, and the source-control policy:
 
 ```json
 {
   "schema": "vi_di_li.node.manifest.v1",
   "kind": "firmware-node",
-  "product": "vi_di_li"
+  "product": "vizzz.di"
 }
 ```
 

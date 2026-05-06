@@ -10,6 +10,7 @@ Branch: `main`
 ## What works
 
 - ESP32 firmware builds with project-local PlatformIO core data.
+- Visible project identity, default node name, and generated AP prefix use `vizzz.di`.
 - Native Unity tests cover `vidili_core.h` helpers.
 - DMX output uses `DMX_NUM_1`, GPIO25 TX, GPIO21 DIR.
 - Browser console exposes control, patch, scenes, network, system, and VJ routes.

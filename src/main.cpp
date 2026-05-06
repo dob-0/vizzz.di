@@ -50,8 +50,11 @@ static const char* netModeName(NetMode m) {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 static Preferences prefs;
-static String  nodeName = "vi_di_li";
-static String  apSsid   = "vi_di_li";
+static constexpr const char* PRODUCT_NAME = "vizzz.di";
+static constexpr const char* AP_SSID_PREFIX = "vizzz.di";
+static constexpr const char* LEGACY_AP_SSID_PREFIX = "vi_di_li";
+static String  nodeName = PRODUCT_NAME;
+static String  apSsid   = AP_SSID_PREFIX;
 static String  apPass   = "Poghka888$";
 static String  staSSID, staPass;
 static uint8_t artNet = 0, artSubnet = 0, artUni = 0;
@@ -64,6 +67,10 @@ static constexpr const char* FW_TAG = __DATE__ " " __TIME__;
 
 static uint16_t universe() {
   return vidili::packUniverse(artNet, artSubnet, artUni);
+}
+
+static bool isGeneratedApSsid(const String& ssid) {
+  return ssid.startsWith(AP_SSID_PREFIX) || ssid.startsWith(LEGACY_AP_SSID_PREFIX);
 }
 
 static void saveConfig() {
@@ -107,7 +114,7 @@ static void loadConfig() {
 
   // New firmware image flashed: rotate default SSID once, then persist.
   if (savedFwTag != FW_TAG) {
-    if (apSsid.isEmpty() || apSsid.startsWith("vi_di_li")) apSsid = "";
+    if (apSsid.isEmpty() || isGeneratedApSsid(apSsid)) apSsid = "";
     needSaveConfig = true;
   }
 }
@@ -195,7 +202,7 @@ static void startWiFi() {
   if (apSsid.isEmpty()) {
     char suffix[7];
     snprintf(suffix, sizeof(suffix), "%06lX", (unsigned long)(esp_random() & 0xFFFFFF));
-    apSsid = String("vi_di_li_") + suffix;
+    apSsid = String(AP_SSID_PREFIX) + "_" + suffix;
     needSaveConfig = true;
   }
 
@@ -404,7 +411,7 @@ static void pollSacn() {
 static const char APP_HTML[] PROGMEM = R"HTML(<!doctype html><html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>vi_di_li console</title>
+<title>vizzz.di console</title>
 <style>
 :root{--di-cyan:#4df9ff;--di-cyan-dim:rgba(77,249,255,.1);--di-cyan-border:rgba(77,249,255,.3);--di-black:#000;--di-surface:#0a0a0a;--di-panel:#050505;--di-text:#fff;--di-muted:rgba(255,255,255,.45);--di-danger:#f25f5c;--di-mono:"JetBrains Mono","Fira Code","Consolas",monospace}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -448,7 +455,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
   <div class="hero">
     <div class="brand">
       <div>
-        <div class="title">vi_di_li</div>
+        <div class="title">vizzz.di</div>
         <div class="sub">physical dmx node / art-net + sacn bridge / live browser surface</div>
         <div class="pillbar">
           <span class="pill" id="modePill">mode</span>
@@ -565,8 +572,8 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
           <h2>Node Identity</h2>
           <div class="meta">AP and node naming live here now.</div>
           <div class="split">
-            <label>Node Name<input id="nodeName" placeholder="vi_di_li"></label>
-            <label>AP SSID<input id="apSsid" placeholder="vi_di_li"></label>
+            <label>Node Name<input id="nodeName" placeholder="vizzz.di"></label>
+            <label>AP SSID<input id="apSsid" placeholder="vizzz.di"></label>
           </div>
           <div class="row" style="margin-top:12px"><label class="grow">AP Password<input id="apPass" type="password" placeholder="Password"></label></div>
           <div class="row" style="margin-top:12px"><button onclick="saveNode()">Save Identity</button></div>
@@ -793,7 +800,7 @@ static String nodeManifestJSON() {
     "{"
     "\"schema\":\"vi_di_li.node.manifest.v1\","
     "\"kind\":\"firmware-node\","
-    "\"product\":\"vi_di_li\","
+    "\"product\":\"%s\","
     "\"name\":\"%s\","
     "\"firmware\":{\"tag\":\"%s\",\"framework\":\"Arduino/PlatformIO\"},"
     "\"identity\":{\"mac\":\"%s\",\"ap_ssid\":\"%s\",\"sta_ssid\":\"%s\"},"
@@ -809,6 +816,7 @@ static String nodeManifestJSON() {
     "\"state\":{\"output_mode\":\"%s\",\"master\":%u,\"artnet_active\":%s,\"sacn_active\":%s,\"web_enabled\":%s},"
     "\"sync\":{\"source\":\"firmware\",\"live_status\":\"/ws\",\"durable_config\":\"ESP32 Preferences NVS\",\"git_policy\":\"verify, commit, push origin/main\"}"
     "}",
+    PRODUCT_NAME,
     eName,
     eFw,
     mac.c_str(), eSsid, eStaSsid,
@@ -1033,7 +1041,7 @@ void setup() {
   lastArtnetMs = 0;
   lastSacnMs = 0;
 
-  Serial.printf("\n=== vi_di_li ===\n");
+  Serial.printf("\n=== vizzz.di ===\n");
   Serial.printf("AP SSID  : %s\n", apSsid.c_str());
   Serial.printf("AP IP    : %s\n", ipStr(WiFi.softAPIP()).c_str());
   if (staSSID.length()) {

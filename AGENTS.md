@@ -1,4 +1,4 @@
-# vi_di_li — AI Agent Context
+# vizzz.di — AI Agent Context
 
 Quick-reference for AI coding agents resuming work on this codebase. Read this before making changes.
 
@@ -52,7 +52,7 @@ static constexpr uint16_t SACN_PORT          = 5568;
 static constexpr uint8_t  SCENE_COUNT        = 8;
 ```
 
-AP: `10.0.0.1`, SSID: `vi_di_li`, pass: `Poghka888$`  
+AP: `10.0.0.1`, SSID: `vizzz.di`, generated prefix `vizzz.di_`, pass: `Poghka888$`
 Art-Net OUT broadcast target: `10.0.0.255:6454`
 
 ---
@@ -138,7 +138,7 @@ GET /node/manifest
 GET /manifest.json
 ```
 
-It must keep `schema: "vi_di_li.node.manifest.v1"` and include identity, firmware tag, network state, DMX hardware pins, protocol capabilities, routes, and sync/source-control policy. Keep it machine-readable JSON and update `README.md` if fields materially change.
+It must keep `schema: "vi_di_li.node.manifest.v1"` and `product: "vizzz.di"` and include identity, firmware tag, network state, DMX hardware pins, protocol capabilities, routes, and sync/source-control policy. Keep it machine-readable JSON and update `README.md` if fields materially change.
 
 ---
 
