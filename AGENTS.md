@@ -6,20 +6,21 @@ Quick-reference for AI coding agents resuming work on this codebase. Read this b
 
 ## Project in One Sentence
 
-ESP32 firmware (Arduino / PlatformIO) that outputs DMX512 via a MAX485 transceiver, accepts Art-Net over WiFi, and exposes a browser UI + WebSocket for real-time control.
+ESP32 firmware (Arduino / PlatformIO) that outputs DMX512 via a MAX485 transceiver, accepts Art-Net and sACN over WiFi, exposes a browser UI + WebSocket for real-time control, and publishes a firmware-node manifest.
 
 ---
 
 ## Repo Layout
 
 ```
-src/main.cpp          – entire firmware (single-file, ~950 lines)
+src/main.cpp          – entire firmware (single-file)
 include/vidili_core.h – pure C++ helpers (no Arduino deps), unit-tested
 lib/esp_dmx/          – vendored esp_dmx library (do not modify)
 test/test_smoke/      – Unity tests for vidili_core.h, run on native platform
 platformio.ini        – two envs: esp32dev (hardware), native (unit tests)
 .vscode/tasks.json    – Build / Upload / Test tasks
 README.md             – user-facing docs
+CURRENT.md            – short current-state checkpoint for every session
 AGENTS.md             – this file
 ```
 
@@ -46,6 +47,8 @@ static constexpr uint32_t DMX_PERIOD_MS      = 23;
 static constexpr TickType_t DMX_SEND_WAIT    = pdMS_TO_TICKS(30);
 static constexpr uint32_t ARTNET_TIMEOUT_MS  = 3000;
 static constexpr uint16_t ARTNET_PORT        = 6454;
+static constexpr uint32_t SACN_TIMEOUT_MS    = 3000;
+static constexpr uint16_t SACN_PORT          = 5568;
 static constexpr uint8_t  SCENE_COUNT        = 8;
 ```
 
@@ -79,7 +82,7 @@ Never hold gLock across a `dmx_write()` or any blocking call.
 
 ## Adding a New HTTP Route
 
-1. Find `void setupWeb(AsyncWebServer& srv)` (~line 745 in main.cpp)
+1. Find `void setupWeb()` in `src/main.cpp`
 2. Add before the 404 handler (always the last entry)
 3. Follow the mutex pattern above for any route touching `webVals`
 4. Return JSON or plain text; use `snprintf` into a stack buffer (avoid `String`)
@@ -88,7 +91,7 @@ Never hold gLock across a `dmx_write()` or any blocking call.
 Example skeleton:
 
 ```cpp
-srv.on("/my/route", HTTP_GET, [](AsyncWebServerRequest* request) {
+server.on("/my/route", HTTP_GET, [](AsyncWebServerRequest* request) {
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
         request->send(503, "text/plain", "busy");
         return;
@@ -104,17 +107,38 @@ srv.on("/my/route", HTTP_GET, [](AsyncWebServerRequest* request) {
 ## JSON Helpers (already in main.cpp)
 
 ```cpp
-// Escape a String for embedding in a JSON string value
-static String jsonEsc(const String& s);   // replaces control chars with \u00XX
-
-// Escape for HTML attribute / innerHTML context
-static String escHtml(const String& s);   // & < > " '
-
-// Escape for single-quoted JS string
-static String escJsSq(const String& s);   // ' \ newlines
+// Escape a String for embedding in a JSON string value.
+static void jsonEsc(char* dst, size_t n, const String& src);
 ```
 
 Use `snprintf(buf, sizeof(buf), "...")` for fixed JSON responses — avoids heap fragmentation from repeated `String` concatenation.
+
+---
+
+## UI Style Rules — Mandatory
+
+The embedded UI is intentionally aligned with the local `di.i` design language:
+
+- black base: `#000` / `#0a0a0a`
+- cyan-only primary accent: `#4df9ff`
+- square corners: `border-radius: 0`
+- dense operational panels, monospace labels, and the hollow-square `□` motif
+- no beige theme, gradients, rounded pills, drop-shadow cards, or decorative blobs
+
+Keep all UI work inside the `APP_HTML` block unless the task explicitly adds a new firmware API.
+
+---
+
+## Node Manifest Contract
+
+The firmware node manifest lives at both:
+
+```text
+GET /node/manifest
+GET /manifest.json
+```
+
+It must keep `schema: "vi_di_li.node.manifest.v1"` and include identity, firmware tag, network state, DMX hardware pins, protocol capabilities, routes, and sync/source-control policy. Keep it machine-readable JSON and update `README.md` if fields materially change.
 
 ---
 
@@ -156,6 +180,7 @@ PlatformIO is **not** on `$PATH` — always use the full path above.
 ```
 webVals[512]   – values set via web UI / HTTP API  (0-based index)
 artVals[512]   – values received from Art-Net IN
+sacnVals[512]  – values received from sACN IN
 outVals[512]   – final mixed output (HTP merge or web-only or artnet-only)
 holdVals[512]  – last Art-Net values before timeout
 sceneBuf[512]  – scratch buffer for scene recall
@@ -191,12 +216,32 @@ Implemented as `vidili::applyMaster(value, master)` in `include/vidili_core.h`.
 
 ---
 
+## Verify, Commit, Push
+
+For normal AI/code changes:
+
+1. Read `CURRENT.md` and this file first.
+2. Do not touch `lib/esp_dmx/`.
+3. Run:
+
+```bash
+/home/nnn/.platformio/penv/bin/pio test -e native
+/home/nnn/.platformio/penv/bin/pio run -e esp32dev
+```
+
+4. Commit verified changes with a clear message.
+5. Push `main` to `origin/main` only if validation passes and `git status --short` shows no unrelated edits.
+
+If validation fails, do not push.
+
+---
+
 ## Current Resource Budget
 
 | Resource | Used | Free | Headroom for features |
 |---|---|---|---|
-| RAM | 52 KB (15.9%) | ~275 KB | Large — room for OTA buffers, fixture maps |
-| Flash | 877 KB (66.9%) | ~433 KB | Moderate — limit large HTML additions |
+| RAM | 53.9 KB (16.4%) | ~274 KB | Large — room for OTA buffers, fixture maps |
+| Flash | 888.8 KB (67.8%) | ~422 KB | Moderate — limit large HTML additions |
 
 ---
 
@@ -205,8 +250,7 @@ Implemented as `vidili::applyMaster(value, master)` in `include/vidili_core.h`.
 1. **OTA update** — `ArduinoOTA` or `ElegantOTA`; eliminates USB cable for future flashes. High value.
 2. **Fixture groups** — name channels/ranges, recall by group name via API
 3. **Cue list** — ordered list of scenes with auto-advance and time
-4. **sACN (E1.31)** — alternative to Art-Net, broader software compatibility
-5. **Second WiFi / LAN2** — route Art-Net from a wired Ethernet shield
+4. **Second WiFi / LAN2** — route Art-Net from a wired Ethernet shield
 
 ---
 

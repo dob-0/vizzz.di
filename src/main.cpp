@@ -406,40 +406,40 @@ static const char APP_HTML[] PROGMEM = R"HTML(<!doctype html><html lang="en">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>vi_di_li console</title>
 <style>
-:root{--bg:#f6efe4;--paper:#fffaf4;--ink:#1e1a17;--muted:#76695c;--line:#d7c6b3;--accent:#c55b35;--accent2:#0f766e;--danger:#ae2f2f;--night:#231f1a}
+:root{--di-cyan:#4df9ff;--di-cyan-dim:rgba(77,249,255,.1);--di-cyan-border:rgba(77,249,255,.3);--di-black:#000;--di-surface:#0a0a0a;--di-panel:#050505;--di-text:#fff;--di-muted:rgba(255,255,255,.45);--di-danger:#f25f5c;--di-mono:"JetBrains Mono","Fira Code","Consolas",monospace}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font:14px/1.45 "Trebuchet MS","Segoe UI",sans-serif;background:radial-gradient(circle at top,#fff8ef 0,#f2e6d7 55%,#ead8c5 100%);color:var(--ink);min-height:100vh}
-.shell{max-width:1180px;margin:0 auto;padding:18px}
-.hero{background:linear-gradient(135deg,#fff8ef,#f8e5cf 55%,#f3d0bb);border:1px solid var(--line);border-radius:24px;padding:18px 18px 14px;box-shadow:0 20px 45px rgba(70,40,20,.08);margin-bottom:16px}
+body{font:14px/1.45 "Inter","Segoe UI",sans-serif;background:var(--di-black);color:var(--di-text);min-height:100vh}
+.shell{max-width:1240px;margin:0 auto;padding:14px}
+.hero{background:var(--di-surface);border:1px solid var(--di-cyan-border);border-radius:0;padding:14px;margin-bottom:14px}
 .brand{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
-.title{font:700 2rem/1.05 Georgia,"Times New Roman",serif;letter-spacing:.01em}
-.sub{color:var(--muted);max-width:56ch;margin-top:5px}
+.title{font:700 1.9rem/1 var(--di-mono);letter-spacing:.02em;text-transform:lowercase}.title:before{content:"□ ";color:var(--di-cyan)}
+.sub{color:var(--di-muted);max-width:62ch;margin-top:6px;font:600 .78rem/1.4 var(--di-mono);letter-spacing:.04em;text-transform:lowercase}
 .pillbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.pill{padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:#fff4e8;font:600 .76rem/1 ui-monospace,Consolas,monospace;color:var(--muted)}
-.pill.on{background:#e3f8f4;border-color:#75c8bf;color:#0f4e4a}.pill.warn{background:#fff2c8;border-color:#ebd27e;color:#7b5a09}.pill.hot{background:#ffe0d8;border-color:#e5a08d;color:#7a2612}
+.pill{padding:6px 9px;border-radius:0;border:1px solid var(--di-cyan-border);background:var(--di-panel);font:600 .72rem/1 var(--di-mono);letter-spacing:.08em;color:var(--di-muted);text-transform:uppercase}
+.pill.on,.pill.hot{background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan)}.pill.warn{background:var(--di-panel);border-color:var(--di-cyan);color:var(--di-text)}
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
-.tab{display:inline-flex;align-items:center;justify-content:center;padding:11px 14px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.55);color:var(--ink);text-decoration:none;font:700 .82rem/1 ui-monospace,Consolas,monospace;text-transform:uppercase;letter-spacing:.08em}
-.tab.active{background:var(--night);border-color:var(--night);color:#fff4ea}
+.tab{display:inline-flex;align-items:center;justify-content:center;min-height:38px;padding:10px 12px;border-radius:0;border:1px solid var(--di-cyan-border);background:var(--di-black);color:var(--di-muted);text-decoration:none;font:700 .78rem/1 var(--di-mono);text-transform:uppercase;letter-spacing:.08em}
+.tab:hover,.tab.active{background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan)}
 .grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}
 .stack{display:grid;gap:16px}.section{display:none}.section.active{display:grid;gap:16px}
-.card{background:var(--paper);border:1px solid var(--line);border-radius:22px;padding:16px;box-shadow:0 10px 25px rgba(50,30,10,.05)}
-.card h2{font:700 1.05rem/1.1 Georgia,"Times New Roman",serif;margin-bottom:4px}.meta{color:var(--muted);font-size:.82rem;margin-bottom:12px}
+.card{background:var(--di-surface);border:1px solid var(--di-cyan-border);border-radius:0;padding:14px}
+.card h2{font:700 .92rem/1.1 var(--di-mono);letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px;color:var(--di-text)}.card h2:before{content:"□ ";color:var(--di-cyan)}.meta{color:var(--di-muted);font:600 .72rem/1.35 var(--di-mono);letter-spacing:.04em;text-transform:lowercase;margin-bottom:12px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row+.row{margin-top:10px}
 .grow{flex:1 1 160px}.split{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.triple{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-label{display:grid;gap:6px;font:700 .72rem/1 ui-monospace,Consolas,monospace;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
-input,select,button,textarea{border-radius:14px;border:1px solid var(--line);padding:10px 12px;background:#fff;color:var(--ink);font:600 .9rem/1.2 "Trebuchet MS","Segoe UI",sans-serif;outline:none}
-input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(197,91,53,.14)}
-button{cursor:pointer;background:var(--accent);border-color:var(--accent);color:#fff8f2;font-weight:700}
-button.alt{background:#fff;border-color:var(--line);color:var(--ink)}button.good{background:var(--accent2);border-color:var(--accent2)}button.bad{background:var(--danger);border-color:var(--danger)}
+label{display:grid;gap:6px;font:700 .7rem/1 var(--di-mono);text-transform:uppercase;letter-spacing:.1em;color:var(--di-muted)}
+input,select,button,textarea{border-radius:0;border:1px solid var(--di-cyan-border);padding:10px 11px;background:var(--di-black);color:var(--di-text);font:600 .88rem/1.2 "Inter","Segoe UI",sans-serif;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--di-cyan);box-shadow:0 0 0 1px var(--di-cyan)}
+button{cursor:pointer;background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan);font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+button:hover{background:rgba(77,249,255,.16)}button.alt{background:var(--di-black);border-color:var(--di-cyan-border);color:var(--di-text)}button.good,button.bad{background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan)}
 button.wide{width:100%}.actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.heroMeter{padding:18px;border-radius:20px;background:linear-gradient(180deg,#2f2821,#181512);color:#fff4ea;text-align:center}.heroMeter .big{font:700 3rem/1 Georgia,"Times New Roman",serif}
+.heroMeter{padding:16px;border-radius:0;background:var(--di-black);border:1px solid var(--di-cyan-border);color:var(--di-text);text-align:center}.heroMeter .big{font:700 2.6rem/1 var(--di-mono);color:var(--di-cyan)}
 .sceneGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.sceneBtn{height:84px;font-size:1rem}.miniScene{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-.patchHead{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.channels{display:grid;grid-template-columns:58px 1fr 44px 44px;gap:8px 10px;align-items:center}.chLabel{font:600 .76rem/1 ui-monospace,Consolas,monospace;color:var(--muted)}
-.outVal{font:700 .8rem/1 ui-monospace,Consolas,monospace;text-align:right;color:var(--muted)}.outVal.hot{color:var(--accent)}.webVal{font:700 .8rem/1 ui-monospace,Consolas,monospace;text-align:right}
-input[type=range]{width:100%;accent-color:var(--accent)}
-.nets{display:flex;flex-wrap:wrap;gap:8px}.net{padding:7px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;cursor:pointer;font-size:.82rem}
-pre{white-space:pre-wrap;word-break:break-word;background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;font:12px/1.45 ui-monospace,Consolas,monospace;max-height:260px;overflow:auto}
-.footerNote{font-size:.78rem;color:var(--muted)}
+.patchHead{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.channels{display:grid;grid-template-columns:58px 1fr 44px 44px;gap:8px 10px;align-items:center}
+.chLabel{font:700 .72rem/1 var(--di-mono);color:var(--di-muted);letter-spacing:.04em}.outVal{font:700 .78rem/1 var(--di-mono);text-align:right;color:var(--di-muted)}.outVal.hot{color:var(--di-cyan)}.webVal{font:700 .78rem/1 var(--di-mono);text-align:right}
+input[type=range]{width:100%;accent-color:var(--di-cyan)}
+.nets{display:flex;flex-wrap:wrap;gap:8px}.net{padding:7px 10px;border-radius:0;border:1px solid var(--di-cyan-border);background:var(--di-black);cursor:pointer;font-size:.82rem}
+pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border:1px solid var(--di-cyan-border);border-radius:0;padding:12px;font:12px/1.45 var(--di-mono);max-height:300px;overflow:auto;color:var(--di-text)}
+.footerNote{font:600 .76rem/1.45 var(--di-mono);color:var(--di-muted);letter-spacing:.04em}
 @media (max-width:900px){.grid,.split,.triple{grid-template-columns:1fr}.sceneGrid,.miniScene{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
@@ -449,7 +449,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#fff;border:1px solid 
     <div class="brand">
       <div>
         <div class="title">vi_di_li</div>
-        <div class="sub">One shell, five routes. Clean sections for control, patching, scenes, network, system, and a performance view.</div>
+        <div class="sub">physical dmx node / art-net + sacn bridge / live browser surface</div>
         <div class="pillbar">
           <span class="pill" id="modePill">mode</span>
           <span class="pill" id="netModePill">network</span>
@@ -592,6 +592,15 @@ pre{white-space:pre-wrap;word-break:break-word;background:#fff;border:1px solid 
         </div>
         <pre id="diagDump" style="margin-top:12px">No diagnostics yet.</pre>
       </div>
+      <div class="card">
+        <h2>Node Manifest</h2>
+        <div class="meta">Machine-readable firmware node contract.</div>
+        <div class="actions">
+          <button onclick="loadManifest()">Load Manifest</button>
+          <button class="alt" onclick="openManifest()">Open JSON</button>
+        </div>
+        <pre id="manifestDump" style="margin-top:12px">manifest pending</pre>
+      </div>
     </div>
   </section>
 
@@ -663,6 +672,8 @@ function wifiForget(){hit('/wifi/forget'); $('staSsid').value=''; $('staPass').v
 async function wifiScan(){if(scanTimer){clearInterval(scanTimer); scanTimer=null;} $('scanState').textContent='Scanning…'; $('networks').innerHTML=''; await hit('/wifi/scan'); scanTimer=setInterval(async()=>{const r=await qs('/wifi/scan'); if(!r||!r.scanning){clearInterval(scanTimer); scanTimer=null; $('scanState').textContent=''; showNetworks((r&&r.networks)||[]);}},1400);}
 function showNetworks(nets){$('networks').innerHTML=nets.length?nets.map(n=>`<button class="net" onclick="$('staSsid').value='${escJsSq(n.ssid)}'">${escHtml(n.ssid)} ${n.secure?'LOCK':''} ${n.rssi}dBm</button>`).join(''):'<span class="footerNote">No networks found</span>';}
 async function refreshMonitor(){const r=await qs('/monitor'); if(r) $('monitorDump').textContent=JSON.stringify(r.out);}
+async function loadManifest(){const r=await qs('/node/manifest'); if(r) $('manifestDump').textContent=JSON.stringify(r,null,2);}
+function openManifest(){window.open('/node/manifest','_blank');}
 function applyMode(){hit('/mode/set?m='+$('modeSel').value);} function applyNetMode(){if(confirm('Switch network profile and reboot?')) hit('/netmode/set?m='+$('netModeSel').value);}
 
 $('modeSel').addEventListener('change',applyMode); $('netModeSel').addEventListener('change',applyNetMode); $('master').addEventListener('input',e=>queueMaster(+e.target.value)); $('perfMaster').addEventListener('input',e=>queueMaster(+e.target.value)); $('pageSel').addEventListener('change',e=>{curPage=+e.target.value;loadPage();});
@@ -671,7 +682,7 @@ const ws=new WebSocket('ws://'+location.host+'/ws');
 ws.onmessage=e=>{let s; try{s=JSON.parse(e.data);}catch{return;} state=s; updatePills(s); syncFields(s);};
 ws.onclose=()=>setTimeout(()=>location.reload(),2000);
 
-setActiveRoute(); makeScenes(); makePages(); loadPage(); refreshMonitor();
+setActiveRoute(); makeScenes(); makePages(); loadPage(); refreshMonitor(); loadManifest();
 setInterval(async()=>{const s=await qs('/page?i='+curPage); if(!s) return; pageWeb=s.web||[]; pageOut=s.out||[]; refreshOutGrid();},1000);
 </script>
 </body></html>)HTML";
@@ -764,6 +775,53 @@ static String monitorJSON() {
   return buf;
 }
 
+static String nodeManifestJSON() {
+  bool staCon = (WiFi.status() == WL_CONNECTED);
+  char eName[80], eSsid[80], eStaSsid[80], eFw[80];
+  jsonEsc(eName,    sizeof(eName),    nodeName);
+  jsonEsc(eSsid,    sizeof(eSsid),    apSsid);
+  jsonEsc(eStaSsid, sizeof(eStaSsid), staSSID);
+  jsonEsc(eFw,      sizeof(eFw),      FW_TAG);
+
+  String apIp = ipStr(WiFi.softAPIP());
+  String staIp = staCon ? ipStr(WiFi.localIP()) : "";
+  String mac = WiFi.macAddress();
+  String outTarget = ipStr(artOutTarget());
+
+  char buf[2600];
+  snprintf(buf, sizeof(buf),
+    "{"
+    "\"schema\":\"vi_di_li.node.manifest.v1\","
+    "\"kind\":\"firmware-node\","
+    "\"product\":\"vi_di_li\","
+    "\"name\":\"%s\","
+    "\"firmware\":{\"tag\":\"%s\",\"framework\":\"Arduino/PlatformIO\"},"
+    "\"identity\":{\"mac\":\"%s\",\"ap_ssid\":\"%s\",\"sta_ssid\":\"%s\"},"
+    "\"network\":{\"mode\":\"%s\",\"ap_ip\":\"%s\",\"sta_connected\":%s,\"sta_ip\":\"%s\"},"
+    "\"hardware\":{\"board\":\"ESP32 DevKit\",\"dmx_uart\":\"DMX_NUM_1\",\"dmx_tx_gpio\":%d,\"dmx_dir_gpio\":%d,\"max_channels\":%d,\"dmx_period_ms\":%lu},"
+    "\"protocols\":["
+      "{\"id\":\"http\",\"role\":\"control\",\"routes\":[\"/\",\"/control\",\"/patch\",\"/scenes\",\"/network\",\"/system\",\"/performance\",\"/vj\",\"/status\",\"/page\",\"/monitor\",\"/node/manifest\",\"/manifest.json\"]},"
+      "{\"id\":\"websocket\",\"role\":\"live-status\",\"endpoint\":\"/ws\",\"push_ms\":400},"
+      "{\"id\":\"artnet\",\"role\":\"input-output\",\"port\":%u,\"universe\":%u,\"output_target\":\"%s\",\"output_enabled\":%s},"
+      "{\"id\":\"sacn\",\"role\":\"input\",\"port\":%u,\"universe\":%u},"
+      "{\"id\":\"dmx512\",\"role\":\"physical-output\",\"channels\":%d}"
+    "],"
+    "\"state\":{\"output_mode\":\"%s\",\"master\":%u,\"artnet_active\":%s,\"sacn_active\":%s,\"web_enabled\":%s},"
+    "\"sync\":{\"source\":\"firmware\",\"live_status\":\"/ws\",\"durable_config\":\"ESP32 Preferences NVS\",\"git_policy\":\"verify, commit, push origin/main\"}"
+    "}",
+    eName,
+    eFw,
+    mac.c_str(), eSsid, eStaSsid,
+    netModeName(netMode), apIp.c_str(), staCon ? "true" : "false", staIp.c_str(),
+    DMX_TX, DMX_DIR, MAX_CH, (unsigned long)DMX_PERIOD_MS,
+    ARTNET_PORT, universe(), outTarget.c_str(), artOutEnabled ? "true" : "false",
+    SACN_PORT, universe(),
+    MAX_CH,
+    modeName(mode), masterDimmer, artnetActive() ? "true" : "false", sacnActive() ? "true" : "false", webEnabled ? "true" : "false"
+  );
+  return buf;
+}
+
 static String wifiScanJSON() {
   int n = WiFi.scanComplete();
   if (n == WIFI_SCAN_RUNNING)  return "{\"scanning\":true}";
@@ -803,6 +861,8 @@ static void setupWeb() {
 
   server.on("/status",  HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, statusJSON()); });
   server.on("/monitor", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, monitorJSON()); });
+  server.on("/node/manifest", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, nodeManifestJSON()); });
+  server.on("/manifest.json", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, nodeManifestJSON()); });
 
   server.on("/page", HTTP_GET, [](AsyncWebServerRequest* r){
     uint16_t p = r->hasArg("i")
