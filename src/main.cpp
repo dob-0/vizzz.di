@@ -64,6 +64,9 @@ static bool    artOutEnabled = false;   // broadcast webVals as Art-Net to slave
 static bool    webEnabled    = true;    // when false, web server and websocket stay disabled
 static bool    needSaveConfig = false;  // set when auto-generated values must be persisted
 static constexpr const char* FW_TAG = __DATE__ " " __TIME__;
+static constexpr uint32_t WIFI_SCAN_TIMEOUT_MS = 15000;
+static bool wifiScanActive = false;
+static uint32_t wifiScanStartMs = 0;
 
 static uint16_t universe() {
   return vidili::packUniverse(artNet, artSubnet, artUni);
@@ -191,6 +194,22 @@ static IPAddress artOutTarget() {
   return IPAddress(10, 0, 0, 255);
 }
 
+static void startSoftAP() {
+  WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
+  WiFi.softAP(apSsid.c_str(), apPass.c_str());
+}
+
+static void ensureStaInterface() {
+  wifi_mode_t wm = WiFi.getMode();
+  if (wm == WIFI_OFF) {
+    WiFi.mode(WIFI_STA);
+  } else if (wm == WIFI_AP) {
+    WiFi.mode(WIFI_AP_STA);
+    startSoftAP();
+  }
+  WiFi.setSleep(false);
+}
+
 static void startWiFi() {
   wifi_mode_t wm = WIFI_AP_STA;
   if (netMode == NET_AP_ONLY) wm = WIFI_AP;
@@ -207,8 +226,7 @@ static void startWiFi() {
   }
 
   if (netMode != NET_STA_ONLY) {
-    WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
-    WiFi.softAP(apSsid.c_str(), apPass.c_str());
+    startSoftAP();
   }
 
   if (netMode != NET_AP_ONLY && staSSID.length()) {
@@ -219,14 +237,12 @@ static void startWiFi() {
     // Safety net: in STA_ONLY without a successful join, enable temporary AP.
     if (netMode == NET_STA_ONLY && WiFi.status() != WL_CONNECTED) {
       WiFi.mode(WIFI_AP_STA);
-      WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
-      WiFi.softAP(apSsid.c_str(), apPass.c_str());
+      startSoftAP();
     }
   } else if (netMode == NET_STA_ONLY) {
     // No STA credentials in STA_ONLY: expose AP so the node is still recoverable.
     WiFi.mode(WIFI_AP_STA);
-    WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
-    WiFi.softAP(apSsid.c_str(), apPass.c_str());
+    startSoftAP();
   }
 }
 
@@ -676,8 +692,8 @@ function refreshStatusDump(){if(state) $('statusDump').textContent=JSON.stringif
 function saveNode(){const p=new URLSearchParams(); const n=$('nodeName').value.trim(),s=$('apSsid').value.trim(),pw=$('apPass').value; if(n) p.append('name',n); if(s) p.append('ap_ssid',s); if(pw) p.append('ap_pass',pw); if(!p.toString()) return alert('Nothing to save'); hit('/node/set?'+p).then(()=>setTimeout(()=>hit('/reboot'),250));}
 function wifiSet(){const s=$('staSsid').value.trim(); if(!s) return alert('Enter SSID'); $('scanState').textContent='Connecting…'; hit('/wifi/set?ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent($('staPass').value));}
 function wifiForget(){hit('/wifi/forget'); $('staSsid').value=''; $('staPass').value=''; $('scanState').textContent='';}
-async function wifiScan(){if(scanTimer){clearInterval(scanTimer); scanTimer=null;} $('scanState').textContent='Scanning…'; $('networks').innerHTML=''; await hit('/wifi/scan'); scanTimer=setInterval(async()=>{const r=await qs('/wifi/scan'); if(!r||!r.scanning){clearInterval(scanTimer); scanTimer=null; $('scanState').textContent=''; showNetworks((r&&r.networks)||[]);}},1400);}
-function showNetworks(nets){$('networks').innerHTML=nets.length?nets.map(n=>`<button class="net" onclick="$('staSsid').value='${escJsSq(n.ssid)}'">${escHtml(n.ssid)} ${n.secure?'LOCK':''} ${n.rssi}dBm</button>`).join(''):'<span class="footerNote">No networks found</span>';}
+async function wifiScan(){if(scanTimer){clearInterval(scanTimer); scanTimer=null;} $('scanState').textContent='Scanning…'; $('networks').innerHTML=''; const poll=async()=>{const r=await qs('/wifi/scan'); if(!r){$('scanState').textContent='Scan failed'; showNetworks([]); return true;} if(r.scanning) return false; $('scanState').textContent=r.error?('Scan '+r.error):''; showNetworks(r.networks||[]); return true;}; if(await poll()) return; scanTimer=setInterval(async()=>{if(await poll()){clearInterval(scanTimer); scanTimer=null;}},1200);}
+function showNetworks(nets){$('networks').innerHTML=nets.length?nets.map(n=>`<button class="net" onclick="$('staSsid').value='${escJsSq(n.ssid)}'">${escHtml(n.ssid||'(hidden)')} ${n.secure?'LOCK':''} ${n.rssi}dBm</button>`).join(''):'<span class="footerNote">No 2.4GHz networks found</span>';}
 async function refreshMonitor(){const r=await qs('/monitor'); if(r) $('monitorDump').textContent=JSON.stringify(r.out);}
 async function loadManifest(){const r=await qs('/node/manifest'); if(r) $('manifestDump').textContent=JSON.stringify(r,null,2);}
 function openManifest(){window.open('/node/manifest','_blank');}
@@ -832,8 +848,35 @@ static String nodeManifestJSON() {
 
 static String wifiScanJSON() {
   int n = WiFi.scanComplete();
-  if (n == WIFI_SCAN_RUNNING)  return "{\"scanning\":true}";
-  if (n < 0) { WiFi.scanNetworks(true); return "{\"scanning\":true}"; }
+  if (n == WIFI_SCAN_RUNNING) {
+    if (wifiScanActive && millis() - wifiScanStartMs > WIFI_SCAN_TIMEOUT_MS) {
+      WiFi.scanDelete();
+      wifiScanActive = false;
+      return "{\"scanning\":false,\"error\":\"timeout\",\"networks\":[]}";
+    }
+    return "{\"scanning\":true}";
+  }
+
+  if (wifiScanActive && n == WIFI_SCAN_FAILED) {
+    WiFi.scanDelete();
+    wifiScanActive = false;
+    return "{\"scanning\":false,\"error\":\"failed\",\"networks\":[]}";
+  }
+
+  if (n < 0) {
+    WiFi.scanDelete();
+    ensureStaInterface();
+    wifiScanActive = true;
+    wifiScanStartMs = millis();
+    int rc = WiFi.scanNetworks(true, true);
+    if (rc == WIFI_SCAN_FAILED) {
+      wifiScanActive = false;
+      return "{\"scanning\":false,\"error\":\"failed\",\"networks\":[]}";
+    }
+    return "{\"scanning\":true}";
+  }
+
+  wifiScanActive = false;
 
   String s = "{\"scanning\":false,\"networks\":[";
   for (int i = 0; i < n; i++) {
@@ -989,7 +1032,9 @@ static void setupWeb() {
     if (!r->hasArg("ssid")) { r->send(400, "text/plain", "missing ssid"); return; }
     staSSID = r->arg("ssid");
     staPass = r->hasArg("pass") ? r->arg("pass") : "";
+    if (netMode == NET_AP_ONLY) netMode = NET_AP_STA;
     saveConfig();
+    ensureStaInterface();
     WiFi.disconnect(false);
     WiFi.begin(staSSID.c_str(), staPass.c_str());
     r->send(204);

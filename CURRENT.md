@@ -4,7 +4,7 @@ Read this before changing the firmware. Keep it short and replace stale facts.
 
 ## Last verified baseline
 
-`435d38d` - `docs: record agent memory workflow`
+`2014013` - `docs: checkpoint esp upload test`
 Branch: `main`
 
 ## What works
@@ -14,6 +14,7 @@ Branch: `main`
 - Native Unity tests cover `vidili_core.h` helpers.
 - DMX output uses `DMX_NUM_1`, GPIO25 TX, GPIO21 DIR.
 - Browser console exposes control, patch, scenes, network, system, and VJ routes.
+- WiFi scan enables STA/AP+STA as needed and reports scan failures/timeouts to the UI instead of looping forever.
 - WebSocket `/ws` pushes status roughly every 400 ms.
 - Art-Net and sACN input share the configured universe.
 - Art-Net OUT can broadcast the final output for receiver nodes.
@@ -40,9 +41,11 @@ Branch: `main`
 - `sg dialout` upload may need elevated shell permission in agent sandboxes.
 - Starship may warn about read-only cache; this is not a firmware failure.
 - PlatformIO `device monitor` needs an interactive TTY; in this agent shell it can fail with `termios.error: (25, 'Inappropriate ioctl for device')`.
+- ESP32 WiFi scan/client mode only sees 2.4 GHz networks; 5 GHz-only studio SSIDs will not appear.
 
 ## Current hardware test
 
 - 2026-05-06: Uploaded current `vizzz.di` firmware to ESP32 on `/dev/ttyUSB0`; upload succeeded and hard-reset via RTS. Board MAC: `d4:e9:f4:bc:5a:64`.
+- 2026-05-06: Flashed WiFi scan fix to same board; upload succeeded and hard-reset via RTS. Re-test `/network` -> Scan on the ESP AP.
 - Next: flash the second ESP when connected, then put both on studio WiFi from `/network` using unique node names/AP SSIDs.
 - For TouchDesigner control, use Art-Net UDP `6454`; set each node to `ARTNET_ONLY` for TD-only control or `MERGE_HTP` if the web layer should still participate. Same universe mirrors both nodes; separate universes controls them independently.
