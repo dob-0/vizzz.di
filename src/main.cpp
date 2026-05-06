@@ -149,7 +149,9 @@ static uint8_t  fadeTo  [MAX_CH];
 
 // Mutex guards webVals and all fade state across cores
 static SemaphoreHandle_t gLock;
-static volatile bool     pendingReboot = false;
+static volatile bool     pendingReboot        = false;
+static volatile bool     pendingWifiReconnect = false;
+static volatile bool     pendingWifiForget    = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 static void ipToCStr(char* dst, size_t n, IPAddress ip) {
@@ -203,11 +205,11 @@ static void startSoftAP() {
 
 static void ensureStaInterface() {
   wifi_mode_t wm = WiFi.getMode();
-  if (wm == WIFI_OFF) {
-    WiFi.mode(WIFI_STA);
-  } else if (wm == WIFI_AP) {
-    WiFi.mode(WIFI_AP_STA);
-    startSoftAP();
+  if (wm == WIFI_OFF || wm == WIFI_AP) {
+    wifi_mode_t target = (netMode == NET_STA_ONLY) ? WIFI_STA : WIFI_AP_STA;
+    WiFi.mode(target);
+    if (target == WIFI_AP_STA) startSoftAP();
+    delay(200);
   }
   WiFi.setSleep(false);
 }
@@ -1115,15 +1117,15 @@ static void setupWeb() {
     staPass = r->hasArg("pass") ? r->arg("pass") : "";
     if (netMode == NET_AP_ONLY) netMode = NET_AP_STA;
     saveConfig();
-    ensureStaInterface();
-    WiFi.disconnect(false);
-    WiFi.begin(staSSID.c_str(), staPass.c_str());
+    pendingWifiReconnect = true;
     r->send(204);
   });
 
   server.on("/wifi/forget", HTTP_GET, [](AsyncWebServerRequest* r){
     staSSID = ""; staPass = "";
-    saveConfig(); WiFi.disconnect(true); r->send(204);
+    saveConfig();
+    pendingWifiForget = true;
+    r->send(204);
   });
 
   server.on("/node/set", HTTP_GET, [](AsyncWebServerRequest* r){
@@ -1189,6 +1191,19 @@ void setup() {
 
 void loop() {
   if (pendingReboot) { delay(150); ESP.restart(); }
+
+  if (pendingWifiForget) {
+    pendingWifiForget = false;
+    WiFi.disconnect(false);
+  }
+
+  if (pendingWifiReconnect) {
+    pendingWifiReconnect = false;
+    WiFi.scanDelete();
+    wifiScanActive = false;
+    ensureStaInterface();
+    WiFi.begin(staSSID.c_str(), staPass.c_str());
+  }
 
   pollArtNet();
   pollSacn();
