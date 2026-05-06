@@ -45,7 +45,7 @@ Preferences prefs;
 
 String nodeName = "vi_di_li";
 String apSsid   = "vi_di_li";
-String apPass   = "Poghchka666#";
+String apPass   = "Poghka888$";
 String staSSID  = "";
 String staPass  = "";
 
@@ -131,7 +131,7 @@ static String mdnsHostname() {
 static void startWiFi() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
-  WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
+  WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
   WiFi.softAP(apSsid.c_str(), apPass.c_str());
 
   if (staSSID.length() > 0) {
@@ -289,7 +289,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <div class="card">
     <div class="row"><b>Network</b></div>
     <div class="row">
-      <small>AP: <span id="apip">192.168.4.1</span></small>
+      <small>AP: <span id="apip">10.0.0.1</span></small>
       <small>STA: <span id="staip" class="sta-off">not connected</span></small>
       <small>mDNS: <span id="mdns">...</span>.local</small>
     </div>

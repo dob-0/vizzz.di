@@ -14,16 +14,16 @@ ESP32 WiFi to DMX512 gateway. Receives Art-Net over WiFi and outputs DMX512 via 
 
 ## Hardware
 
-| Signal | GPIO |
-|--------|------|
-| DMX TX (MAX485 DI) | 25 |
-| DMX DIR (MAX485 DE+RE) | 21 |
+| Signal                 | GPIO |
+|------------------------|------|
+| DMX TX (MAX485 DI)     | 25   |
+| DMX DIR (MAX485 DE+RE) | 21   |
 
 Board: ESP32 DevKit
 
 ## Wiring
 
-```
+```text
 ESP32 GPIO25 → MAX485 DI
 ESP32 GPIO21 → MAX485 DE + RE (tied together)
 MAX485 A/B   → DMX line
@@ -32,8 +32,8 @@ MAX485 A/B   → DMX line
 ## Getting Started
 
 1. Flash with PlatformIO (`pio run -t upload`)
-2. Connect to WiFi AP **vi_di_li** (password: `Poghchka666#`)
-3. Open `http://192.168.4.1` in a browser
+2. Connect to WiFi AP **vi_di_li** (password: `Poghka888$`)
+3. Open `http://10.0.0.1` in a browser
 4. Optionally connect the device to your network via the Network card in the UI
 
 ## Build
