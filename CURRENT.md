@@ -4,7 +4,7 @@ Read this before changing the firmware. Keep it short and replace stale facts.
 
 ## Last verified baseline
 
-`383c81d` - `perf: reduce static ram usage`
+`15ef754` - `docs: update ram optimization checkpoint`
 Branch: `main`
 
 ## What works
@@ -51,5 +51,6 @@ Branch: `main`
 - 2026-05-06: Flashed WiFi scan fix to same board; upload succeeded and hard-reset via RTS. Re-test `/network` -> Scan on the ESP AP.
 - 2026-05-06: Flashed minimal/mobile UI build to same board; upload succeeded and hard-reset via RTS.
 - 2026-05-06: RAM optimization pass validated: RAM 50,140 bytes (15.3%), flash 889,701 bytes (67.9%).
+- 2026-05-06: Flashed RAM-optimized build to ESP32 `d4:e9:f4:bc:5a:64`; upload succeeded and hard-reset via RTS.
 - Next: flash the second ESP when connected, then put both on studio WiFi from `/network` using unique node names/AP SSIDs.
 - For TouchDesigner control, use Art-Net UDP `6454`; set each node to `ARTNET_ONLY` for TD-only control or `MERGE_HTP` if the web layer should still participate. Same universe mirrors both nodes; separate universes controls them independently.
