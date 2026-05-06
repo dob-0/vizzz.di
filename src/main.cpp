@@ -46,7 +46,9 @@ static String  staSSID, staPass;
 static uint8_t artNet = 0, artSubnet = 0, artUni = 0;
 static Mode    mode         = MODE_HTP;
 static bool    artOutEnabled = false;   // broadcast webVals as Art-Net to slaves
+static bool    webEnabled    = true;    // when false, web server and websocket stay disabled
 static bool    needSaveConfig = false;  // set when auto-generated values must be persisted
+static constexpr const char* FW_TAG = __DATE__ " " __TIME__;
 
 static uint16_t universe() {
   return vidili::packUniverse(artNet, artSubnet, artUni);
@@ -64,6 +66,8 @@ static void saveConfig() {
   prefs.putUChar("anet_uni",  artUni);
   prefs.putUChar("mode",      uint8_t(mode));
   prefs.putBool("ao_en",      artOutEnabled);
+  prefs.putBool("web_en",     webEnabled);
+  prefs.putString("fw_tag",   FW_TAG);
   prefs.end();
 }
 
@@ -81,8 +85,16 @@ static void loadConfig() {
   artUni       = prefs.getUChar("anet_uni",  artUni);
   mode         = Mode(prefs.getUChar("mode", uint8_t(mode)));
   artOutEnabled = prefs.getBool("ao_en",     artOutEnabled);
+  webEnabled   = prefs.getBool("web_en",     webEnabled);
+  String savedFwTag = prefs.getString("fw_tag", "");
   prefs.end();
   if (mode > MODE_HTP) mode = MODE_HTP;
+
+  // New firmware image flashed: rotate default SSID once, then persist.
+  if (savedFwTag != FW_TAG) {
+    if (apSsid.isEmpty() || apSsid.startsWith("vi_di_li")) apSsid = "";
+    needSaveConfig = true;
+  }
 }
 
 // ── Runtime state ─────────────────────────────────────────────────────────────
@@ -158,12 +170,10 @@ static void startWiFi() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
 
-  // First boot: auto-generate unique AP SSID from last 3 bytes of MAC
+  // Empty AP SSID means first boot or new firmware tag: generate one random name.
   if (apSsid.isEmpty()) {
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
     char suffix[7];
-    snprintf(suffix, sizeof(suffix), "%02X%02X%02X", mac[3], mac[4], mac[5]);
+    snprintf(suffix, sizeof(suffix), "%06lX", (unsigned long)(esp_random() & 0xFFFFFF));
     apSsid = String("vi_di_li_") + suffix;
     needSaveConfig = true;
   }
@@ -697,6 +707,7 @@ static String statusJSON() {
     "\"mode_name\":\"%s\","
     "\"artnet_active\":%s,"
     "\"ao\":%s,"
+    "\"web\":%s,"
     "\"dim\":%u,"
     "\"ao_target\":\"%s\""
     "}",
@@ -709,6 +720,7 @@ static String statusJSON() {
     uint8_t(mode), modeName(mode),
     artnetActive()  ? "true" : "false",
     artOutEnabled   ? "true" : "false",
+    webEnabled      ? "true" : "false",
     masterDimmer,
     ipStr(artOutTarget()).c_str()
   );
@@ -846,6 +858,14 @@ static void setupWeb() {
     saveConfig(); r->send(204);
   });
 
+  server.on("/web/set", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (!r->hasArg("en")) { r->send(400, "text/plain", "missing arg"); return; }
+    webEnabled = r->arg("en").toInt() != 0;
+    saveConfig();
+    r->send(200, "text/plain", "ok,rebooting");
+    pendingReboot = true;
+  });
+
   server.on("/scene/save", HTTP_GET, [](AsyncWebServerRequest* r){
     if (!r->hasArg("n")) { r->send(400, "text/plain", "missing arg"); return; }
     uint8_t n = uint8_t(constrain(r->arg("n").toInt(), 0, SCENE_COUNT - 1));
@@ -924,7 +944,7 @@ void setup() {
   startWiFi();
   if (needSaveConfig) { saveConfig(); needSaveConfig = false; }
   artOutUdp.begin(0);
-  setupWeb();
+  if (webEnabled) setupWeb();
 
   artnet.begin(nodeName.c_str());
   artnet.setArtDmxCallback(onDmxFrame);
@@ -942,6 +962,7 @@ void setup() {
   Serial.printf("Art-Net  : net=%u sub=%u uni=%u (15-bit=%u)\n",
     artNet, artSubnet, artUni, universe());
   Serial.printf("Art-Out  : %s\n", artOutEnabled ? "enabled" : "disabled");
+  Serial.printf("Web      : %s\n", webEnabled ? "enabled" : "disabled");
 }
 
 void loop() {
@@ -970,11 +991,13 @@ void loop() {
     sendArtNetOut();
   }
 
-  // WebSocket status push ~400ms
-  static uint32_t lastWs = 0;
-  if (now - lastWs >= 400) {
-    lastWs = now;
-    if (ws.count() > 0) ws.textAll(statusJSON());
-    ws.cleanupClients();
+  // WebSocket status push ~400ms (only when web stack is enabled)
+  if (webEnabled) {
+    static uint32_t lastWs = 0;
+    if (now - lastWs >= 400) {
+      lastWs = now;
+      if (ws.count() > 0) ws.textAll(statusJSON());
+      ws.cleanupClients();
+    }
   }
 }
