@@ -61,6 +61,7 @@ static uint8_t artNet = 0, artSubnet = 0, artUni = 0;
 static Mode    mode         = MODE_HTP;
 static NetMode netMode      = NET_AP_STA;
 static bool    artOutEnabled = false;   // broadcast webVals as Art-Net to slaves
+static String  artOutPeerIp = "";       // if non-empty, unicast to this IP instead of broadcast
 static bool    webEnabled    = true;    // when false, web server and websocket stay disabled
 static bool    needSaveConfig = false;  // set when auto-generated values must be persisted
 static constexpr const char* FW_TAG = __DATE__ " " __TIME__;
@@ -132,6 +133,18 @@ static WiFiUDP        sacnUdp;
 static WiFiUDP        discoverUdp;
 static dmx_port_t     dmxPort = DMX_NUM_1;
 
+// ── Peer discovery ────────────────────────────────────────────────────────────
+struct PeerNode {
+  char     name[40];
+  char     ip[16];
+  char     mdns[48];
+  uint32_t lastSeenMs;
+};
+static constexpr uint8_t MAX_PEERS    = 4;
+static constexpr uint32_t PEER_EXPIRE_MS = 90000;
+static PeerNode  peers[MAX_PEERS];   // guarded by gLock
+static uint8_t   peerCount = 0;
+
 static uint8_t dmxFrame [MAX_CH + 1];
 static uint8_t webVals  [MAX_CH];   // web layer — protected by gLock
 static uint8_t artVals  [MAX_CH];   // Art-Net IN — written from loop UDP poll
@@ -189,9 +202,26 @@ static void jsonEsc(char* dst, size_t n, const String& src) {
   dst[d] = '\0';
 }
 
+// Extract a quoted JSON string value for a given key (simple, no escape handling needed).
+static bool jsonExtract(const char* json, const char* key, char* dst, size_t dstLen) {
+  char search[48];
+  snprintf(search, sizeof(search), "\"%s\":\"", key);
+  const char* p = strstr(json, search);
+  if (!p) return false;
+  p += strlen(search);
+  size_t i = 0;
+  while (*p && *p != '"' && i < dstLen - 1) dst[i++] = *p++;
+  dst[i] = '\0';
+  return i > 0;
+}
+
 // ── WiFi ──────────────────────────────────────────────────────────────────────
-// Returns the Art-Net broadcast target: STA subnet when on a router, AP subnet otherwise
+// Returns the Art-Net target: peer unicast if set, else STA subnet broadcast, else AP broadcast
 static IPAddress artOutTarget() {
+  if (!artOutPeerIp.isEmpty()) {
+    IPAddress peer;
+    if (peer.fromString(artOutPeerIp)) return peer;
+  }
   if (WiFi.status() == WL_CONNECTED) {
     uint32_t ip   = (uint32_t)WiFi.localIP();
     uint32_t mask = (uint32_t)WiFi.subnetMask();
@@ -279,7 +309,7 @@ static void sendBeacon() {
   uint32_t ip   = (uint32_t)WiFi.localIP();
   uint32_t mask = (uint32_t)WiFi.subnetMask();
   IPAddress bcast((ip & mask) | ~mask);
-  char buf[160];
+  char buf[180];
   char eName[64]; jsonEsc(eName, sizeof(eName), nodeName);
   snprintf(buf, sizeof(buf),
     "{\"name\":\"%s\",\"ip\":\"%s\",\"ap_ip\":\"10.0.0.1\",\"mdns\":\"%s.local\",\"product\":\"vizzz.di\"}",
@@ -287,8 +317,51 @@ static void sendBeacon() {
   discoverUdp.beginPacket(bcast, DISCOVERY_PORT);
   discoverUdp.write((const uint8_t*)buf, strlen(buf));
   discoverUdp.endPacket();
-  // Also respond to any incoming discovery requests
-  discoverUdp.begin(DISCOVERY_PORT);
+}
+
+// Parse an incoming beacon UDP packet and update the peers table.
+static void pollDiscovery() {
+  int sz = discoverUdp.parsePacket();
+  if (sz <= 0) return;
+  char buf[200];
+  int n = discoverUdp.read(buf, min(sz, (int)sizeof(buf) - 1));
+  if (n <= 0) return;
+  buf[n] = '\0';
+  if (!strstr(buf, "vizzz.di")) return;  // ignore non-vizzz packets
+
+  char pName[40], pIp[16], pMdns[48];
+  if (!jsonExtract(buf, "name", pName, sizeof(pName))) return;
+  if (!jsonExtract(buf, "ip",   pIp,   sizeof(pIp)))   return;
+  jsonExtract(buf, "mdns", pMdns, sizeof(pMdns));
+
+  // Ignore our own beacon
+  if (WiFi.status() == WL_CONNECTED) {
+    String myIp = ipStr(WiFi.localIP());
+    if (myIp == pIp) return;
+  }
+
+  uint32_t now = millis();
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) != pdTRUE) return;
+
+  bool found = false;
+  for (uint8_t i = 0; i < peerCount; i++) {
+    if (strcmp(peers[i].ip, pIp) == 0) {
+      strlcpy(peers[i].name, pName, sizeof(peers[i].name));
+      strlcpy(peers[i].mdns, pMdns, sizeof(peers[i].mdns));
+      peers[i].lastSeenMs = now;
+      found = true;
+      break;
+    }
+  }
+  if (!found && peerCount < MAX_PEERS) {
+    strlcpy(peers[peerCount].name, pName, sizeof(peers[peerCount].name));
+    strlcpy(peers[peerCount].ip,   pIp,   sizeof(peers[peerCount].ip));
+    strlcpy(peers[peerCount].mdns, pMdns, sizeof(peers[peerCount].mdns));
+    peers[peerCount].lastSeenMs = now;
+    peerCount++;
+  }
+  xSemaphoreGive(gLock);
+  sendBeacon();  // reply so the other node also discovers us
 }
 
 // ── DMX ───────────────────────────────────────────────────────────────────────
@@ -540,6 +613,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
           <span class="pill" id="aoPill">out</span>
           <span class="pill" id="webPill">web</span>
           <span class="pill" id="staPill">sta</span>
+          <span class="pill" id="peersPill">0 peers</span>
         </div>
       </div>
       <div class="footerNote">AP <b id="apIp">10.0.0.1</b><br>Target <b id="aoTarget">-</b><br>mDNS <b id="mdnsLabel">-</b></div>
@@ -653,6 +727,16 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
           <div class="row" style="margin-top:8px"><label class="grow">AP Password<input id="apPass" type="password" placeholder="Password"></label></div>
           <div class="row" style="margin-top:8px"><button onclick="saveNode()">Save</button></div>
         </div>
+        <div class="card">
+          <h2>WiFi Status</h2>
+          <div id="wsAP" class="footerNote" style="margin-bottom:6px">AP: —</div>
+          <div id="wsSTA" class="footerNote">STA: idle</div>
+        </div>
+        <div class="card">
+          <h2>Peers</h2>
+          <div class="row" style="margin-bottom:8px"><button onclick="loadPeers()">Refresh</button><span class="footerNote" id="peerCount" style="margin-left:8px">—</span></div>
+          <div id="peerList"><span class="footerNote">Join a WiFi network to discover other vizzz.di nodes.</span></div>
+        </div>
       </div>
     </div>
   </section>
@@ -727,11 +811,15 @@ function updatePills(s){
   const set=(id,text,on,hot)=>{const el=$(id);el.textContent=text;el.className='pill'+(hot?' hot':on?' on':'');};
   set('modePill',s.mode_name,false,true); set('netModePill',s.net_mode_name,false,false); set('artPill','ART '+(s.artnet_active?'active':'idle'),s.artnet_active,false); set('sacnPill','sACN '+(s.sacn_active?'active':'idle'),s.sacn_active,false); set('aoPill','OUT '+(s.ao?'on':'off'),s.ao,s.ao); set('webPill','WEB '+(s.web?'on':'off'),s.web,false);
   const wls=s.wl_status; const staLabel=s.sta_connected?('STA '+s.sta_ip):s.sta_ssid?(wls===4?'STA auth fail':wls===1?'STA no SSID':'STA joining'):'STA idle'; const staErr=s.sta_ssid&&!s.sta_connected&&(wls===4||wls===1); $('staPill').textContent=staLabel; $('staPill').className='pill'+(s.sta_connected?' on':staErr?' warn':s.sta_ssid?' warn':'');
+  const pc=s.peer_count||0; set('peersPill',pc+(pc===1?' peer':' peers'),pc>0,false);
 }
 function syncFields(s){
   $('modeSel').value=String(s.mode); $('netModeSel').value=String(s.net_mode); $('netInput').value=s.net; $('subInput').value=s.subnet; $('uniInput').value=s.uni; $('uni15').textContent='15-bit: '+s.uni15; $('statusDump').textContent=JSON.stringify(s,null,2); $('diagDump').textContent=`mode=${s.mode_name}\nnetwork=${s.net_mode_name}\nartnet=${s.artnet_active}\nsacn=${s.sacn_active}\nweb=${s.web}\nout_target=${s.ao_target}`;
   artOutEnabled=!!s.ao; webEnabled=!!s.web; $('aoBtn').textContent='Art OUT '+(artOutEnabled?'ON':'OFF'); $('webBtn').textContent='Web '+(webEnabled?'ON':'OFF');
   if(!$('staSsid').value && s.sta_ssid) $('staSsid').placeholder=s.sta_ssid; if(!$('nodeName').value) $('nodeName').placeholder=s.name; if(!$('apSsid').value) $('apSsid').placeholder=s.ssid; updateMasterDisplays(s.dim||255);
+  const rssiLabel=s.sta_connected&&s.sta_rssi?(' \u00b7 '+s.sta_rssi+'dBm'):'';
+  if($('wsAP'))$('wsAP').textContent='AP: '+escHtml(s.ssid||'?')+' \u00b7 '+s.ip+' \u00b7 '+(s.ap_clients||0)+' client'+(s.ap_clients===1?'':'s');
+  if($('wsSTA'))$('wsSTA').textContent=s.sta_connected?('STA \u2713 '+(s.sta_ssid||'')+' \u00b7 '+s.sta_ip+rssiLabel):s.sta_ssid?('STA \u2192 '+(s.sta_ssid||'')+'\u2026'):'STA idle';
 }
 function renderChannels(base){$('channels').innerHTML=[...Array(32)].map((_,i)=>{const ch=base+i,w=pageWeb[i]??0,o=pageOut[i]??0;return `<div class="chLabel">Ch ${ch}</div><input type="range" min="0" max="255" value="${w}" oninput="setChannel(${ch},+this.value);this.nextElementSibling.textContent=this.value"><div class="webVal">${w}</div><div class="outVal${o>w?' hot':''}">${o}</div>`;}).join('');}
 async function loadPage(){const s=await qs('/page?i='+curPage);if(!s)return;pageWeb=s.web||[];pageOut=s.out||[];$('pageInfo').textContent='ch '+s.base_ch+'-'+(s.base_ch+31);renderChannels(s.base_ch);}
@@ -756,6 +844,8 @@ function showNetworks(nets){$('networks').innerHTML=nets.length?nets.map(n=>`<bu
 async function refreshMonitor(){const r=await qs('/monitor'); if(r) $('monitorDump').textContent=JSON.stringify(r.out);}
 async function loadManifest(){const r=await qs('/node/manifest'); if(r) $('manifestDump').textContent=JSON.stringify(r,null,2);}
 function openManifest(){window.open('/node/manifest','_blank');}
+async function loadPeers(){const r=await qs('/peers');if(!r){$('peerCount').textContent='error';return;}const c=r.count||0;$('peerCount').textContent=c?c+(c===1?' peer found':' peers found'):'none found';$('peerList').innerHTML=c?r.peers.map(p=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px;border:1px solid var(--di-cyan-border);margin-bottom:4px"><div><b>${escHtml(p.name)}</b> <span class="footerNote">${escHtml(p.ip)}</span><br><span class="footerNote">${escHtml(p.mdns)||''} &bull; ${p.age_s}s ago</span></div><button onclick="targetPeer('${escJsSq(p.ip)}')" style="min-height:30px;padding:3px 10px;font-size:.7rem;flex:0 0 auto">Link</button></div>`).join(''):'<span class="footerNote">No vizzz.di nodes found. Devices must share a WiFi network. Retry after 30s.</span>';}
+function targetPeer(ip){if(!confirm('Route Art-Net OUT directly to '+ip+'? (enables unicast, overrides broadcast)'))return;fetch('/artout/peer?ip='+encodeURIComponent(ip),{cache:'no-store'}).then(()=>fetch('/artout/set?en=1',{cache:'no-store'}));artOutEnabled=true;$('aoBtn').textContent='Art OUT ON';$('aoTarget').textContent=ip;}
 function applyMode(){hit('/mode/set?m='+$('modeSel').value);} function applyNetMode(){if(confirm('Switch network profile and reboot?')) hit('/netmode/set?m='+$('netModeSel').value);}
 
 $('modeSel').addEventListener('change',applyMode); $('netModeSel').addEventListener('change',applyNetMode); $('master').addEventListener('input',e=>queueMaster(+e.target.value)); $('perfMaster').addEventListener('input',e=>queueMaster(+e.target.value)); $('pageSel').addEventListener('change',e=>{curPage=+e.target.value;loadPage();});
@@ -764,7 +854,7 @@ const ws=new WebSocket('ws://'+location.host+'/ws');
 ws.onmessage=e=>{let s; try{s=JSON.parse(e.data);}catch{return;} state=s; updatePills(s); syncFields(s);};
 ws.onclose=()=>setTimeout(()=>location.reload(),2000);
 
-setActiveRoute(); makeScenes(); makePages(); loadPage(); refreshMonitor(); loadManifest();
+setActiveRoute(); makeScenes(); makePages(); loadPage(); refreshMonitor(); loadManifest(); loadPeers();
 setInterval(async()=>{const s=await qs('/page?i='+curPage); if(!s) return; pageWeb=s.web||[]; pageOut=s.out||[]; refreshOutGrid();},1000);
 </script>
 </body></html>)HTML";
@@ -792,6 +882,8 @@ static size_t fillStatusJSON(char* buf, size_t n) {
   jsonEsc(eSsid,    sizeof(eSsid),    apSsid);
   jsonEsc(eStaSsid, sizeof(eStaSsid), staSSID);
   jsonEsc(eMdns,    sizeof(eMdns),    mdnsName);
+  uint8_t apClients = WiFi.softAPgetStationNum();
+  int32_t staRssi = staCon ? WiFi.RSSI() : 0;
 
   int written = snprintf(buf, n,
     "{"
@@ -814,7 +906,10 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     "\"ao\":%s,"
     "\"web\":%s,"
     "\"dim\":%u,"
-    "\"ao_target\":\"%s\""
+    "\"ao_target\":\"%s\","
+    "\"ap_clients\":%u,"
+    "\"sta_rssi\":%d,"
+    "\"peer_count\":%u"
     "}",
     apIp,
     staIp,
@@ -831,7 +926,10 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     artOutEnabled   ? "true" : "false",
     webEnabled      ? "true" : "false",
     masterDimmer,
-    outTarget
+    outTarget,
+    apClients,
+    staRssi,
+    peerCount
   );
   if (written < 0) {
     buf[0] = '\0';
@@ -842,8 +940,32 @@ static size_t fillStatusJSON(char* buf, size_t n) {
 }
 
 static String statusJSON() {
-  char buf[720];
+  char buf[800];
   fillStatusJSON(buf, sizeof(buf));
+  return buf;
+}
+
+static String peersJSON() {
+  char buf[600];
+  uint32_t now = millis();
+  int pos = 0;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
+    pos = snprintf(buf, sizeof(buf), "{\"count\":%u,\"peers\":[", peerCount);
+    for (uint8_t i = 0; i < peerCount; i++) {
+      if (i) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+      char eName[44], eMdns[52];
+      jsonEsc(eName, sizeof(eName), peers[i].name);
+      jsonEsc(eMdns, sizeof(eMdns), peers[i].mdns);
+      pos += snprintf(buf + pos, sizeof(buf) - pos,
+        "{\"name\":\"%s\",\"ip\":\"%s\",\"mdns\":\"%s\",\"age_s\":%lu}",
+        eName, peers[i].ip, eMdns,
+        (unsigned long)((now - peers[i].lastSeenMs) / 1000));
+    }
+    xSemaphoreGive(gLock);
+  } else {
+    pos = snprintf(buf, sizeof(buf), "{\"count\":0,\"peers\":[");
+  }
+  snprintf(buf + pos, sizeof(buf) - pos, "]}");
   return buf;
 }
 
@@ -1163,13 +1285,20 @@ static void setupWeb() {
   });
 
   server.on("/discover", HTTP_GET, [](AsyncWebServerRequest* r){
-    char buf[160];
+    char buf[180];
     char eName[64]; jsonEsc(eName, sizeof(eName), nodeName);
     snprintf(buf, sizeof(buf),
       "{\"name\":\"%s\",\"ip\":\"%s\",\"ap_ip\":\"10.0.0.1\",\"mdns\":\"%s.local\",\"product\":\"vizzz.di\"}",
       eName, ipStr(WiFi.localIP()).c_str(), mdnsName.c_str());
     r->send(200, "application/json", buf);
     sendBeacon();
+  });
+
+  server.on("/peers", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, peersJSON()); });
+
+  server.on("/artout/peer", HTTP_GET, [](AsyncWebServerRequest* r){
+    artOutPeerIp = r->hasArg("ip") ? r->arg("ip") : "";
+    r->send(204);
   });
 
   server.onNotFound([](AsyncWebServerRequest* r){ r->send(404, "text/plain", "Not found"); });
@@ -1196,6 +1325,7 @@ void setup() {
   refreshArtNetSocket();
   artOutUdp.begin(0);
   refreshSacnSocket();
+  discoverUdp.begin(DISCOVERY_PORT);
   if (webEnabled) setupWeb();
 
   lastArtnetMs = 0;
@@ -1265,14 +1395,29 @@ void loop() {
     sendArtNetOut();
   }
 
-  // Discovery beacon every 30s + respond to incoming discovery requests
+  // Discovery beacon every 30s; poll for incoming beacons every loop tick
   {
     static uint32_t lastBeacon = 0;
     if (now - lastBeacon >= 30000) { lastBeacon = now; sendBeacon(); }
-    int sz = discoverUdp.parsePacket();
-    if (sz > 0) {
-      discoverUdp.flush();
-      sendBeacon();  // unicast reply goes to subnet broadcast; good enough
+    pollDiscovery();
+  }
+
+  // Expire stale peers every 10s
+  {
+    static uint32_t lastExpiry = 0;
+    if (now - lastExpiry >= 10000) {
+      lastExpiry = now;
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+        uint8_t w = 0;
+        for (uint8_t r = 0; r < peerCount; r++) {
+          if (now - peers[r].lastSeenMs < PEER_EXPIRE_MS) {
+            if (w != r) peers[w] = peers[r];
+            w++;
+          }
+        }
+        peerCount = w;
+        xSemaphoreGive(gLock);
+      }
     }
   }
 
@@ -1282,7 +1427,7 @@ void loop() {
     if (now - lastWs >= 400) {
       lastWs = now;
       if (ws.count() > 0) {
-        char statusBuf[720];
+        char statusBuf[800];
         size_t len = fillStatusJSON(statusBuf, sizeof(statusBuf));
         ws.textAll(statusBuf, len);
       }

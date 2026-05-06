@@ -21,8 +21,10 @@ Branch: `main`
 - Art-Net IN uses the local `pollArtNet()` WiFiUDP ArtDMX parser; keep it small/non-blocking.
 - WebSocket `/ws` pushes status roughly every 400 ms using a stack JSON buffer to avoid periodic `String` heap churn.
 - Art-Net and sACN input share the configured universe.
-- Art-Net OUT can broadcast the final output for receiver nodes.
+- Art-Net OUT can broadcast the final output for receiver nodes, or unicast to a specific peer IP via `/artout/peer?ip=X`.
 - Firmware node manifest is served at `/node/manifest` and `/manifest.json`.
+- Peer discovery: nodes broadcast a UDP beacon on port 47777 every 30s; incoming beacons are parsed and stored in a peer table (max 4, expire after 90s). `/peers` returns the live list. Network tab shows WiFi status (AP clients, STA RSSI) and peers with a Link button.
+- Unit test file fixed: was referencing old `vidili_core.h` / `vidili::` namespace, corrected to `vizzz_core.h` / `vizzz::`.
 
 ## Hard rules
 
@@ -58,5 +60,5 @@ Branch: `main`
 - 2026-05-06: Flashed full ESP-optimized build to ESP32 `d4:e9:f4:bc:5a:64`; upload succeeded and hard-reset via RTS.
 - 2026-05-06: WiFi STA join fixed (AsyncTCP task issue). Flashed fix, verified join/forget/rejoin on Yokozo. Art-Net IN verified working on both AP (10.0.0.1) and STA (192.168.88.127) interfaces.
 - 2026-05-06: Node name updated to `vizzz.di` via `/node/set`; mDNS is now `vizzz-di.local`. Device on Yokozo at `192.168.88.127`.
-- Next: flash the second ESP when connected, set a unique node name (e.g. `vizzz.di-2`) and AP SSID, then join Yokozo from `/network`.
+- 2026-05-06: Peer discovery + WiFi status added. Native tests fixed (vidili→vizzz). RAM 51,876 bytes (15.8%), Flash 870,629 bytes (66.4%). Build SUCCESS.
 - For TouchDesigner control: Art-Net to `192.168.88.255:6454` (broadcast) or `192.168.88.127:6454` (unicast), universe 0. Use `ARTNET_ONLY` for TD-only or `MERGE_HTP` if web layer should participate.
