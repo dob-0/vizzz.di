@@ -5,7 +5,6 @@
 
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include <ArtnetWifi.h>
 #include <Preferences.h>
 
 #include "esp_dmx.h"
@@ -125,14 +124,14 @@ static void loadConfig() {
 // ── Runtime state ─────────────────────────────────────────────────────────────
 static AsyncWebServer server(80);
 static AsyncWebSocket ws("/ws");
-static ArtnetWifi     artnet;
+static WiFiUDP        artInUdp;
 static WiFiUDP        artOutUdp;
 static WiFiUDP        sacnUdp;
 static dmx_port_t     dmxPort = DMX_NUM_1;
 
 static uint8_t dmxFrame [MAX_CH + 1];
 static uint8_t webVals  [MAX_CH];   // web layer — protected by gLock
-static uint8_t artVals  [MAX_CH];   // Art-Net IN — written from UDP task, race accepted
+static uint8_t artVals  [MAX_CH];   // Art-Net IN — written from loop UDP poll
 static uint8_t sacnVals [MAX_CH];   // sACN IN
 static uint8_t outVals  [MAX_CH];   // final computed output
 
@@ -152,9 +151,13 @@ static SemaphoreHandle_t gLock;
 static volatile bool     pendingReboot = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+static void ipToCStr(char* dst, size_t n, IPAddress ip) {
+  snprintf(dst, n, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+}
+
 static String ipStr(IPAddress ip) {
   char buf[16];
-  snprintf(buf, sizeof(buf), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+  ipToCStr(buf, sizeof(buf), ip);
   return buf;
 }
 
@@ -258,6 +261,11 @@ static bool artnetActive() {
 
 static bool sacnActive() {
   return lastSacnMs && (millis() - lastSacnMs < SACN_TIMEOUT_MS);
+}
+
+static void refreshArtNetSocket() {
+  artInUdp.stop();
+  artInUdp.begin(ARTNET_PORT);
 }
 
 static void refreshSacnSocket() {
@@ -368,13 +376,28 @@ static void sendArtNetOut() {
   artOutUdp.endPacket();
 }
 
-// ── Art-Net IN callback ───────────────────────────────────────────────────────
-static void onDmxFrame(uint16_t uni, uint16_t len, uint8_t /*seq*/, uint8_t* data) {
-  if (uni != universe()) return;
-  uint16_t n = min(uint16_t(MAX_CH), len);
-  memcpy(artVals, data, n);
-  if (n < MAX_CH) memset(artVals + n, 0, MAX_CH - n);
-  lastArtnetMs = millis();
+// ── Art-Net IN ────────────────────────────────────────────────────────────────
+static void pollArtNet() {
+  uint8_t pkt[18 + MAX_CH];
+  static const uint8_t artNetId[8] = {'A','r','t','-','N','e','t',0};
+
+  for (int size = artInUdp.parsePacket(); size > 0; size = artInUdp.parsePacket()) {
+    int n = artInUdp.read(pkt, min(int(sizeof(pkt)), size));
+    if (n < 18) continue;
+    if (memcmp(pkt, artNetId, sizeof(artNetId)) != 0) continue;
+    if (!(pkt[8] == 0x00 && pkt[9] == 0x50)) continue; // OpDmx, little-endian
+
+    uint16_t uni = uint16_t(pkt[14]) | (uint16_t(pkt[15] & 0x7F) << 8);
+    if (uni != universe()) continue;
+
+    uint16_t len = (uint16_t(pkt[16]) << 8) | pkt[17];
+    if (len == 0 || 18 + len > uint16_t(n)) continue;
+
+    uint16_t dmxLen = min<uint16_t>(MAX_CH, len);
+    memcpy(artVals, pkt + 18, dmxLen);
+    if (dmxLen < MAX_CH) memset(artVals + dmxLen, 0, MAX_CH - dmxLen);
+    lastArtnetMs = millis();
+  }
 }
 
 // ── sACN (E1.31) IN ─────────────────────────────────────────────────────────
@@ -710,15 +733,21 @@ static void sendJSON(AsyncWebServerRequest* req, const String& body) {
   req->send(res);
 }
 
-static String statusJSON() {
+static size_t fillStatusJSON(char* buf, size_t n) {
+  if (!n) return 0;
+
   bool staCon = (WiFi.status() == WL_CONNECTED);
+  char apIp[16], staIp[16], outTarget[16];
   char eName[80], eSsid[80], eStaSsid[80];
+  ipToCStr(apIp, sizeof(apIp), WiFi.softAPIP());
+  staIp[0] = '\0';
+  if (staCon) ipToCStr(staIp, sizeof(staIp), WiFi.localIP());
+  ipToCStr(outTarget, sizeof(outTarget), artOutTarget());
   jsonEsc(eName,    sizeof(eName),    nodeName);
   jsonEsc(eSsid,    sizeof(eSsid),    apSsid);
   jsonEsc(eStaSsid, sizeof(eStaSsid), staSSID);
 
-  char buf[640];
-  snprintf(buf, sizeof(buf),
+  int written = snprintf(buf, n,
     "{"
     "\"ip\":\"%s\","
     "\"sta_ip\":\"%s\","
@@ -739,8 +768,8 @@ static String statusJSON() {
     "\"dim\":%u,"
     "\"ao_target\":\"%s\""
     "}",
-    ipStr(WiFi.softAPIP()).c_str(),
-    staCon ? ipStr(WiFi.localIP()).c_str() : "",
+    apIp,
+    staIp,
     staCon ? "true" : "false",
     eStaSsid, eSsid, eName,
     uint8_t(netMode), netModeName(netMode),
@@ -752,8 +781,19 @@ static String statusJSON() {
     artOutEnabled   ? "true" : "false",
     webEnabled      ? "true" : "false",
     masterDimmer,
-    ipStr(artOutTarget()).c_str()
+    outTarget
   );
+  if (written < 0) {
+    buf[0] = '\0';
+    return 0;
+  }
+  if (size_t(written) >= n) return n - 1;
+  return size_t(written);
+}
+
+static String statusJSON() {
+  char buf[640];
+  fillStatusJSON(buf, sizeof(buf));
   return buf;
 }
 
@@ -882,7 +922,9 @@ static String wifiScanJSON() {
 
   wifiScanActive = false;
 
-  String s = "{\"scanning\":false,\"networks\":[";
+  String s;
+  s.reserve(34 + size_t(n) * 96);
+  s = "{\"scanning\":false,\"networks\":[";
   for (int i = 0; i < n; i++) {
     if (i) s += ',';
     char ssidEsc[70];
@@ -904,7 +946,9 @@ static void setupWeb() {
   ws.onEvent([](AsyncWebSocket*, AsyncWebSocketClient*, AwsEventType, void*, uint8_t*, size_t){});
   server.addHandler(&ws);
 
-  auto sendApp = [](AsyncWebServerRequest* r){ r->send(200, "text/html", APP_HTML); };
+  auto sendApp = [](AsyncWebServerRequest* r){
+    r->send(200, "text/html", reinterpret_cast<const uint8_t*>(APP_HTML), sizeof(APP_HTML) - 1);
+  };
   server.on("/",            HTTP_GET, sendApp);
   server.on("/control",     HTTP_GET, sendApp);
   server.on("/patch",       HTTP_GET, sendApp);
@@ -1082,12 +1126,11 @@ void setup() {
   setupDMX();
   startWiFi();
   if (needSaveConfig) { saveConfig(); needSaveConfig = false; }
+  refreshArtNetSocket();
   artOutUdp.begin(0);
   refreshSacnSocket();
   if (webEnabled) setupWeb();
 
-  artnet.begin(nodeName.c_str());
-  artnet.setArtDmxCallback(onDmxFrame);
   lastArtnetMs = 0;
   lastSacnMs = 0;
 
@@ -1111,7 +1154,7 @@ void setup() {
 void loop() {
   if (pendingReboot) { delay(150); ESP.restart(); }
 
-  artnet.read();
+  pollArtNet();
   pollSacn();
 
   // Rejoin sACN multicast when WiFi link state changes.
@@ -1119,6 +1162,7 @@ void loop() {
   wl_status_t curWiFiStatus = WiFi.status();
   if (curWiFiStatus != prevWiFiStatus) {
     prevWiFiStatus = curWiFiStatus;
+    refreshArtNetSocket();
     refreshSacnSocket();
   }
 
@@ -1144,7 +1188,11 @@ void loop() {
     static uint32_t lastWs = 0;
     if (now - lastWs >= 400) {
       lastWs = now;
-      if (ws.count() > 0) ws.textAll(statusJSON());
+      if (ws.count() > 0) {
+        char statusBuf[640];
+        size_t len = fillStatusJSON(statusBuf, sizeof(statusBuf));
+        ws.textAll(statusBuf, len);
+      }
       ws.cleanupClients();
     }
   }

@@ -211,6 +211,8 @@ universe = (artNet << 8) | (artSubnet << 4) | (artUni & 0x0F)
 
 Implemented as `vidili::packUniverse(artNet, artSubnet, artUni)` in `include/vidili_core.h`.
 
+Art-Net IN is parsed directly in `pollArtNet()` with `WiFiUDP`; there is no `ArtnetWifi` dependency. Keep ArtDMX parsing small and non-blocking.
+
 ---
 
 ## Master Dimmer
@@ -250,8 +252,8 @@ If validation fails, do not push.
 
 | Resource | Used | Free | Headroom for features |
 |---|---|---|---|
-| RAM | 50.1 KB (15.3%) | ~278 KB | Large — room for OTA buffers, fixture maps |
-| Flash | 889.7 KB (67.9%) | ~421 KB | Moderate — limit large HTML additions |
+| RAM | 49.4 KB (15.1%) | ~278 KB | Large — room for OTA buffers, fixture maps |
+| Flash | 837.9 KB (63.9%) | ~473 KB | Moderate — limit large HTML additions |
 
 ---
 

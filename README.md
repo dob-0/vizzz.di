@@ -128,6 +128,6 @@ Future AI/code changes should follow this flow:
 
 - AsyncTCP
 - ESPAsyncWebServer
-- ArtnetWifi
+- Direct ArtDMX parser over Arduino WiFiUDP
 - esp_dmx, vendored in `lib/esp_dmx/`
 - Arduino WiFi / WiFiUDP / Preferences
