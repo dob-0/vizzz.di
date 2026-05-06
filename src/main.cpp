@@ -37,6 +37,15 @@ static const char* modeName(Mode m) {
   }
 }
 
+enum NetMode : uint8_t { NET_AP_STA = 0, NET_STA_ONLY = 1, NET_AP_ONLY = 2 };
+static const char* netModeName(NetMode m) {
+  switch (m) {
+    case NET_STA_ONLY: return "STA_ONLY";
+    case NET_AP_ONLY:  return "AP_ONLY";
+    default:           return "AP_STA";
+  }
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 static Preferences prefs;
 static String  nodeName = "vi_di_li";
@@ -45,6 +54,7 @@ static String  apPass   = "Poghka888$";
 static String  staSSID, staPass;
 static uint8_t artNet = 0, artSubnet = 0, artUni = 0;
 static Mode    mode         = MODE_HTP;
+static NetMode netMode      = NET_AP_STA;
 static bool    artOutEnabled = false;   // broadcast webVals as Art-Net to slaves
 static bool    webEnabled    = true;    // when false, web server and websocket stay disabled
 static bool    needSaveConfig = false;  // set when auto-generated values must be persisted
@@ -65,6 +75,7 @@ static void saveConfig() {
   prefs.putUChar("anet_sub",  artSubnet);
   prefs.putUChar("anet_uni",  artUni);
   prefs.putUChar("mode",      uint8_t(mode));
+  prefs.putUChar("net_mode",  uint8_t(netMode));
   prefs.putBool("ao_en",      artOutEnabled);
   prefs.putBool("web_en",     webEnabled);
   prefs.putString("fw_tag",   FW_TAG);
@@ -84,11 +95,13 @@ static void loadConfig() {
   artSubnet    = prefs.getUChar("anet_sub",  artSubnet);
   artUni       = prefs.getUChar("anet_uni",  artUni);
   mode         = Mode(prefs.getUChar("mode", uint8_t(mode)));
+  netMode      = NetMode(prefs.getUChar("net_mode", uint8_t(netMode)));
   artOutEnabled = prefs.getBool("ao_en",     artOutEnabled);
   webEnabled   = prefs.getBool("web_en",     webEnabled);
   String savedFwTag = prefs.getString("fw_tag", "");
   prefs.end();
   if (mode > MODE_HTP) mode = MODE_HTP;
+  if (netMode > NET_AP_ONLY) netMode = NET_AP_STA;
 
   // New firmware image flashed: rotate default SSID once, then persist.
   if (savedFwTag != FW_TAG) {
@@ -167,7 +180,10 @@ static IPAddress artOutTarget() {
 }
 
 static void startWiFi() {
-  WiFi.mode(WIFI_AP_STA);
+  wifi_mode_t wm = WIFI_AP_STA;
+  if (netMode == NET_AP_ONLY) wm = WIFI_AP;
+  if (netMode == NET_STA_ONLY) wm = WIFI_STA;
+  WiFi.mode(wm);
   WiFi.setSleep(false);
 
   // Empty AP SSID means first boot or new firmware tag: generate one random name.
@@ -178,12 +194,27 @@ static void startWiFi() {
     needSaveConfig = true;
   }
 
-  WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
-  WiFi.softAP(apSsid.c_str(), apPass.c_str());
-  if (staSSID.length()) {
+  if (netMode != NET_STA_ONLY) {
+    WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
+    WiFi.softAP(apSsid.c_str(), apPass.c_str());
+  }
+
+  if (netMode != NET_AP_ONLY && staSSID.length()) {
     WiFi.begin(staSSID.c_str(), staPass.c_str());
     uint32_t t = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - t < 10000) delay(100);
+
+    // Safety net: in STA_ONLY without a successful join, enable temporary AP.
+    if (netMode == NET_STA_ONLY && WiFi.status() != WL_CONNECTED) {
+      WiFi.mode(WIFI_AP_STA);
+      WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
+      WiFi.softAP(apSsid.c_str(), apPass.c_str());
+    }
+  } else if (netMode == NET_STA_ONLY) {
+    // No STA credentials in STA_ONLY: expose AP so the node is still recoverable.
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
+    WiFi.softAP(apSsid.c_str(), apPass.c_str());
   }
 }
 
@@ -701,6 +732,8 @@ static String statusJSON() {
     "\"sta_ssid\":\"%s\","
     "\"ssid\":\"%s\","
     "\"name\":\"%s\","
+    "\"net_mode\":%u,"
+    "\"net_mode_name\":\"%s\","
     "\"net\":%u,\"subnet\":%u,\"uni\":%u,"
     "\"uni15\":%u,"
     "\"mode\":%u,"
@@ -715,6 +748,7 @@ static String statusJSON() {
     staCon ? ipStr(WiFi.localIP()).c_str() : "",
     staCon ? "true" : "false",
     eStaSsid, eSsid, eName,
+    uint8_t(netMode), netModeName(netMode),
     artNet, artSubnet, artUni,
     universe(),
     uint8_t(mode), modeName(mode),
@@ -858,6 +892,14 @@ static void setupWeb() {
     saveConfig(); r->send(204);
   });
 
+  server.on("/netmode/set", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (!r->hasArg("m")) { r->send(400, "text/plain", "missing arg"); return; }
+    netMode = NetMode(constrain(r->arg("m").toInt(), 0, int(NET_AP_ONLY)));
+    saveConfig();
+    r->send(200, "text/plain", "ok,rebooting");
+    pendingReboot = true;
+  });
+
   server.on("/web/set", HTTP_GET, [](AsyncWebServerRequest* r){
     if (!r->hasArg("en")) { r->send(400, "text/plain", "missing arg"); return; }
     webEnabled = r->arg("en").toInt() != 0;
@@ -959,6 +1001,7 @@ void setup() {
       Serial.printf("STA IP   : %s\n", ipStr(WiFi.localIP()).c_str());
   }
   Serial.printf("Mode     : %s\n", modeName(mode));
+  Serial.printf("Net Mode : %s\n", netModeName(netMode));
   Serial.printf("Art-Net  : net=%u sub=%u uni=%u (15-bit=%u)\n",
     artNet, artSubnet, artUni, universe());
   Serial.printf("Art-Out  : %s\n", artOutEnabled ? "enabled" : "disabled");
