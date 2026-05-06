@@ -99,13 +99,13 @@ Art-Net to other nodes on the same network.
 ## Node Manifest
 
 The product name is `vizzz.di`. The manifest schema remains
-`vi_di_li.node.manifest.v1` for compatibility. It exposes identity, firmware
+`vizzz.di.node.manifest.v1` for compatibility. It exposes identity, firmware
 tag, network state, hardware pins, DMX constraints, supported protocols, API
 routes, and the source-control policy:
 
 ```json
 {
-  "schema": "vi_di_li.node.manifest.v1",
+  "schema": "vizzz.di.node.manifest.v1",
   "kind": "firmware-node",
   "product": "vizzz.di"
 }

@@ -5,10 +5,11 @@
 
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
 #include <Preferences.h>
 
 #include "esp_dmx.h"
-#include "vidili_core.h"
+#include "vizzz_core.h"
 
 // ── Hardware ──────────────────────────────────────────────────────────────────
 static constexpr int DMX_TX  = 25;
@@ -68,7 +69,7 @@ static bool wifiScanActive = false;
 static uint32_t wifiScanStartMs = 0;
 
 static uint16_t universe() {
-  return vidili::packUniverse(artNet, artSubnet, artUni);
+  return vizzz::packUniverse(artNet, artSubnet, artUni);
 }
 
 static bool isGeneratedApSsid(const String& ssid) {
@@ -247,6 +248,27 @@ static void startWiFi() {
   }
 }
 
+// ── mDNS ──────────────────────────────────────────────────────────────────────
+static String mdnsName;
+
+static void buildMdnsName() {
+  mdnsName = nodeName;
+  for (size_t i = 0; i < mdnsName.length(); i++) {
+    char c = mdnsName[i];
+    if (!isalnum((unsigned char)c) && c != '-') mdnsName[i] = '-';
+  }
+  while (mdnsName.startsWith("-")) mdnsName = mdnsName.substring(1);
+  while (mdnsName.endsWith("-"))   mdnsName = mdnsName.substring(0, mdnsName.length() - 1);
+  if (mdnsName.isEmpty()) mdnsName = "vizzz-di";
+}
+
+static void startMdns() {
+  buildMdnsName();
+  if (MDNS.begin(mdnsName.c_str())) {
+    MDNS.addService("http", "tcp", 80);
+  }
+}
+
 // ── DMX ───────────────────────────────────────────────────────────────────────
 static void setupDMX() {
   dmx_config_t cfg = DMX_CONFIG_DEFAULT;
@@ -342,7 +364,7 @@ static void computeOutput_locked(bool aActive, bool sActive) {
         break;
     }
 
-    outVals[i] = masterDimmer < 255 ? vidili::applyMaster(v, masterDimmer) : v;
+    outVals[i] = masterDimmer < 255 ? vizzz::applyMaster(v, masterDimmer) : v;
   }
   memcpy(dmxFrame + 1, outVals, MAX_CH);
 }
@@ -498,7 +520,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
           <span class="pill" id="staPill">sta</span>
         </div>
       </div>
-      <div class="footerNote">AP <b id="apIp">10.0.0.1</b><br>Target <b id="aoTarget">-</b></div>
+      <div class="footerNote">AP <b id="apIp">10.0.0.1</b><br>Target <b id="aoTarget">-</b><br>mDNS <b id="mdnsLabel">-</b></div>
     </div>
     <nav class="tabs" id="tabs">
       <a class="tab" data-route="/control" href="/control">Control</a>
@@ -679,10 +701,10 @@ function makeScenes(){
 function makePages(){ $('pageSel').innerHTML=[...Array(16)].map((_,i)=>`<option value="${i}">Page ${i+1}</option>`).join(''); }
 function updateMasterDisplays(v){const pct=Math.round((v/255)*100);$('masterPct').textContent=pct+'%';$('perfPct').textContent=pct+'%';if(document.activeElement!==$('master'))$('master').value=v;if(document.activeElement!==$('perfMaster'))$('perfMaster').value=v;}
 function updatePills(s){
-  $('apIp').textContent=s.ip||'-'; $('aoTarget').textContent=s.ao_target||'-';
+  $('apIp').textContent=s.ip||'-'; $('aoTarget').textContent=s.ao_target||'-'; if(s.mdns) $('mdnsLabel').textContent=s.mdns+'.local';
   const set=(id,text,on,hot)=>{const el=$(id);el.textContent=text;el.className='pill'+(hot?' hot':on?' on':'');};
   set('modePill',s.mode_name,false,true); set('netModePill',s.net_mode_name,false,false); set('artPill','ART '+(s.artnet_active?'active':'idle'),s.artnet_active,false); set('sacnPill','sACN '+(s.sacn_active?'active':'idle'),s.sacn_active,false); set('aoPill','OUT '+(s.ao?'on':'off'),s.ao,s.ao); set('webPill','WEB '+(s.web?'on':'off'),s.web,false);
-  $('staPill').textContent=s.sta_connected?('STA '+s.sta_ip):(s.sta_ssid?'STA joining':'STA idle'); $('staPill').className='pill'+(s.sta_connected?' on':s.sta_ssid?' warn':'');
+  const wls=s.wl_status; const staLabel=s.sta_connected?('STA '+s.sta_ip):s.sta_ssid?(wls===4?'STA auth fail':wls===1?'STA no SSID':'STA joining'):'STA idle'; const staErr=s.sta_ssid&&!s.sta_connected&&(wls===4||wls===1); $('staPill').textContent=staLabel; $('staPill').className='pill'+(s.sta_connected?' on':staErr?' warn':s.sta_ssid?' warn':'');
 }
 function syncFields(s){
   $('modeSel').value=String(s.mode); $('netModeSel').value=String(s.net_mode); $('netInput').value=s.net; $('subInput').value=s.subnet; $('uniInput').value=s.uni; $('uni15').textContent='15-bit: '+s.uni15; $('statusDump').textContent=JSON.stringify(s,null,2); $('diagDump').textContent=`mode=${s.mode_name}\nnetwork=${s.net_mode_name}\nartnet=${s.artnet_active}\nsacn=${s.sacn_active}\nweb=${s.web}\nout_target=${s.ao_target}`;
@@ -707,7 +729,7 @@ function refreshStatusDump(){if(state) $('statusDump').textContent=JSON.stringif
 function saveNode(){const p=new URLSearchParams(); const n=$('nodeName').value.trim(),s=$('apSsid').value.trim(),pw=$('apPass').value; if(n) p.append('name',n); if(s) p.append('ap_ssid',s); if(pw) p.append('ap_pass',pw); if(!p.toString()) return alert('Nothing to save'); hit('/node/set?'+p).then(()=>setTimeout(()=>hit('/reboot'),250));}
 function wifiSet(){const s=$('staSsid').value.trim(); if(!s) return alert('Enter SSID'); $('scanState').textContent='Connecting…'; hit('/wifi/set?ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent($('staPass').value));}
 function wifiForget(){hit('/wifi/forget'); $('staSsid').value=''; $('staPass').value=''; $('scanState').textContent='';}
-async function wifiScan(){if(scanTimer){clearInterval(scanTimer); scanTimer=null;} $('scanState').textContent='Scanning…'; $('networks').innerHTML=''; const poll=async()=>{const r=await qs('/wifi/scan'); if(!r){$('scanState').textContent='Scan failed'; showNetworks([]); return true;} if(r.scanning) return false; $('scanState').textContent=r.error?('Scan '+r.error):''; showNetworks(r.networks||[]); return true;}; if(await poll()) return; scanTimer=setInterval(async()=>{if(await poll()){clearInterval(scanTimer); scanTimer=null;}},1200);}
+async function wifiScan(){if(scanTimer){clearInterval(scanTimer); scanTimer=null;} $('scanState').textContent='Scanning…'; $('networks').innerHTML=''; let fails=0; const poll=async()=>{const r=await qs('/wifi/scan'); if(!r){if(++fails<4) return false; $('scanState').textContent='Scan failed'; showNetworks([]); return true;} fails=0; if(r.scanning) return false; $('scanState').textContent=r.error?('Scan '+r.error):''; showNetworks(r.networks||[]); return true;}; if(await poll()) return; scanTimer=setInterval(async()=>{if(await poll()){clearInterval(scanTimer); scanTimer=null;}},1200);}
 function showNetworks(nets){$('networks').innerHTML=nets.length?nets.map(n=>`<button class="net" onclick="$('staSsid').value='${escJsSq(n.ssid)}'">${escHtml(n.ssid||'(hidden)')} ${n.secure?'LOCK':''} ${n.rssi}dBm</button>`).join(''):'<span class="footerNote">No 2.4GHz networks found</span>';}
 async function refreshMonitor(){const r=await qs('/monitor'); if(r) $('monitorDump').textContent=JSON.stringify(r.out);}
 async function loadManifest(){const r=await qs('/node/manifest'); if(r) $('manifestDump').textContent=JSON.stringify(r,null,2);}
@@ -736,9 +758,10 @@ static void sendJSON(AsyncWebServerRequest* req, const String& body) {
 static size_t fillStatusJSON(char* buf, size_t n) {
   if (!n) return 0;
 
-  bool staCon = (WiFi.status() == WL_CONNECTED);
+  wl_status_t wlSt = WiFi.status();
+  bool staCon = (wlSt == WL_CONNECTED);
   char apIp[16], staIp[16], outTarget[16];
-  char eName[80], eSsid[80], eStaSsid[80];
+  char eName[80], eSsid[80], eStaSsid[80], eMdns[60];
   ipToCStr(apIp, sizeof(apIp), WiFi.softAPIP());
   staIp[0] = '\0';
   if (staCon) ipToCStr(staIp, sizeof(staIp), WiFi.localIP());
@@ -746,6 +769,7 @@ static size_t fillStatusJSON(char* buf, size_t n) {
   jsonEsc(eName,    sizeof(eName),    nodeName);
   jsonEsc(eSsid,    sizeof(eSsid),    apSsid);
   jsonEsc(eStaSsid, sizeof(eStaSsid), staSSID);
+  jsonEsc(eMdns,    sizeof(eMdns),    mdnsName);
 
   int written = snprintf(buf, n,
     "{"
@@ -753,8 +777,10 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     "\"sta_ip\":\"%s\","
     "\"sta_connected\":%s,"
     "\"sta_ssid\":\"%s\","
+    "\"wl_status\":%u,"
     "\"ssid\":\"%s\","
     "\"name\":\"%s\","
+    "\"mdns\":\"%s\","
     "\"net_mode\":%u,"
     "\"net_mode_name\":\"%s\","
     "\"net\":%u,\"subnet\":%u,\"uni\":%u,"
@@ -771,7 +797,9 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     apIp,
     staIp,
     staCon ? "true" : "false",
-    eStaSsid, eSsid, eName,
+    eStaSsid,
+    uint8_t(wlSt),
+    eSsid, eName, eMdns,
     uint8_t(netMode), netModeName(netMode),
     artNet, artSubnet, artUni,
     universe(),
@@ -792,7 +820,7 @@ static size_t fillStatusJSON(char* buf, size_t n) {
 }
 
 static String statusJSON() {
-  char buf[640];
+  char buf[720];
   fillStatusJSON(buf, sizeof(buf));
   return buf;
 }
@@ -858,7 +886,7 @@ static String nodeManifestJSON() {
   char buf[2600];
   snprintf(buf, sizeof(buf),
     "{"
-    "\"schema\":\"vi_di_li.node.manifest.v1\","
+    "\"schema\":\"vizzz.di.node.manifest.v1\","
     "\"kind\":\"firmware-node\","
     "\"product\":\"%s\","
     "\"name\":\"%s\","
@@ -907,16 +935,20 @@ static String wifiScanJSON() {
     return "{\"scanning\":false,\"error\":\"failed\",\"networks\":[]}";
   }
 
-  if (n < 0) {
+  if (n < 0 && !wifiScanActive) {
     WiFi.scanDelete();
     ensureStaInterface();
     wifiScanActive = true;
     wifiScanStartMs = millis();
-    int rc = WiFi.scanNetworks(true, true);
+    int rc = WiFi.scanNetworks(true, false);
     if (rc == WIFI_SCAN_FAILED) {
       wifiScanActive = false;
       return "{\"scanning\":false,\"error\":\"failed\",\"networks\":[]}";
     }
+    return "{\"scanning\":true}";
+  }
+
+  if (n < 0) {
     return "{\"scanning\":true}";
   }
 
@@ -1098,7 +1130,9 @@ static void setupWeb() {
     if (r->hasArg("name"))    nodeName = r->arg("name");
     if (r->hasArg("ap_ssid")) apSsid   = r->arg("ap_ssid");
     if (r->hasArg("ap_pass")) apPass   = r->arg("ap_pass");
-    saveConfig(); r->send(204);
+    saveConfig();
+    startMdns();
+    r->send(204);
   });
 
   server.on("/reboot", HTTP_GET, [](AsyncWebServerRequest* r){
@@ -1126,6 +1160,7 @@ void setup() {
   setupDMX();
   startWiFi();
   if (needSaveConfig) { saveConfig(); needSaveConfig = false; }
+  startMdns();
   refreshArtNetSocket();
   artOutUdp.begin(0);
   refreshSacnSocket();
@@ -1137,6 +1172,7 @@ void setup() {
   Serial.printf("\n=== vizzz.di ===\n");
   Serial.printf("AP SSID  : %s\n", apSsid.c_str());
   Serial.printf("AP IP    : %s\n", ipStr(WiFi.softAPIP()).c_str());
+  Serial.printf("mDNS     : http://%s.local\n", mdnsName.c_str());
   if (staSSID.length()) {
     Serial.printf("STA SSID : %s\n", staSSID.c_str());
     if (WiFi.status() == WL_CONNECTED)
@@ -1162,6 +1198,7 @@ void loop() {
   wl_status_t curWiFiStatus = WiFi.status();
   if (curWiFiStatus != prevWiFiStatus) {
     prevWiFiStatus = curWiFiStatus;
+    if (curWiFiStatus == WL_CONNECTED) startMdns();
     refreshArtNetSocket();
     refreshSacnSocket();
   }
@@ -1189,7 +1226,7 @@ void loop() {
     if (now - lastWs >= 400) {
       lastWs = now;
       if (ws.count() > 0) {
-        char statusBuf[640];
+        char statusBuf[720];
         size_t len = fillStatusJSON(statusBuf, sizeof(statusBuf));
         ws.textAll(statusBuf, len);
       }

@@ -14,9 +14,9 @@ ESP32 firmware (Arduino / PlatformIO) that outputs DMX512 via a MAX485 transceiv
 
 ```
 src/main.cpp          – entire firmware (single-file)
-include/vidili_core.h – pure C++ helpers (no Arduino deps), unit-tested
+include/vizzz_core.h – pure C++ helpers (no Arduino deps), unit-tested
 lib/esp_dmx/          – vendored esp_dmx library (do not modify)
-test/test_smoke/      – Unity tests for vidili_core.h, run on native platform
+test/test_smoke/      – Unity tests for vizzz_core.h, run on native platform
 platformio.ini        – two envs: esp32dev (hardware), native (unit tests)
 .vscode/tasks.json    – Build / Upload / Test tasks
 README.md             – user-facing docs
@@ -148,20 +148,20 @@ GET /node/manifest
 GET /manifest.json
 ```
 
-It must keep `schema: "vi_di_li.node.manifest.v1"` and `product: "vizzz.di"` and include identity, firmware tag, network state, DMX hardware pins, protocol capabilities, routes, and sync/source-control policy. Keep it machine-readable JSON and update `README.md` if fields materially change.
+It must keep `schema: "vizzz.di.node.manifest.v1"` and `product: "vizzz.di"` and include identity, firmware tag, network state, DMX hardware pins, protocol capabilities, routes, and sync/source-control policy. Keep it machine-readable JSON and update `README.md` if fields materially change.
 
 ---
 
 ## Adding Unit Tests
 
-Tests live in `test/test_smoke/test_main.cpp` and only test code in `include/vidili_core.h`.
+Tests live in `test/test_smoke/test_main.cpp` and only test code in `include/vizzz_core.h`.
 
 Rules:
-- `vidili_core.h` must have **zero** Arduino / ESP-IDF includes
+- `vizzz_core.h` must have **zero** Arduino / ESP-IDF includes
 - Tests use the `#if defined(ARDUINO) / #else` dual-main pattern (already in place)
 - Run: `~/.platformio/penv/bin/pio test -e native`
 
-If you add a new pure helper (math, protocol packing, etc.), put it in `vidili_core.h` and add a test case.
+If you add a new pure helper (math, protocol packing, etc.), put it in `vizzz_core.h` and add a test case.
 
 ---
 
@@ -209,7 +209,7 @@ Fade engine: `fadeActive`, `fadeStartMs`, `fadeTimeMs`, `fadeFrom[512]`, `fadeTo
 universe = (artNet << 8) | (artSubnet << 4) | (artUni & 0x0F)
 ```
 
-Implemented as `vidili::packUniverse(artNet, artSubnet, artUni)` in `include/vidili_core.h`.
+Implemented as `vizzz::packUniverse(artNet, artSubnet, artUni)` in `include/vizzz_core.h`.
 
 Art-Net IN is parsed directly in `pollArtNet()` with `WiFiUDP`; there is no `ArtnetWifi` dependency. Keep ArtDMX parsing small and non-blocking.
 
@@ -223,7 +223,7 @@ Applied to every channel on the output path:
 outVal = (value * master) >> 8
 ```
 
-Implemented as `vidili::applyMaster(value, master)` in `include/vidili_core.h`.  
+Implemented as `vizzz::applyMaster(value, master)` in `include/vizzz_core.h`.  
 `master=255` → full, `master=0` → black. Note: `255*255>>8 = 254`, not 255 — this is correct per DMX convention.
 
 ---
@@ -273,6 +273,6 @@ If validation fails, do not push.
 | No DMX output, no error | Using DMX_NUM_0 (UART0) — change to DMX_NUM_1 |
 | Lights flicker every other frame | DMX_PERIOD_MS too small (< 23) |
 | Web UI hangs | Mutex held too long in loop(); check for blocking calls under gLock |
-| Native tests fail to compile | `include/vidili_core.h` accidentally pulled in an Arduino header |
+| Native tests fail to compile | `include/vizzz_core.h` accidentally pulled in an Arduino header |
 | Upload fails with permission error | Run with `sg dialout -c "..."` wrapper |
 | `pio` / `platformio` command not found | Use `~/.platformio/penv/bin/pio` |
