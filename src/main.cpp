@@ -400,382 +400,279 @@ static void pollSacn() {
   }
 }
 
-// ── Editor HTML ───────────────────────────────────────────────────────────────
-static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html><html lang="en">
+// ── Unified App UI ───────────────────────────────────────────────────────────
+static const char APP_HTML[] PROGMEM = R"HTML(<!doctype html><html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>vi_di_li</title>
+<title>vi_di_li console</title>
 <style>
-:root{--a:#6366f1;--bg:#f4f4f5;--card:#fff;--bd:#e4e4e7;--tx:#18181b;--sub:#71717a;--r:#ef4444}
+:root{--bg:#f6efe4;--paper:#fffaf4;--ink:#1e1a17;--muted:#76695c;--line:#d7c6b3;--accent:#c55b35;--accent2:#0f766e;--danger:#ae2f2f;--night:#231f1a}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font:14px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--tx);padding:16px;max-width:1020px;margin:0 auto}
-h1{font-size:1.2rem;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:10px}
-.ttl{font-size:.73rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--sub);margin-bottom:10px}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
-.row:last-child{margin-bottom:0}
-input,select,button{font-size:.85rem;padding:6px 11px;border-radius:9px;border:1px solid var(--bd);background:var(--card);color:var(--tx);outline:none}
-input:focus,select:focus{border-color:var(--a)}
-button{cursor:pointer;background:var(--a);color:#fff;border:none;font-weight:600;transition:opacity .12s}
-button:hover{opacity:.82}
-button.g{background:transparent;border:1px solid var(--bd);color:var(--tx)}
-button.r{background:var(--r);color:#fff;border:none}
-.pill{font-size:.73rem;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--bg);border:1px solid var(--bd)}
-.on{background:#dcfce7;border-color:#86efac;color:#166534}
-.off{color:var(--sub)}
-.warn{background:#fef9c3;border-color:#fde047;color:#713f12}
-.ao{background:#ede9fe;border-color:#a5b4fc;color:#3730a3}
-.ch{display:grid;grid-template-columns:52px 1fr 42px 42px;gap:5px 8px;align-items:center}
-.cl{font-size:.75rem;color:var(--sub)}
-.cv,.co{font-size:.78rem;text-align:right;font-variant-numeric:tabular-nums}
-.co{color:var(--sub)}.co.hi{color:var(--a);font-weight:700}
-input[type=range]{width:100%;accent-color:var(--a);cursor:pointer}
-pre{background:var(--bg);border:1px solid var(--bd);border-radius:9px;padding:10px;font-size:.78rem;overflow:auto;white-space:pre-wrap;word-break:break-all}
-.nets{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-.ni{font-size:.8rem;padding:4px 10px;border:1px solid var(--bd);border-radius:8px;cursor:pointer}
-.ni:hover{border-color:var(--a);color:var(--a)}
-.hint{font-size:.78rem;color:var(--sub)}
-hr{border:none;border-top:1px solid var(--bd);margin:10px 0}
-a{color:var(--a);font-size:.85rem;text-decoration:none}
+body{font:14px/1.45 "Trebuchet MS","Segoe UI",sans-serif;background:radial-gradient(circle at top,#fff8ef 0,#f2e6d7 55%,#ead8c5 100%);color:var(--ink);min-height:100vh}
+.shell{max-width:1180px;margin:0 auto;padding:18px}
+.hero{background:linear-gradient(135deg,#fff8ef,#f8e5cf 55%,#f3d0bb);border:1px solid var(--line);border-radius:24px;padding:18px 18px 14px;box-shadow:0 20px 45px rgba(70,40,20,.08);margin-bottom:16px}
+.brand{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
+.title{font:700 2rem/1.05 Georgia,"Times New Roman",serif;letter-spacing:.01em}
+.sub{color:var(--muted);max-width:56ch;margin-top:5px}
+.pillbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.pill{padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:#fff4e8;font:600 .76rem/1 ui-monospace,Consolas,monospace;color:var(--muted)}
+.pill.on{background:#e3f8f4;border-color:#75c8bf;color:#0f4e4a}.pill.warn{background:#fff2c8;border-color:#ebd27e;color:#7b5a09}.pill.hot{background:#ffe0d8;border-color:#e5a08d;color:#7a2612}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.tab{display:inline-flex;align-items:center;justify-content:center;padding:11px 14px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.55);color:var(--ink);text-decoration:none;font:700 .82rem/1 ui-monospace,Consolas,monospace;text-transform:uppercase;letter-spacing:.08em}
+.tab.active{background:var(--night);border-color:var(--night);color:#fff4ea}
+.grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}
+.stack{display:grid;gap:16px}.section{display:none}.section.active{display:grid;gap:16px}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:22px;padding:16px;box-shadow:0 10px 25px rgba(50,30,10,.05)}
+.card h2{font:700 1.05rem/1.1 Georgia,"Times New Roman",serif;margin-bottom:4px}.meta{color:var(--muted);font-size:.82rem;margin-bottom:12px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row+.row{margin-top:10px}
+.grow{flex:1 1 160px}.split{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.triple{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+label{display:grid;gap:6px;font:700 .72rem/1 ui-monospace,Consolas,monospace;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+input,select,button,textarea{border-radius:14px;border:1px solid var(--line);padding:10px 12px;background:#fff;color:var(--ink);font:600 .9rem/1.2 "Trebuchet MS","Segoe UI",sans-serif;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(197,91,53,.14)}
+button{cursor:pointer;background:var(--accent);border-color:var(--accent);color:#fff8f2;font-weight:700}
+button.alt{background:#fff;border-color:var(--line);color:var(--ink)}button.good{background:var(--accent2);border-color:var(--accent2)}button.bad{background:var(--danger);border-color:var(--danger)}
+button.wide{width:100%}.actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.heroMeter{padding:18px;border-radius:20px;background:linear-gradient(180deg,#2f2821,#181512);color:#fff4ea;text-align:center}.heroMeter .big{font:700 3rem/1 Georgia,"Times New Roman",serif}
+.sceneGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.sceneBtn{height:84px;font-size:1rem}.miniScene{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.patchHead{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.channels{display:grid;grid-template-columns:58px 1fr 44px 44px;gap:8px 10px;align-items:center}.chLabel{font:600 .76rem/1 ui-monospace,Consolas,monospace;color:var(--muted)}
+.outVal{font:700 .8rem/1 ui-monospace,Consolas,monospace;text-align:right;color:var(--muted)}.outVal.hot{color:var(--accent)}.webVal{font:700 .8rem/1 ui-monospace,Consolas,monospace;text-align:right}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.nets{display:flex;flex-wrap:wrap;gap:8px}.net{padding:7px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;cursor:pointer;font-size:.82rem}
+pre{white-space:pre-wrap;word-break:break-word;background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;font:12px/1.45 ui-monospace,Consolas,monospace;max-height:260px;overflow:auto}
+.footerNote{font-size:.78rem;color:var(--muted)}
+@media (max-width:900px){.grid,.split,.triple{grid-template-columns:1fr}.sceneGrid,.miniScene{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
-<h1>vi_di_li <span class="pill off" id="modePill">…</span> <a href="/vj" style="margin-left:auto">VJ →</a></h1>
+<div class="shell">
+  <div class="hero">
+    <div class="brand">
+      <div>
+        <div class="title">vi_di_li</div>
+        <div class="sub">One shell, five routes. Clean sections for control, patching, scenes, network, system, and a performance view.</div>
+        <div class="pillbar">
+          <span class="pill" id="modePill">mode</span>
+          <span class="pill" id="netModePill">network</span>
+          <span class="pill" id="artPill">artnet</span>
+          <span class="pill" id="sacnPill">sacn</span>
+          <span class="pill" id="aoPill">out</span>
+          <span class="pill" id="webPill">web</span>
+          <span class="pill" id="staPill">sta</span>
+        </div>
+      </div>
+      <div class="footerNote">AP <b id="apIp">10.0.0.1</b><br>Target <b id="aoTarget">-</b></div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <a class="tab" data-route="/control" href="/control">Control</a>
+      <a class="tab" data-route="/patch" href="/patch">Patch</a>
+      <a class="tab" data-route="/scenes" href="/scenes">Scenes</a>
+      <a class="tab" data-route="/network" href="/network">Network</a>
+      <a class="tab" data-route="/system" href="/system">System</a>
+      <a class="tab" data-route="/performance" href="/performance">Performance</a>
+    </nav>
+  </div>
 
-<div class="card">
-  <div class="ttl">Status</div>
-  <div class="row">
-    <span class="pill off" id="anPill">Art-Net –</span>
-    <span class="pill off" id="aoPill">OUT –</span>
-    <span class="pill off" id="staPill">STA –</span>
-    <span class="hint">AP: <b id="apip">10.0.0.1</b></span>
-  </div>
-  <div class="row">
-    <select id="mSel" onchange="setMode(this.value)">
-      <option value="0">WEB_ONLY</option>
-      <option value="1">ARTNET_ONLY</option>
-      <option value="2">MERGE_HTP</option>
-    </select>
-    <button class="g" onclick="blackout()">Blackout</button>
-    <button class="g" onclick="fullOn()">Full on</button>
-    <button class="r" style="margin-left:auto" onclick="if(confirm('Reboot?'))fetch('/reboot')">Reboot</button>
-  </div>
-</div>
+  <section class="section" data-route="/control">
+    <div class="grid">
+      <div class="stack">
+        <div class="card">
+          <h2>Core Control</h2>
+          <div class="meta">Direct mode, dimmer, outputs, and network behavior.</div>
+          <div class="split">
+            <label>Output Mode<select id="modeSel"><option value="0">WEB_ONLY</option><option value="1">ARTNET_ONLY</option><option value="2">MERGE_HTP</option></select></label>
+            <label>Network Profile<select id="netModeSel"><option value="0">AP_STA</option><option value="1">STA_ONLY</option><option value="2">AP_ONLY</option></select></label>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <label class="grow">Master Dimmer<input id="master" type="range" min="0" max="255" value="255"></label>
+            <div class="heroMeter"><div class="big" id="masterPct">100%</div><div>master</div></div>
+          </div>
+          <div class="actions" style="margin-top:12px">
+            <button class="bad" onclick="blackout()">Blackout</button>
+            <button class="good" onclick="fullOn()">Full On</button>
+            <button class="alt" id="aoBtn" onclick="toggleArtOut()">Art-Net OUT</button>
+            <button class="alt" id="webBtn" onclick="toggleWeb()">Web Stack</button>
+          </div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h2>Live Snapshot</h2>
+          <div class="meta">Route-aware UI keeps the same live state everywhere.</div>
+          <pre id="statusDump">Loading…</pre>
+        </div>
+      </div>
+    </div>
+  </section>
 
-<div class="card">
-  <div class="ttl">Network – STA</div>
-  <div class="row">
-    <input id="wssid" placeholder="SSID" style="width:180px">
-    <input id="wpass" type="password" placeholder="Password" style="width:140px">
-    <button onclick="wifiSet()">Connect</button>
-    <button class="g" onclick="wifiForget()">Forget</button>
-    <button class="g" onclick="wifiScan()">Scan</button>
-    <span class="hint" id="scanSt"></span>
-  </div>
-  <div class="nets" id="nets"></div>
-  <hr>
-  <div class="ttl">Node / AP</div>
-  <div class="row">
-    <span class="hint">Name</span><input id="cfgName" placeholder="vi_di_li" style="width:130px">
-    <span class="hint">AP SSID</span><input id="cfgApSsid" placeholder="vi_di_li" style="width:130px">
-    <span class="hint">AP Pass</span><input id="cfgApPass" type="password" placeholder="password" style="width:120px">
-    <button onclick="saveNode()">Save &amp; Reboot</button>
-  </div>
-</div>
+  <section class="section" data-route="/patch">
+    <div class="card">
+      <div class="patchHead">
+        <div>
+          <h2>Channel Patch</h2>
+          <div class="meta">Paged editor for the web layer with live output compare.</div>
+        </div>
+        <div class="row">
+          <label>Page<select id="pageSel"></select></label>
+          <div class="footerNote" id="pageInfo">ch 1-32</div>
+        </div>
+      </div>
+      <div class="channels" id="channels"></div>
+    </div>
+  </section>
 
-<div class="card">
-  <div class="ttl">Art-Net Universe</div>
-  <div class="row">
-    Net <input id="net" type="number" min="0" max="127" style="width:76px">
-    Sub <input id="sub" type="number" min="0" max="15"  style="width:62px">
-    Uni <input id="uni" type="number" min="0" max="15"  style="width:62px">
-    <button onclick="setUni()">Apply</button>
-    <span class="hint" id="u15"></span>
-  </div>
-</div>
+  <section class="section" data-route="/scenes">
+    <div class="grid">
+      <div class="card">
+        <h2>Recall</h2>
+        <div class="meta">Performance-safe scene recalls with fade time.</div>
+        <div class="row"><label class="grow">Fade ms<input id="fadeInput" type="number" value="1000"></label></div>
+        <div class="sceneGrid" id="sceneRecall"></div>
+      </div>
+      <div class="card">
+        <h2>Store</h2>
+        <div class="meta">Write current web layer into scene memory.</div>
+        <div class="miniScene" id="sceneSave"></div>
+      </div>
+    </div>
+  </section>
 
-<div class="card">
-  <div class="ttl">Channels</div>
-  <div class="row">
-    Page <select id="page" onchange="changePage()"></select>
-    <span class="hint" id="pinfo"></span>
-    <span class="hint" style="margin-left:auto">WEB &nbsp;›&nbsp; <span style="color:var(--a)">OUT</span></span>
-  </div>
-  <div id="sl" class="ch"></div>
-</div>
+  <section class="section" data-route="/network">
+    <div class="grid">
+      <div class="stack">
+        <div class="card">
+          <h2>Transport</h2>
+          <div class="meta">Universe, routing, and protocol-facing configuration.</div>
+          <div class="triple">
+            <label>Net<input id="netInput" type="number" min="0" max="127"></label>
+            <label>Subnet<input id="subInput" type="number" min="0" max="15"></label>
+            <label>Universe<input id="uniInput" type="number" min="0" max="15"></label>
+          </div>
+          <div class="row" style="margin-top:12px"><button onclick="saveUniverse()">Save Universe</button><div class="footerNote" id="uni15">15-bit: 0</div></div>
+        </div>
+        <div class="card">
+          <h2>WiFi Client</h2>
+          <div class="meta">Join a local network and scan available SSIDs.</div>
+          <div class="split">
+            <label>SSID<input id="staSsid" placeholder="Local network"></label>
+            <label>Password<input id="staPass" type="password" placeholder="Password"></label>
+          </div>
+          <div class="row" style="margin-top:12px"><button onclick="wifiSet()">Connect</button><button class="alt" onclick="wifiForget()">Forget</button><button class="alt" onclick="wifiScan()">Scan</button><div class="footerNote" id="scanState"></div></div>
+          <div class="nets" id="networks" style="margin-top:12px"></div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h2>Node Identity</h2>
+          <div class="meta">AP and node naming live here now.</div>
+          <div class="split">
+            <label>Node Name<input id="nodeName" placeholder="vi_di_li"></label>
+            <label>AP SSID<input id="apSsid" placeholder="vi_di_li"></label>
+          </div>
+          <div class="row" style="margin-top:12px"><label class="grow">AP Password<input id="apPass" type="password" placeholder="Password"></label></div>
+          <div class="row" style="margin-top:12px"><button onclick="saveNode()">Save Identity</button></div>
+        </div>
+      </div>
+    </div>
+  </section>
 
-<div class="card">
-  <div class="ttl">Scenes</div>
-  <div class="row">Fade ms <input id="fade" value="1000" style="width:90px"> <span class="hint">web layer</span></div>
-  <div class="row"><span class="hint" style="min-width:50px">Recall</span>
-    <button class="g" onclick="rec(0)">1</button><button class="g" onclick="rec(1)">2</button>
-    <button class="g" onclick="rec(2)">3</button><button class="g" onclick="rec(3)">4</button>
-    <button class="g" onclick="rec(4)">5</button><button class="g" onclick="rec(5)">6</button>
-    <button class="g" onclick="rec(6)">7</button><button class="g" onclick="rec(7)">8</button>
-  </div>
-  <div class="row"><span class="hint" style="min-width:50px">Save</span>
-    <button class="g" onclick="sav(0)">S1</button><button class="g" onclick="sav(1)">S2</button>
-    <button class="g" onclick="sav(2)">S3</button><button class="g" onclick="sav(3)">S4</button>
-    <button class="g" onclick="sav(4)">S5</button><button class="g" onclick="sav(5)">S6</button>
-    <button class="g" onclick="sav(6)">S7</button><button class="g" onclick="sav(7)">S8</button>
-  </div>
-</div>
+  <section class="section" data-route="/system">
+    <div class="grid">
+      <div class="card">
+        <h2>Output Monitor</h2>
+        <div class="meta">First 64 channels from the final DMX output.</div>
+        <div class="row" style="margin-bottom:12px"><button onclick="refreshMonitor()">Refresh</button></div>
+        <pre id="monitorDump">[]</pre>
+      </div>
+      <div class="card">
+        <h2>System Actions</h2>
+        <div class="meta">Fast safe operations.</div>
+        <div class="actions">
+          <button class="bad" onclick="rebootNow()">Reboot Device</button>
+          <button class="alt" onclick="refreshStatusDump()">Refresh Status</button>
+        </div>
+        <pre id="diagDump" style="margin-top:12px">No diagnostics yet.</pre>
+      </div>
+    </div>
+  </section>
 
-<div class="card">
-  <div class="ttl">Output Monitor – ch 1–64
-    <button class="g" style="float:right;font-size:.72rem;margin-top:-3px" onclick="refreshMon()">Refresh</button>
-  </div>
-  <pre id="mon">–</pre>
+  <section class="section" data-route="/performance">
+    <div class="grid">
+      <div class="card">
+        <h2>Performance Deck</h2>
+        <div class="meta">Big actions only: scenes, master, blackout, full on.</div>
+        <div class="actions"><button class="bad" onclick="blackout()">Blackout</button><button class="good" onclick="fullOn()">Full On</button></div>
+        <div class="row" style="margin-top:12px"><label class="grow">Master Dimmer<input id="perfMaster" type="range" min="0" max="255" value="255"></label></div>
+        <div class="heroMeter" style="margin-top:12px"><div class="big" id="perfPct">100%</div><div>show level</div></div>
+      </div>
+      <div class="card">
+        <h2>Scene Triggers</h2>
+        <div class="meta">Single-tap recalls with the shared fade setting.</div>
+        <div class="row"><label class="grow">Fade ms<input id="perfFade" type="number" value="1000"></label></div>
+        <div class="sceneGrid" id="perfScenes" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <script>
 const $=id=>document.getElementById(id);
-let curPage=0,pageWeb=[],pageOut=[];
+const route=location.pathname==='/vj'?'/performance':(location.pathname==='/'?'/control':location.pathname);
+let state=null,pageWeb=[],pageOut=[],curPage=0,masterTimer=null,scanTimer=null,artOutEnabled=false,webEnabled=true;
 
-function escHtml(s){
-  return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function escHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function escJsSq(s){return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,'\\r');}
+function qs(url){return fetch(url,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);}
+function hit(url){return fetch(url,{cache:'no-store'});}
+function setActiveRoute(){document.querySelectorAll('.section').forEach(x=>x.classList.toggle('active',x.dataset.route===route));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.route===route));}
+function makeScenes(){
+  $('sceneRecall').innerHTML=[...Array(8)].map((_,i)=>`<button class="sceneBtn" onclick="recallScene(${i})">Recall ${i+1}</button>`).join('');
+  $('sceneSave').innerHTML=[...Array(8)].map((_,i)=>`<button onclick="saveScene(${i})">Save ${i+1}</button>`).join('');
+  $('perfScenes').innerHTML=[...Array(8)].map((_,i)=>`<button class="sceneBtn" onclick="recallPerf(${i})">Scene ${i+1}</button>`).join('');
 }
-
-function escJsSq(s){
-  return s.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,'\\r');
+function makePages(){ $('pageSel').innerHTML=[...Array(16)].map((_,i)=>`<option value="${i}">Page ${i+1}</option>`).join(''); }
+function updateMasterDisplays(v){const pct=Math.round((v/255)*100);$('masterPct').textContent=pct+'%';$('perfPct').textContent=pct+'%';if(document.activeElement!==$('master'))$('master').value=v;if(document.activeElement!==$('perfMaster'))$('perfMaster').value=v;}
+function updatePills(s){
+  $('apIp').textContent=s.ip||'-'; $('aoTarget').textContent=s.ao_target||'-';
+  const set=(id,text,on,hot)=>{const el=$(id);el.textContent=text;el.className='pill'+(hot?' hot':on?' on':'');};
+  set('modePill',s.mode_name,false,true); set('netModePill',s.net_mode_name,false,false); set('artPill','ART '+(s.artnet_active?'active':'idle'),s.artnet_active,false); set('sacnPill','sACN '+(s.sacn_active?'active':'idle'),s.sacn_active,false); set('aoPill','OUT '+(s.ao?'on':'off'),s.ao,s.ao); set('webPill','WEB '+(s.web?'on':'off'),s.web,false);
+  $('staPill').textContent=s.sta_connected?('STA '+s.sta_ip):(s.sta_ssid?'STA joining':'STA idle'); $('staPill').className='pill'+(s.sta_connected?' on':s.sta_ssid?' warn':'');
 }
-
-function mkPages(){
-  $('page').innerHTML=[...Array(16)].map((_,i)=>
-    `<option value="${i}">Page ${i+1} &nbsp;ch ${i*32+1}–${i*32+32}</option>`).join('');
+function syncFields(s){
+  $('modeSel').value=String(s.mode); $('netModeSel').value=String(s.net_mode); $('netInput').value=s.net; $('subInput').value=s.subnet; $('uniInput').value=s.uni; $('uni15').textContent='15-bit: '+s.uni15; $('statusDump').textContent=JSON.stringify(s,null,2); $('diagDump').textContent=`mode=${s.mode_name}\nnetwork=${s.net_mode_name}\nartnet=${s.artnet_active}\nsacn=${s.sacn_active}\nweb=${s.web}\nout_target=${s.ao_target}`;
+  artOutEnabled=!!s.ao; webEnabled=!!s.web; $('aoBtn').textContent='Art-Net OUT: '+(artOutEnabled?'ON':'OFF'); $('webBtn').textContent='Web Stack: '+(webEnabled?'ON':'OFF');
+  if(!$('staSsid').value && s.sta_ssid) $('staSsid').placeholder=s.sta_ssid; if(!$('nodeName').value) $('nodeName').placeholder=s.name; if(!$('apSsid').value) $('apSsid').placeholder=s.ssid; updateMasterDisplays(s.dim||255);
 }
+function renderChannels(base){$('channels').innerHTML=[...Array(32)].map((_,i)=>{const ch=base+i,w=pageWeb[i]??0,o=pageOut[i]??0;return `<div class="chLabel">Ch ${ch}</div><input type="range" min="0" max="255" value="${w}" oninput="setChannel(${ch},+this.value);this.nextElementSibling.textContent=this.value"><div class="webVal">${w}</div><div class="outVal${o>w?' hot':''}">${o}</div>`;}).join('');}
+async function loadPage(){const s=await qs('/page?i='+curPage);if(!s)return;pageWeb=s.web||[];pageOut=s.out||[];$('pageInfo').textContent='ch '+s.base_ch+'-'+(s.base_ch+31);renderChannels(s.base_ch);}
+function refreshOutGrid(){const rows=$('channels'); if(!rows) return; rows.querySelectorAll('input[type=range]').forEach((sl,i)=>{sl.value=pageWeb[i]??0; sl.nextElementSibling.textContent=pageWeb[i]??0; const out=sl.nextElementSibling.nextElementSibling; const o=pageOut[i]??0; out.textContent=o; out.className='outVal'+(o>(pageWeb[i]??0)?' hot':'');});}
+function setChannel(ch,v){hit('/set?ch='+ch+'&v='+v);}
+function blackout(){hit('/blackout');}
+function fullOn(){hit('/full');}
+function queueMaster(v){updateMasterDisplays(v); clearTimeout(masterTimer); masterTimer=setTimeout(()=>hit('/master?v='+v),40);}
+function recallScene(i){hit('/scene/recall?n='+i+'&fade='+(+$('fadeInput').value||0));}
+function recallPerf(i){hit('/scene/recall?n='+i+'&fade='+(+$('perfFade').value||0));}
+function saveScene(i){hit('/scene/save?n='+i);}
+function saveUniverse(){hit(`/artnet/set?net=${$('netInput').value}&subnet=${$('subInput').value}&uni=${$('uniInput').value}`);}
+function toggleArtOut(){artOutEnabled=!artOutEnabled; hit('/artout/set?en='+(artOutEnabled?1:0)); $('aoBtn').textContent='Art-Net OUT: '+(artOutEnabled?'ON':'OFF');}
+function toggleWeb(){const next=webEnabled?0:1; if(confirm('This will reboot the device. Continue?')) hit('/web/set?en='+next);}
+function rebootNow(){if(confirm('Reboot device now?')) hit('/reboot');}
+function refreshStatusDump(){if(state) $('statusDump').textContent=JSON.stringify(state,null,2);}
+function saveNode(){const p=new URLSearchParams(); const n=$('nodeName').value.trim(),s=$('apSsid').value.trim(),pw=$('apPass').value; if(n) p.append('name',n); if(s) p.append('ap_ssid',s); if(pw) p.append('ap_pass',pw); if(!p.toString()) return alert('Nothing to save'); hit('/node/set?'+p).then(()=>setTimeout(()=>hit('/reboot'),250));}
+function wifiSet(){const s=$('staSsid').value.trim(); if(!s) return alert('Enter SSID'); $('scanState').textContent='Connecting…'; hit('/wifi/set?ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent($('staPass').value));}
+function wifiForget(){hit('/wifi/forget'); $('staSsid').value=''; $('staPass').value=''; $('scanState').textContent='';}
+async function wifiScan(){if(scanTimer){clearInterval(scanTimer); scanTimer=null;} $('scanState').textContent='Scanning…'; $('networks').innerHTML=''; await hit('/wifi/scan'); scanTimer=setInterval(async()=>{const r=await qs('/wifi/scan'); if(!r||!r.scanning){clearInterval(scanTimer); scanTimer=null; $('scanState').textContent=''; showNetworks((r&&r.networks)||[]);}},1400);}
+function showNetworks(nets){$('networks').innerHTML=nets.length?nets.map(n=>`<button class="net" onclick="$('staSsid').value='${escJsSq(n.ssid)}'">${escHtml(n.ssid)} ${n.secure?'LOCK':''} ${n.rssi}dBm</button>`).join(''):'<span class="footerNote">No networks found</span>';}
+async function refreshMonitor(){const r=await qs('/monitor'); if(r) $('monitorDump').textContent=JSON.stringify(r.out);}
+function applyMode(){hit('/mode/set?m='+$('modeSel').value);} function applyNetMode(){if(confirm('Switch network profile and reboot?')) hit('/netmode/set?m='+$('netModeSel').value);}
 
-// WebSocket for real-time status push
-const ws=new WebSocket('ws://'+location.host+'/ws');
-ws.onmessage=e=>{
-  let s;try{s=JSON.parse(e.data);}catch{return;}
-  $('apip').textContent=s.ip;
-  $('mSel').value=String(s.mode);
-  $('modePill').textContent=s.mode_name;
-  $('modePill').className='pill '+(s.artnet_active?'on':'off');
-  $('net').value=s.net;$('sub').value=s.subnet;$('uni').value=s.uni;
-  $('u15').textContent='15-bit: '+s.uni15;
-  $('anPill').textContent='AN: '+(s.artnet_active?'active':'idle');
-  $('anPill').className='pill '+(s.artnet_active?'on':'off');
-  $('aoPill').textContent='OUT: '+(s.ao?'ON':'off');
-  $('aoPill').className='pill '+(s.ao?'ao':'off');
-  const c=s.sta_connected;
-  $('staPill').textContent=c?'STA: '+s.sta_ip:s.sta_ssid?'STA: connecting…':'STA: –';
-  $('staPill').className='pill '+(c?'on':s.sta_ssid?'warn':'off');
-  if(s.sta_ssid&&!$('wssid').value)$('wssid').placeholder=s.sta_ssid;
-  if(!$('cfgName').value)$('cfgName').placeholder=s.name;
-  if(!$('cfgApSsid').value)$('cfgApSsid').placeholder=s.ssid;
-};
-ws.onclose=()=>{setTimeout(()=>location.reload(),3000);};
-
-async function api(url){
-  try{return await(await fetch(url,{cache:'no-store'})).json();}catch{return null;}
-}
-
-function renderSliders(base){
-  $('sl').innerHTML=[...Array(32)].map((_,i)=>{
-    const ch=base+i,w=pageWeb[i]??0,o=pageOut[i]??0;
-    return `<div class="cl">Ch ${ch}</div>
-<input type="range" min="0" max="255" value="${w}"
-  oninput="setCh(${ch},+this.value);this.nextElementSibling.textContent=this.value">
-<div class="cv">${w}</div><div class="co${o>w?' hi':''}">${o}</div>`;
-  }).join('');
-}
-
-function refreshOut(){
-  $('sl').querySelectorAll('.co').forEach((el,i)=>{
-    const o=pageOut[i]??0,w=+(el.previousElementSibling.previousElementSibling.value);
-    el.textContent=o;el.className='co'+(o>w?' hi':'');
-  });
-}
-
-async function loadPage(){
-  const s=await api('/page?i='+curPage);if(!s)return;
-  pageWeb=s.web??[];pageOut=s.out??[];
-  $('pinfo').textContent=`ch ${s.base_ch}–${s.base_ch+31}`;
-  renderSliders(s.base_ch);
-}
-function changePage(){curPage=+$('page').value;loadPage();}
-
-let tSend=0;
-function setCh(ch,v){const n=Date.now();if(n-tSend>35){tSend=n;fetch(`/set?ch=${ch}&v=${v}`);}}
-function setMode(m){fetch('/mode/set?m='+m);}
-function setUni(){fetch(`/artnet/set?net=${$('net').value}&subnet=${$('sub').value}&uni=${$('uni').value}`);}
-function blackout(){fetch('/blackout');}
-function fullOn(){fetch('/full');}
-function rec(i){fetch(`/scene/recall?n=${i}&fade=${+$('fade').value||0}`);}
-function sav(i){fetch('/scene/save?n='+i);}
-
-async function refreshMon(){
-  const s=await api('/monitor');if(!s)return;
-  $('mon').textContent=JSON.stringify(s.out);
-}
-
-let scanTimer=null;
-async function wifiScan(){
-  if(scanTimer){clearInterval(scanTimer);scanTimer=null;}
-  $('scanSt').textContent='Scanning…';$('nets').innerHTML='';
-  await fetch('/wifi/scan');
-  scanTimer=setInterval(async()=>{
-    const r=await api('/wifi/scan');
-    if(!r||!r.scanning){clearInterval(scanTimer);scanTimer=null;$('scanSt').textContent='';showNets(r?.networks??[]);}
-  },1500);
-}
-function showNets(nets){
-  $('nets').innerHTML=nets.length
-    ?nets.map(n=>`<div class="ni" onclick="$('wssid').value='${escJsSq(n.ssid)}'">${escHtml(n.ssid)}${n.secure?' 🔒':''} <span class="hint">${n.rssi}dBm</span></div>`).join('')
-    :'<span class="hint">No networks found</span>';
-}
-function wifiSet(){
-  const s=$('wssid').value.trim();if(!s){alert('Enter SSID');return;}
-  fetch(`/wifi/set?ssid=${encodeURIComponent(s)}&pass=${encodeURIComponent($('wpass').value)}`);
-  $('scanSt').textContent='Connecting…';
-}
-function wifiForget(){
-  fetch('/wifi/forget');$('wssid').value='';$('wpass').value='';$('scanSt').textContent='';
-}
-function saveNode(){
-  const p=new URLSearchParams();
-  const name=$('cfgName').value.trim(),ssid=$('cfgApSsid').value.trim(),pass=$('cfgApPass').value;
-  if(name)p.append('name',name);if(ssid)p.append('ap_ssid',ssid);if(pass)p.append('ap_pass',pass);
-  if(!p.toString()){alert('Nothing to save');return;}
-  fetch('/node/set?'+p).then(()=>setTimeout(()=>fetch('/reboot'),300));
-}
-
-mkPages();loadPage();refreshMon();
-setInterval(async()=>{
-  const s=await api('/page?i='+curPage);if(!s)return;
-  pageWeb=s.web??[];pageOut=s.out??[];
-  $('sl').querySelectorAll('input[type=range]').forEach((sl,i)=>{
-    sl.value=pageWeb[i]??0;sl.nextElementSibling.textContent=pageWeb[i]??0;
-  });
-  refreshOut();
-},1000);
-</script>
-</body></html>)HTML";
-
-// ── VJ UI HTML ────────────────────────────────────────────────────────────────
-static const char VJ_HTML[] PROGMEM = R"HTML(<!doctype html><html lang="en">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>vi_di_li VJ</title>
-<style>
-:root{--a:#6366f1;--bg:#09090b;--card:#18181b;--bd:#27272a;--tx:#fafafa;--sub:#52525b;--r:#ef4444}
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-body{font:14px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--tx);padding:12px;min-height:100dvh;touch-action:manipulation;user-select:none}
-h1{font-size:1rem;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
-.pill{font-size:.72rem;font-weight:600;padding:2px 8px;border-radius:99px;border:1px solid var(--bd)}
-.on{background:#14532d;border-color:#16a34a;color:#4ade80}
-.off{color:var(--sub)}
-.ao{background:#1e1b4b;border-color:#6366f1;color:#a5b4fc}
-a{color:var(--a);text-decoration:none;font-size:.8rem;margin-left:auto}
-.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
-.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px}
-.btn{height:70px;font-size:1rem;font-weight:700;border-radius:14px;border:2px solid var(--bd);background:var(--card);color:var(--tx);cursor:pointer;transition:border-color .1s,background .1s,color .1s}
-.btn:active,.btn.act{border-color:var(--a);background:#1e1b4b;color:#a5b4fc}
-.bk{background:var(--r)!important;border-color:var(--r)!important;color:#fff;font-size:1.1rem}
-.bk:active{opacity:.75}
-.fo{background:#fff!important;border-color:#fff!important;color:#000;font-size:1.1rem}
-.fo:active{opacity:.75}
-.sec{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin-bottom:8px}
-.lbl{font-size:.7rem;text-transform:uppercase;letter-spacing:.07em;color:var(--sub);margin-bottom:8px;display:flex;align-items:center;gap:8px}
-input[type=range]{width:100%;accent-color:var(--a);height:32px;cursor:pointer}
-.pct{font-size:2.4rem;font-weight:800;text-align:center;font-variant-numeric:tabular-nums;letter-spacing:-.02em;padding:4px 0}
-select,input[type=number]{font-size:.85rem;padding:6px 10px;border-radius:8px;border:1px solid var(--bd);background:#27272a;color:var(--tx);outline:none}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.togbtn{height:36px;font-size:.82rem;padding:0 14px;border-radius:9px;border:2px solid var(--bd);background:transparent;color:var(--sub);cursor:pointer;font-weight:600;transition:all .15s}
-.togbtn.on{border-color:var(--a);color:#a5b4fc}
-</style>
-</head>
-<body>
-<h1>vi_di_li VJ
-  <span class="pill off" id="anPill">AN –</span>
-  <span class="pill off" id="aoPill">OUT –</span>
-  <a href="/">Editor →</a>
-</h1>
-
-<div class="g2">
-  <button class="btn bk" onclick="blackout()">■ BLACKOUT</button>
-  <button class="btn fo" onclick="fullOn()">● FULL ON</button>
-</div>
-
-<div class="sec">
-  <div class="lbl">Master Dimmer</div>
-  <input type="range" id="dim" min="0" max="255" value="255" oninput="onDim(+this.value)">
-  <div class="pct" id="pct">100%</div>
-</div>
-
-<div class="sec">
-  <div class="lbl">Scenes
-    <span style="margin-left:auto;display:flex;align-items:center;gap:6px;font-size:.82rem;font-weight:400;text-transform:none;letter-spacing:0">
-      Fade ms <input type="number" id="fade" value="1000" style="width:80px">
-    </span>
-  </div>
-  <div class="g4">
-    <button class="btn" id="s0" onclick="rec(0)">1</button>
-    <button class="btn" id="s1" onclick="rec(1)">2</button>
-    <button class="btn" id="s2" onclick="rec(2)">3</button>
-    <button class="btn" id="s3" onclick="rec(3)">4</button>
-    <button class="btn" id="s4" onclick="rec(4)">5</button>
-    <button class="btn" id="s5" onclick="rec(5)">6</button>
-    <button class="btn" id="s6" onclick="rec(6)">7</button>
-    <button class="btn" id="s7" onclick="rec(7)">8</button>
-  </div>
-</div>
-
-<div class="sec">
-  <div class="lbl">Control</div>
-  <div class="row">
-    <select id="mSel" onchange="fetch('/mode/set?m='+this.value)">
-      <option value="0">WEB_ONLY</option>
-      <option value="1">ARTNET_ONLY</option>
-      <option value="2">MERGE_HTP</option>
-    </select>
-    <button class="togbtn" id="aoBtn" onclick="toggleAo()">Art-Net OUT: OFF</button>
-  </div>
-</div>
-
-<script>
-const $=id=>document.getElementById(id);
-let aoEnabled=false;
-
-let dimT=null;
-function onDim(v){
-  $('pct').textContent=Math.round(v/255*100)+'%';
-  clearTimeout(dimT);dimT=setTimeout(()=>fetch('/master?v='+v),40);
-}
-function blackout(){fetch('/blackout');}
-function fullOn(){fetch('/full');}
-function rec(i){
-  document.querySelectorAll('[id^=s]').forEach(b=>b.classList.remove('act'));
-  $('s'+i).classList.add('act');
-  fetch('/scene/recall?n='+i+'&fade='+(+$('fade').value||0));
-}
-function toggleAo(){
-  aoEnabled=!aoEnabled;
-  fetch('/artout/set?en='+(aoEnabled?1:0));
-  updateAoBtn();
-}
-function updateAoBtn(){
-  $('aoBtn').textContent='Art-Net OUT: '+(aoEnabled?'ON':'OFF');
-  $('aoBtn').className='togbtn'+(aoEnabled?' on':'');
-}
+$('modeSel').addEventListener('change',applyMode); $('netModeSel').addEventListener('change',applyNetMode); $('master').addEventListener('input',e=>queueMaster(+e.target.value)); $('perfMaster').addEventListener('input',e=>queueMaster(+e.target.value)); $('pageSel').addEventListener('change',e=>{curPage=+e.target.value;loadPage();});
 
 const ws=new WebSocket('ws://'+location.host+'/ws');
-ws.onmessage=e=>{
-  let s;try{s=JSON.parse(e.data);}catch{return;}
-  $('anPill').textContent='AN: '+(s.artnet_active?'active':'idle');
-  $('anPill').className='pill '+(s.artnet_active?'on':'off');
-  $('aoPill').textContent='OUT: '+(s.ao?'ON':'off');
-  $('aoPill').className='pill '+(s.ao?'ao':'off');
-  $('mSel').value=String(s.mode);
-  if(s.ao!==aoEnabled){aoEnabled=s.ao;updateAoBtn();}
-  if(document.activeElement!==$('dim')){
-    $('dim').value=s.dim;
-    $('pct').textContent=Math.round(s.dim/255*100)+'%';
-  }
-};
-ws.onclose=()=>{setTimeout(()=>location.reload(),2000);};
+ws.onmessage=e=>{let s; try{s=JSON.parse(e.data);}catch{return;} state=s; updatePills(s); syncFields(s);};
+ws.onclose=()=>setTimeout(()=>location.reload(),2000);
+
+setActiveRoute(); makeScenes(); makePages(); loadPage(); refreshMonitor();
+setInterval(async()=>{const s=await qs('/page?i='+curPage); if(!s) return; pageWeb=s.web||[]; pageOut=s.out||[]; refreshOutGrid();},1000);
 </script>
 </body></html>)HTML";
 
@@ -894,8 +791,15 @@ static void setupWeb() {
   ws.onEvent([](AsyncWebSocket*, AsyncWebSocketClient*, AwsEventType, void*, uint8_t*, size_t){});
   server.addHandler(&ws);
 
-  server.on("/",   HTTP_GET, [](AsyncWebServerRequest* r){ r->send(200, "text/html", INDEX_HTML); });
-  server.on("/vj", HTTP_GET, [](AsyncWebServerRequest* r){ r->send(200, "text/html", VJ_HTML); });
+  auto sendApp = [](AsyncWebServerRequest* r){ r->send(200, "text/html", APP_HTML); };
+  server.on("/",            HTTP_GET, sendApp);
+  server.on("/control",     HTTP_GET, sendApp);
+  server.on("/patch",       HTTP_GET, sendApp);
+  server.on("/scenes",      HTTP_GET, sendApp);
+  server.on("/network",     HTTP_GET, sendApp);
+  server.on("/system",      HTTP_GET, sendApp);
+  server.on("/performance", HTTP_GET, sendApp);
+  server.on("/vj",          HTTP_GET, sendApp);
 
   server.on("/status",  HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, statusJSON()); });
   server.on("/monitor", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, monitorJSON()); });
