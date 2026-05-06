@@ -20,9 +20,19 @@ test/test_smoke/      – Unity tests for vidili_core.h, run on native platform
 platformio.ini        – two envs: esp32dev (hardware), native (unit tests)
 .vscode/tasks.json    – Build / Upload / Test tasks
 README.md             – user-facing docs
-CURRENT.md            – short current-state checkpoint for every session
+CURRENT.md            – short current-state checkpoint; update it to avoid duplicate AI work
 AGENTS.md             – this file
 ```
+
+---
+
+## Session Memory — Prevent Duplicate Work
+
+Use `CURRENT.md` as the living project checkpoint. At the end of each AI session, after any context compaction/resume, and whenever a durable lesson or smart project point appears, add or update a short fact there so future agents do not redo discovery or implementation.
+
+Promote only long-lived rules, hardware constraints, workflow rules, or contracts into `AGENTS.md`. Keep recent status, completed work, validation results, blockers, and next-step breadcrumbs in `CURRENT.md`.
+
+Before starting implementation, read `CURRENT.md` and `AGENTS.md`, then treat recorded completed work as already done unless the user explicitly asks to revisit it. Replace stale facts instead of piling up duplicate notes.
 
 ---
 

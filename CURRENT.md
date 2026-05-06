@@ -4,7 +4,7 @@ Read this before changing the firmware. Keep it short and replace stale facts.
 
 ## Last verified baseline
 
-`4f94223` - `fix: use local platformio core dir`
+`7ba3b27` - `chore: rename project to vizzz.di`
 Branch: `main`
 
 ## What works
@@ -25,6 +25,7 @@ Branch: `main`
 - Do not change DMX pins, UART, or `DMX_PERIOD_MS` without hardware approval.
 - Do not hold `gLock` across DMX writes or blocking calls.
 - Keep embedded UI in the black/cyan square `di.i`-style visual system.
+- Record durable lessons, completed work, and next-step breadcrumbs in `CURRENT.md`; promote long-lived rules to `AGENTS.md` so AI work is not repeated after compaction/resume.
 - Do not push to GitHub unless validation passes.
 
 ## Required validation
