@@ -67,6 +67,7 @@ static bool    needSaveConfig = false;  // set when auto-generated values must b
 static constexpr const char* FW_TAG = __DATE__ " " __TIME__;
 static constexpr uint32_t WIFI_SCAN_TIMEOUT_MS = 15000;
 static constexpr uint16_t DISCOVERY_PORT       = 47777;
+static constexpr uint16_t OSC_PORT             = 9000;
 static bool wifiScanActive = false;
 static uint32_t wifiScanStartMs = 0;
 
@@ -131,6 +132,7 @@ static WiFiUDP        artInUdp;
 static WiFiUDP        artOutUdp;
 static WiFiUDP        sacnUdp;
 static WiFiUDP        discoverUdp;
+static WiFiUDP        oscUdp;
 static dmx_port_t     dmxPort = DMX_NUM_1;
 
 // ── Peer discovery ────────────────────────────────────────────────────────────
@@ -154,6 +156,38 @@ static uint8_t outVals  [MAX_CH];   // final computed output
 static volatile uint32_t lastArtnetMs = 0;
 static volatile uint32_t lastSacnMs   = 0;
 static uint8_t masterDimmer = 255;  // 0=off, 255=full — resets to full on boot
+
+// ── VJ controls (groups / cues / FX) ────────────────────────────────────────
+struct GroupDef {
+  char name[16];
+  uint16_t start; // 1-based DMX channel
+  uint16_t end;   // 1-based DMX channel
+  bool enabled;
+};
+static constexpr uint8_t MAX_GROUPS = 8;
+static GroupDef groups[MAX_GROUPS];
+
+struct CueStep {
+  uint8_t scene;       // 0..7
+  uint32_t dwellMs;    // hold time after fade
+  uint32_t fadeMs;     // fade duration
+};
+static constexpr uint8_t MAX_CUES = 16;
+static CueStep cueList[MAX_CUES];
+static uint8_t cueCount = 0;
+static uint8_t cueIndex = 0;
+static bool cueRunning = false;
+static uint32_t cueNextMs = 0;
+
+enum FxMode : uint8_t { FX_NONE = 0, FX_STROBE = 1, FX_CHASE = 2, FX_PULSE = 3 };
+static FxMode fxMode = FX_NONE;
+static bool fxEnabled = false;
+static uint16_t fxBpm = 120;
+static uint8_t fxDepth = 255;
+static uint32_t lastTapMs = 0;
+static uint32_t tapIntervals[4] = {0, 0, 0, 0};
+static uint8_t tapCount = 0;
+static uint8_t tapPos = 0;
 
 // Fade — access only while holding gLock
 static bool     fadeActive  = false;
@@ -436,8 +470,146 @@ static void updateFade_locked() {
   }
 }
 
+static void initVjDefaults() {
+  for (uint8_t i = 0; i < MAX_GROUPS; i++) {
+    snprintf(groups[i].name, sizeof(groups[i].name), "G%u", i + 1);
+    groups[i].start = (i * 64) + 1;
+    groups[i].end = min<uint16_t>(MAX_CH, groups[i].start + 63);
+    groups[i].enabled = true;
+  }
+  for (uint8_t i = 0; i < MAX_CUES; i++) {
+    cueList[i].scene = i % SCENE_COUNT;
+    cueList[i].dwellMs = 1500;
+    cueList[i].fadeMs = 500;
+  }
+  cueCount = 4;
+}
+
+static void triggerCueStep(uint8_t idx) {
+  if (idx >= cueCount) return;
+  uint8_t target[MAX_CH];
+  loadScene(cueList[idx].scene, target);
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) return;
+  startFade_locked(target, cueList[idx].fadeMs);
+  xSemaphoreGive(gLock);
+  cueNextMs = millis() + cueList[idx].fadeMs + cueList[idx].dwellMs;
+}
+
+static void tickCueEngine(uint32_t now) {
+  if (!cueRunning || cueCount == 0 || now < cueNextMs) return;
+  cueIndex = (cueIndex + 1) % cueCount;
+  triggerCueStep(cueIndex);
+}
+
+static uint8_t fxLevelForChannel(uint16_t ch, uint32_t now) {
+  if (!fxEnabled || fxMode == FX_NONE) return 255;
+  uint32_t bpm = max<uint16_t>(20, fxBpm);
+  uint32_t beatMs = 60000UL / bpm;
+  if (beatMs == 0) beatMs = 1;
+
+  if (fxMode == FX_STROBE) {
+    uint32_t phase = now % beatMs;
+    bool on = phase < (beatMs / 2);
+    return on ? 255 : uint8_t(255 - fxDepth);
+  }
+
+  if (fxMode == FX_CHASE) {
+    const uint8_t lanes = 8;
+    uint16_t laneSize = MAX_CH / lanes;
+    if (laneSize == 0) laneSize = 1;
+    uint8_t activeLane = uint8_t((now / beatMs) % lanes);
+    uint8_t lane = min<uint8_t>(lanes - 1, uint8_t(ch / laneSize));
+    return (lane == activeLane) ? 255 : uint8_t(255 - fxDepth);
+  }
+
+  // Triangle pulse 0..255 scaled by depth.
+  uint32_t phase = now % beatMs;
+  uint16_t tri = (phase < beatMs / 2)
+    ? uint16_t((phase * 510UL) / beatMs)
+    : uint16_t(((beatMs - phase) * 510UL) / beatMs);
+  uint8_t pulse = uint8_t(min<uint16_t>(255, tri));
+  uint8_t floorLevel = uint8_t(255 - fxDepth);
+  return max<uint8_t>(floorLevel, pulse);
+}
+
+static bool oscReadPaddedString(const uint8_t* pkt, int n, int& off, char* out, size_t outLen) {
+  if (off >= n || outLen == 0) return false;
+  int i = 0;
+  while (off < n && pkt[off] != 0 && i < int(outLen - 1)) out[i++] = char(pkt[off++]);
+  out[i] = '\0';
+  while (off < n && pkt[off] != 0) off++;
+  if (off >= n) return false;
+  while (off < n && (off % 4) != 0) off++;
+  return i > 0;
+}
+
+static bool oscReadInt(const uint8_t* pkt, int n, int& off, int32_t& out) {
+  if (off + 4 > n) return false;
+  out = (int32_t(pkt[off]) << 24) | (int32_t(pkt[off + 1]) << 16) |
+        (int32_t(pkt[off + 2]) << 8) | int32_t(pkt[off + 3]);
+  off += 4;
+  return true;
+}
+
+static void pollOsc() {
+  uint8_t pkt[256];
+  for (int sz = oscUdp.parsePacket(); sz > 0; sz = oscUdp.parsePacket()) {
+    int n = oscUdp.read(pkt, min(int(sizeof(pkt)), sz));
+    if (n < 8) continue;
+
+    int off = 0;
+    char addr[48], tags[16];
+    if (!oscReadPaddedString(pkt, n, off, addr, sizeof(addr))) continue;
+    if (!oscReadPaddedString(pkt, n, off, tags, sizeof(tags))) continue;
+    if (tags[0] != ',' || tags[1] != 'i') continue;
+    int32_t v = 0;
+    if (!oscReadInt(pkt, n, off, v)) continue;
+
+    if (strncmp(addr, "/ch/", 4) == 0) {
+      int ch = atoi(addr + 4);
+      if (ch >= 1 && ch <= MAX_CH) {
+        if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+          webVals[ch - 1] = uint8_t(constrain(v, 0, 255));
+          xSemaphoreGive(gLock);
+        }
+      }
+    } else if (strncmp(addr, "/group/", 7) == 0) {
+      int g = atoi(addr + 7);
+      if (g >= 0 && g < MAX_GROUPS) {
+        uint16_t s = constrain(groups[g].start, 1, MAX_CH);
+        uint16_t e = constrain(groups[g].end, s, MAX_CH);
+        if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+          for (uint16_t ch = s; ch <= e; ch++) webVals[ch - 1] = uint8_t(constrain(v, 0, 255));
+          xSemaphoreGive(gLock);
+        }
+      }
+    } else if (strcmp(addr, "/master") == 0) {
+      masterDimmer = uint8_t(constrain(v, 0, 255));
+    } else if (strcmp(addr, "/scene/recall") == 0) {
+      uint8_t idx = uint8_t(constrain(v, 0, SCENE_COUNT - 1));
+      uint8_t target[MAX_CH];
+      loadScene(idx, target);
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
+        startFade_locked(target, 500);
+        xSemaphoreGive(gLock);
+      }
+    } else if (strcmp(addr, "/cue/run") == 0) {
+      cueRunning = (v != 0) && cueCount > 0;
+      if (cueRunning) {
+        cueIndex = 0;
+        triggerCueStep(cueIndex);
+      }
+    } else if (strcmp(addr, "/fx/mode") == 0) {
+      fxMode = FxMode(constrain(v, 0, 3));
+      fxEnabled = (fxMode != FX_NONE);
+    } else if (strcmp(addr, "/fx/bpm") == 0) {
+      fxBpm = uint16_t(constrain(v, 20, 240));
+    }
+  }
+}
+
 // ── Output ────────────────────────────────────────────────────────────────────
-static void computeOutput_locked(bool aActive, bool sActive) {
+static void computeOutput_locked(bool aActive, bool sActive, uint32_t nowMs) {
   bool netActive = aActive || sActive;
 
   for (int i = 0; i < MAX_CH; i++) {
@@ -459,7 +631,9 @@ static void computeOutput_locked(bool aActive, bool sActive) {
         break;
     }
 
-    outVals[i] = masterDimmer < 255 ? vizzz::applyMaster(v, masterDimmer) : v;
+    if (masterDimmer < 255) v = vizzz::applyMaster(v, masterDimmer);
+    uint8_t fxLevel = fxLevelForChannel(i, nowMs);
+    outVals[i] = (fxLevel < 255) ? vizzz::applyMaster(v, fxLevel) : v;
   }
   memcpy(dmxFrame + 1, outVals, MAX_CH);
 }
@@ -778,12 +952,43 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
         <div class="actions"><button class="bad" onclick="blackout()">Blackout</button><button class="good" onclick="fullOn()">Full</button></div>
         <div class="row" style="margin-top:8px"><label class="grow">Master<input id="perfMaster" type="range" min="0" max="255" value="255"></label></div>
         <div class="heroMeter" style="margin-top:8px"><div class="big" id="perfPct">100%</div><div>level</div></div>
+        <div class="row" style="margin-top:8px"><label class="grow">FX Mode<select id="fxModeSel"><option value="none">none</option><option value="strobe">strobe</option><option value="chase">chase</option><option value="pulse">pulse</option></select></label></div>
+        <div class="split" style="margin-top:8px">
+          <label>BPM<input id="fxBpm" type="number" min="20" max="240" value="120"></label>
+          <label>Depth<input id="fxDepth" type="number" min="0" max="255" value="255"></label>
+        </div>
+        <div class="actions" style="margin-top:8px"><button onclick="applyFx()">Apply FX</button><button class="alt" onclick="tapFx()">Tap BPM</button></div>
       </div>
       <div class="card">
         <h2>Scenes</h2>
         <div class="meta">Single-tap recalls with the shared fade setting.</div>
         <div class="row"><label class="grow">Fade ms<input id="perfFade" type="number" value="1000"></label></div>
         <div class="sceneGrid" id="perfScenes" style="margin-top:12px"></div>
+        <div class="split" style="margin-top:12px">
+          <label>Cue Count<input id="cueCount" type="number" min="1" max="16" value="4"></label>
+          <label>Cue Step<input id="cueStep" type="number" min="0" max="15" value="0"></label>
+        </div>
+        <div class="split" style="margin-top:8px">
+          <label>Scene<input id="cueScene" type="number" min="0" max="7" value="0"></label>
+          <label>Dwell ms<input id="cueDwell" type="number" min="0" value="1500"></label>
+        </div>
+        <div class="row" style="margin-top:8px"><label class="grow">Fade ms<input id="cueFade" type="number" min="0" value="500"></label></div>
+        <div class="actions" style="margin-top:8px"><button onclick="setCueStep()">Save Step</button><button class="alt" onclick="cueNext()">Next</button></div>
+        <div class="actions" style="margin-top:8px"><button onclick="cueRun(1)">Run Cue</button><button class="alt" onclick="cueRun(0)">Stop Cue</button></div>
+      </div>
+      <div class="card">
+        <h2>Groups</h2>
+        <div class="split">
+          <label>Group<input id="grpId" type="number" min="0" max="7" value="0"></label>
+          <label>Name<input id="grpName" value="G1"></label>
+        </div>
+        <div class="split" style="margin-top:8px">
+          <label>Start Ch<input id="grpStart" type="number" min="1" max="512" value="1"></label>
+          <label>End Ch<input id="grpEnd" type="number" min="1" max="512" value="64"></label>
+        </div>
+        <div class="row" style="margin-top:8px"><label class="grow">Value<input id="grpValue" type="range" min="0" max="255" value="180"></label></div>
+        <div class="actions" style="margin-top:8px"><button onclick="setGroup()">Save Group</button><button class="alt" onclick="applyGroup()">Apply Value</button></div>
+        <pre id="vjDump" style="margin-top:8px">VJ status pending…</pre>
       </div>
     </div>
   </section>
@@ -792,7 +997,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
 <script>
 const $=id=>document.getElementById(id);
 const route=location.pathname==='/vj'?'/performance':(location.pathname==='/'?'/control':location.pathname);
-let state=null,pageWeb=[],pageOut=[],curPage=0,masterTimer=null,scanTimer=null,artOutEnabled=false,webEnabled=true;
+let state=null,pageWeb=[],pageOut=[],curPage=0,masterTimer=null,scanTimer=null,artOutEnabled=false,webEnabled=true,vjTimer=null;
 
 function escHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function escJsSq(s){return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,'\\r');}
@@ -846,6 +1051,32 @@ async function loadManifest(){const r=await qs('/node/manifest'); if(r) $('manif
 function openManifest(){window.open('/node/manifest','_blank');}
 async function loadPeers(){const r=await qs('/peers');if(!r){$('peerCount').textContent='error';return;}const c=r.count||0;$('peerCount').textContent=c?c+(c===1?' peer found':' peers found'):'none found';$('peerList').innerHTML=c?r.peers.map(p=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px;border:1px solid var(--di-cyan-border);margin-bottom:4px"><div><b>${escHtml(p.name)}</b> <span class="footerNote">${escHtml(p.ip)}</span><br><span class="footerNote">${escHtml(p.mdns)||''} &bull; ${p.age_s}s ago</span></div><button onclick="targetPeer('${escJsSq(p.ip)}')" style="min-height:30px;padding:3px 10px;font-size:.7rem;flex:0 0 auto">Link</button></div>`).join(''):'<span class="footerNote">No vizzz.di nodes found. Devices must share a WiFi network. Retry after 30s.</span>';}
 function targetPeer(ip){if(!confirm('Route Art-Net OUT directly to '+ip+'? (enables unicast, overrides broadcast)'))return;fetch('/artout/peer?ip='+encodeURIComponent(ip),{cache:'no-store'}).then(()=>fetch('/artout/set?en=1',{cache:'no-store'}));artOutEnabled=true;$('aoBtn').textContent='Art OUT ON';$('aoTarget').textContent=ip;}
+function applyFx(){hit('/fx/set?en=1&mode='+encodeURIComponent($('fxModeSel').value)+'&bpm='+(+$('fxBpm').value||120)+'&depth='+(+$('fxDepth').value||255));}
+function tapFx(){hit('/fx/tap');}
+function cueRun(en){hit('/cue/run?en='+en);}
+function cueNext(){hit('/cue/next');}
+function setCueStep(){
+  const i=+$('cueStep').value||0;
+  const q=+$('cueCount').value||4;
+  hit('/cue/count?c='+q);
+  hit('/cue/set?i='+i+'&scene='+(+$('cueScene').value||0)+'&dwell='+(+$('cueDwell').value||0)+'&fade='+(+$('cueFade').value||0));
+}
+function setGroup(){
+  const g=+$('grpId').value||0;
+  hit('/group/set?g='+g+'&name='+encodeURIComponent($('grpName').value||('G'+(g+1)))+'&start='+(+$('grpStart').value||1)+'&end='+(+$('grpEnd').value||1)+'&en=1');
+}
+function applyGroup(){
+  const g=+$('grpId').value||0;
+  const v=+$('grpValue').value||0;
+  hit('/group/apply?g='+g+'&v='+v);
+}
+async function refreshVj(){
+  const [fx,cue,groups]=await Promise.all([qs('/fx/status'),qs('/cue/status'),qs('/groups')]);
+  if(!fx||!cue||!groups) return;
+  $('fxModeSel').value=fx.mode_name||'none'; $('fxBpm').value=fx.bpm||120; $('fxDepth').value=fx.depth||255;
+  $('cueCount').value=cue.count||1;
+  $('vjDump').textContent=JSON.stringify({fx, cue, groups:groups.groups?.slice(0,4)},null,2);
+}
 function applyMode(){hit('/mode/set?m='+$('modeSel').value);} function applyNetMode(){if(confirm('Switch network profile and reboot?')) hit('/netmode/set?m='+$('netModeSel').value);}
 
 $('modeSel').addEventListener('change',applyMode); $('netModeSel').addEventListener('change',applyNetMode); $('master').addEventListener('input',e=>queueMaster(+e.target.value)); $('perfMaster').addEventListener('input',e=>queueMaster(+e.target.value)); $('pageSel').addEventListener('change',e=>{curPage=+e.target.value;loadPage();});
@@ -856,6 +1087,7 @@ ws.onclose=()=>setTimeout(()=>location.reload(),2000);
 
 setActiveRoute(); makeScenes(); makePages(); loadPage(); refreshMonitor(); loadManifest(); loadPeers();
 setInterval(async()=>{const s=await qs('/page?i='+curPage); if(!s) return; pageWeb=s.web||[]; pageOut=s.out||[]; refreshOutGrid();},1000);
+refreshVj(); vjTimer=setInterval(refreshVj,2000);
 </script>
 </body></html>)HTML";
 
@@ -1011,6 +1243,53 @@ static String monitorJSON() {
   for (int i = 0; i < 64; i++)
     pos += snprintf(buf + pos, sizeof(buf) - pos, i < 63 ? "%u," : "%u", snapOut[i]);
   snprintf(buf + pos, sizeof(buf) - pos, "]}");
+  return buf;
+}
+
+static String groupsJSON() {
+  char buf[900];
+  int pos = snprintf(buf, sizeof(buf), "{\"count\":%u,\"groups\":[", MAX_GROUPS);
+  for (uint8_t i = 0; i < MAX_GROUPS; i++) {
+    if (i) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    char eName[24];
+    jsonEsc(eName, sizeof(eName), groups[i].name);
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+      "{\"id\":%u,\"name\":\"%s\",\"start\":%u,\"end\":%u,\"enabled\":%s}",
+      i, eName, groups[i].start, groups[i].end, groups[i].enabled ? "true" : "false");
+  }
+  snprintf(buf + pos, sizeof(buf) - pos, "]}");
+  return buf;
+}
+
+static const char* fxModeName(FxMode m) {
+  switch (m) {
+    case FX_STROBE: return "strobe";
+    case FX_CHASE:  return "chase";
+    case FX_PULSE:  return "pulse";
+    default:        return "none";
+  }
+}
+
+static String cueJSON() {
+  char buf[1200];
+  int pos = snprintf(buf, sizeof(buf),
+    "{\"running\":%s,\"count\":%u,\"index\":%u,\"next_ms\":%lu,\"steps\":[",
+    cueRunning ? "true" : "false", cueCount, cueIndex, (unsigned long)cueNextMs);
+  for (uint8_t i = 0; i < cueCount && i < MAX_CUES; i++) {
+    if (i) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+      "{\"idx\":%u,\"scene\":%u,\"dwell\":%lu,\"fade\":%lu}",
+      i, cueList[i].scene, (unsigned long)cueList[i].dwellMs, (unsigned long)cueList[i].fadeMs);
+  }
+  snprintf(buf + pos, sizeof(buf) - pos, "]}");
+  return buf;
+}
+
+static String fxJSON() {
+  char buf[220];
+  snprintf(buf, sizeof(buf),
+    "{\"enabled\":%s,\"mode\":%u,\"mode_name\":\"%s\",\"bpm\":%u,\"depth\":%u,\"osc_port\":%u}",
+    fxEnabled ? "true" : "false", uint8_t(fxMode), fxModeName(fxMode), fxBpm, fxDepth, OSC_PORT);
   return buf;
 }
 
@@ -1301,6 +1580,102 @@ static void setupWeb() {
     r->send(204);
   });
 
+  server.on("/groups", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, groupsJSON()); });
+
+  server.on("/group/set", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (!r->hasArg("g")) { r->send(400, "text/plain", "missing g"); return; }
+    uint8_t g = uint8_t(constrain(r->arg("g").toInt(), 0, MAX_GROUPS - 1));
+    if (r->hasArg("name")) {
+      String n = r->arg("name");
+      n.toCharArray(groups[g].name, sizeof(groups[g].name));
+    }
+    if (r->hasArg("start")) groups[g].start = uint16_t(constrain(r->arg("start").toInt(), 1, MAX_CH));
+    if (r->hasArg("end")) groups[g].end = uint16_t(constrain(r->arg("end").toInt(), groups[g].start, MAX_CH));
+    if (r->hasArg("en")) groups[g].enabled = r->arg("en").toInt() != 0;
+    r->send(204);
+  });
+
+  server.on("/group/apply", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (!r->hasArg("g") || !r->hasArg("v")) { r->send(400, "text/plain", "missing arg"); return; }
+    uint8_t g = uint8_t(constrain(r->arg("g").toInt(), 0, MAX_GROUPS - 1));
+    uint8_t v = uint8_t(constrain(r->arg("v").toInt(), 0, 255));
+    uint16_t s = constrain(groups[g].start, 1, MAX_CH);
+    uint16_t e = constrain(groups[g].end, s, MAX_CH);
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
+    for (uint16_t ch = s; ch <= e; ch++) webVals[ch - 1] = v;
+    xSemaphoreGive(gLock);
+    r->send(204);
+  });
+
+  server.on("/cue/status", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, cueJSON()); });
+
+  server.on("/cue/count", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (!r->hasArg("c")) { r->send(400, "text/plain", "missing c"); return; }
+    cueCount = uint8_t(constrain(r->arg("c").toInt(), 1, MAX_CUES));
+    if (cueIndex >= cueCount) cueIndex = 0;
+    r->send(204);
+  });
+
+  server.on("/cue/set", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (!r->hasArg("i")) { r->send(400, "text/plain", "missing i"); return; }
+    uint8_t i = uint8_t(constrain(r->arg("i").toInt(), 0, MAX_CUES - 1));
+    if (r->hasArg("scene")) cueList[i].scene = uint8_t(constrain(r->arg("scene").toInt(), 0, SCENE_COUNT - 1));
+    if (r->hasArg("dwell")) cueList[i].dwellMs = uint32_t(max(0L, r->arg("dwell").toInt()));
+    if (r->hasArg("fade"))  cueList[i].fadeMs  = uint32_t(max(0L, r->arg("fade").toInt()));
+    r->send(204);
+  });
+
+  server.on("/cue/run", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (!r->hasArg("en")) { r->send(400, "text/plain", "missing en"); return; }
+    cueRunning = (r->arg("en").toInt() != 0) && cueCount > 0;
+    if (cueRunning) {
+      cueIndex = 0;
+      triggerCueStep(cueIndex);
+    }
+    r->send(204);
+  });
+
+  server.on("/cue/next", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (cueCount == 0) { r->send(400, "text/plain", "no cues"); return; }
+    cueIndex = (cueIndex + 1) % cueCount;
+    triggerCueStep(cueIndex);
+    r->send(204);
+  });
+
+  server.on("/fx/status", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, fxJSON()); });
+
+  server.on("/fx/set", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (r->hasArg("mode")) {
+      String m = r->arg("mode");
+      if (m == "strobe") fxMode = FX_STROBE;
+      else if (m == "chase") fxMode = FX_CHASE;
+      else if (m == "pulse") fxMode = FX_PULSE;
+      else fxMode = FX_NONE;
+    }
+    if (r->hasArg("en")) fxEnabled = r->arg("en").toInt() != 0;
+    if (r->hasArg("bpm")) fxBpm = uint16_t(constrain(r->arg("bpm").toInt(), 20, 240));
+    if (r->hasArg("depth")) fxDepth = uint8_t(constrain(r->arg("depth").toInt(), 0, 255));
+    if (fxMode == FX_NONE) fxEnabled = false;
+    r->send(204);
+  });
+
+  server.on("/fx/tap", HTTP_GET, [](AsyncWebServerRequest* r){
+    uint32_t now = millis();
+    if (lastTapMs > 0) {
+      uint32_t dt = now - lastTapMs;
+      if (dt >= 150 && dt <= 2000) {
+        tapIntervals[tapPos] = dt;
+        tapPos = (tapPos + 1) % 4;
+        if (tapCount < 4) tapCount++;
+        uint32_t sum = 0;
+        for (uint8_t i = 0; i < tapCount; i++) sum += tapIntervals[i];
+        if (sum > 0) fxBpm = uint16_t(constrain(60000UL / (sum / tapCount), 20UL, 240UL));
+      }
+    }
+    lastTapMs = now;
+    r->send(204);
+  });
+
   server.onNotFound([](AsyncWebServerRequest* r){ r->send(404, "text/plain", "Not found"); });
   server.begin();
 }
@@ -1312,6 +1687,7 @@ void setup() {
   gLock = xSemaphoreCreateMutex();
 
   loadConfig();
+  initVjDefaults();
 
   memset(webVals,  0, MAX_CH);
   memset(artVals,  0, MAX_CH);
@@ -1326,6 +1702,7 @@ void setup() {
   artOutUdp.begin(0);
   refreshSacnSocket();
   discoverUdp.begin(DISCOVERY_PORT);
+  oscUdp.begin(OSC_PORT);
   if (webEnabled) setupWeb();
 
   lastArtnetMs = 0;
@@ -1347,6 +1724,7 @@ void setup() {
   Serial.printf("sACN     : universe=%u port=%u\n", universe(), SACN_PORT);
   Serial.printf("Art-Out  : %s\n", artOutEnabled ? "enabled" : "disabled");
   Serial.printf("Web      : %s\n", webEnabled ? "enabled" : "disabled");
+  Serial.printf("OSC IN   : udp/%u\n", OSC_PORT);
 }
 
 void loop() {
@@ -1367,6 +1745,7 @@ void loop() {
 
   pollArtNet();
   pollSacn();
+  pollOsc();
 
   // Rejoin sACN multicast when WiFi link state changes.
   static wl_status_t prevWiFiStatus = WL_IDLE_STATUS;
@@ -1379,6 +1758,7 @@ void loop() {
   }
 
   const uint32_t now = millis();
+  tickCueEngine(now);
 
   // DMX output cycle
   static uint32_t lastDmx = 0;
@@ -1387,7 +1767,7 @@ void loop() {
 
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
       updateFade_locked();
-      computeOutput_locked(artnetActive(), sacnActive());
+      computeOutput_locked(artnetActive(), sacnActive(), now);
       xSemaphoreGive(gLock);
     }
 

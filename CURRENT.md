@@ -24,6 +24,7 @@ Branch: `main`
 - Art-Net OUT can broadcast the final output for receiver nodes, or unicast to a specific peer IP via `/artout/peer?ip=X`.
 - Firmware node manifest is served at `/node/manifest` and `/manifest.json`.
 - Peer discovery: nodes broadcast a UDP beacon on port 47777 every 30s; incoming beacons are parsed and stored in a peer table (max 4, expire after 90s). `/peers` returns the live list. Network tab shows WiFi status (AP clients, STA RSSI) and peers with a Link button.
+- VJ controls added on `/performance`: FX engine (`strobe`/`chase`/`pulse` with BPM + tap), cue runner (up to 16 steps), and fixture groups (8 ranges). External control endpoints: `/fx/*`, `/cue/*`, `/group/*`, plus OSC input on UDP/9000 (`/ch/N`, `/group/G`, `/master`, `/scene/recall`, `/cue/run`, `/fx/mode`, `/fx/bpm`).
 - Unit test file fixed: was referencing old `vidili_core.h` / `vidili::` namespace, corrected to `vizzz_core.h` / `vizzz::`.
 
 ## Hard rules
@@ -61,4 +62,5 @@ Branch: `main`
 - 2026-05-06: WiFi STA join fixed (AsyncTCP task issue). Flashed fix, verified join/forget/rejoin on Yokozo. Art-Net IN verified working on both AP (10.0.0.1) and STA (192.168.88.127) interfaces.
 - 2026-05-06: Node name updated to `vizzz.di` via `/node/set`; mDNS is now `vizzz-di.local`. Device on Yokozo at `192.168.88.127`.
 - 2026-05-06: Peer discovery + WiFi status added. Native tests fixed (vidili→vizzz). RAM 51,876 bytes (15.8%), Flash 870,629 bytes (66.4%). Build SUCCESS.
+- 2026-05-07: VJ feature pass added (FX, cues, groups, OSC-in). Validation: native tests PASS, esp32 build SUCCESS. RAM 52,348 bytes (16.0%), Flash 880,349 bytes (67.2%).
 - For TouchDesigner control: Art-Net to `192.168.88.255:6454` (broadcast) or `192.168.88.127:6454` (unicast), universe 0. Use `ARTNET_ONLY` for TD-only or `MERGE_HTP` if web layer should participate.
