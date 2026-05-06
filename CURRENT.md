@@ -4,7 +4,7 @@ Read this before changing the firmware. Keep it short and replace stale facts.
 
 ## Last verified baseline
 
-`2014013` - `docs: checkpoint esp upload test`
+`ad355c6` - `fix: make wifi scan reliable`
 Branch: `main`
 
 ## What works
