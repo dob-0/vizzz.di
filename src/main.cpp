@@ -46,6 +46,7 @@ static String  staSSID, staPass;
 static uint8_t artNet = 0, artSubnet = 0, artUni = 0;
 static Mode    mode         = MODE_HTP;
 static bool    artOutEnabled = false;   // broadcast webVals as Art-Net to slaves
+static bool    needSaveConfig = false;  // set when auto-generated values must be persisted
 
 static uint16_t universe() {
   return vidili::packUniverse(artNet, artSubnet, artUni);
@@ -68,8 +69,10 @@ static void saveConfig() {
 
 static void loadConfig() {
   prefs.begin("cfg", true);
+  bool hasApSsid = prefs.isKey("ap_ssid");  // false on first boot
   nodeName     = prefs.getString("name",     nodeName);
   apSsid       = prefs.getString("ap_ssid",  apSsid);
+  if (!hasApSsid) apSsid = "";  // sentinel → startWiFi will generate from MAC
   apPass       = prefs.getString("ap_pass",  apPass);
   staSSID      = prefs.getString("sta_ssid", "");
   staPass      = prefs.getString("sta_pass", "");
@@ -141,9 +144,30 @@ static void jsonEsc(char* dst, size_t n, const String& src) {
 }
 
 // ── WiFi ──────────────────────────────────────────────────────────────────────
+// Returns the Art-Net broadcast target: STA subnet when on a router, AP subnet otherwise
+static IPAddress artOutTarget() {
+  if (WiFi.status() == WL_CONNECTED) {
+    uint32_t ip   = (uint32_t)WiFi.localIP();
+    uint32_t mask = (uint32_t)WiFi.subnetMask();
+    return IPAddress((ip & mask) | (~mask));
+  }
+  return IPAddress(10, 0, 0, 255);
+}
+
 static void startWiFi() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
+
+  // First boot: auto-generate unique AP SSID from last 3 bytes of MAC
+  if (apSsid.isEmpty()) {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char suffix[7];
+    snprintf(suffix, sizeof(suffix), "%02X%02X%02X", mac[3], mac[4], mac[5]);
+    apSsid = String("vi_di_li_") + suffix;
+    needSaveConfig = true;
+  }
+
   WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
   WiFi.softAP(apSsid.c_str(), apPass.c_str());
   if (staSSID.length()) {
@@ -250,7 +274,7 @@ static void sendArtNetOut() {
   pkt[16] = 0x02;   // length hi (512)
   pkt[17] = 0x00;   // length lo
   memcpy(pkt + 18, outVals, MAX_CH);
-  artOutUdp.beginPacket(IPAddress(10, 0, 0, 255), ARTNET_PORT);
+  artOutUdp.beginPacket(artOutTarget(), ARTNET_PORT);
   artOutUdp.write(pkt, sizeof(pkt));
   artOutUdp.endPacket();
 }
@@ -673,7 +697,8 @@ static String statusJSON() {
     "\"mode_name\":\"%s\","
     "\"artnet_active\":%s,"
     "\"ao\":%s,"
-    "\"dim\":%u"
+    "\"dim\":%u,"
+    "\"ao_target\":\"%s\""
     "}",
     ipStr(WiFi.softAPIP()).c_str(),
     staCon ? ipStr(WiFi.localIP()).c_str() : "",
@@ -684,7 +709,8 @@ static String statusJSON() {
     uint8_t(mode), modeName(mode),
     artnetActive()  ? "true" : "false",
     artOutEnabled   ? "true" : "false",
-    masterDimmer
+    masterDimmer,
+    ipStr(artOutTarget()).c_str()
   );
   return buf;
 }
@@ -896,6 +922,7 @@ void setup() {
 
   setupDMX();
   startWiFi();
+  if (needSaveConfig) { saveConfig(); needSaveConfig = false; }
   artOutUdp.begin(0);
   setupWeb();
 
@@ -906,8 +933,11 @@ void setup() {
   Serial.printf("\n=== vi_di_li ===\n");
   Serial.printf("AP SSID  : %s\n", apSsid.c_str());
   Serial.printf("AP IP    : %s\n", ipStr(WiFi.softAPIP()).c_str());
-  if (staSSID.length())
+  if (staSSID.length()) {
     Serial.printf("STA SSID : %s\n", staSSID.c_str());
+    if (WiFi.status() == WL_CONNECTED)
+      Serial.printf("STA IP   : %s\n", ipStr(WiFi.localIP()).c_str());
+  }
   Serial.printf("Mode     : %s\n", modeName(mode));
   Serial.printf("Art-Net  : net=%u sub=%u uni=%u (15-bit=%u)\n",
     artNet, artSubnet, artUni, universe());
