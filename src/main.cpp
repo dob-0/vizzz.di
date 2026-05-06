@@ -65,6 +65,7 @@ static bool    webEnabled    = true;    // when false, web server and websocket 
 static bool    needSaveConfig = false;  // set when auto-generated values must be persisted
 static constexpr const char* FW_TAG = __DATE__ " " __TIME__;
 static constexpr uint32_t WIFI_SCAN_TIMEOUT_MS = 15000;
+static constexpr uint16_t DISCOVERY_PORT       = 47777;
 static bool wifiScanActive = false;
 static uint32_t wifiScanStartMs = 0;
 
@@ -128,6 +129,7 @@ static AsyncWebSocket ws("/ws");
 static WiFiUDP        artInUdp;
 static WiFiUDP        artOutUdp;
 static WiFiUDP        sacnUdp;
+static WiFiUDP        discoverUdp;
 static dmx_port_t     dmxPort = DMX_NUM_1;
 
 static uint8_t dmxFrame [MAX_CH + 1];
@@ -266,9 +268,27 @@ static void buildMdnsName() {
 
 static void startMdns() {
   buildMdnsName();
+  MDNS.end();
   if (MDNS.begin(mdnsName.c_str())) {
     MDNS.addService("http", "tcp", 80);
   }
+}
+
+static void sendBeacon() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  uint32_t ip   = (uint32_t)WiFi.localIP();
+  uint32_t mask = (uint32_t)WiFi.subnetMask();
+  IPAddress bcast((ip & mask) | ~mask);
+  char buf[160];
+  char eName[64]; jsonEsc(eName, sizeof(eName), nodeName);
+  snprintf(buf, sizeof(buf),
+    "{\"name\":\"%s\",\"ip\":\"%s\",\"ap_ip\":\"10.0.0.1\",\"mdns\":\"%s.local\",\"product\":\"vizzz.di\"}",
+    eName, ipStr(WiFi.localIP()).c_str(), mdnsName.c_str());
+  discoverUdp.beginPacket(bcast, DISCOVERY_PORT);
+  discoverUdp.write((const uint8_t*)buf, strlen(buf));
+  discoverUdp.endPacket();
+  // Also respond to any incoming discovery requests
+  discoverUdp.begin(DISCOVERY_PORT);
 }
 
 // ── DMX ───────────────────────────────────────────────────────────────────────
@@ -1142,6 +1162,16 @@ static void setupWeb() {
     pendingReboot = true;
   });
 
+  server.on("/discover", HTTP_GET, [](AsyncWebServerRequest* r){
+    char buf[160];
+    char eName[64]; jsonEsc(eName, sizeof(eName), nodeName);
+    snprintf(buf, sizeof(buf),
+      "{\"name\":\"%s\",\"ip\":\"%s\",\"ap_ip\":\"10.0.0.1\",\"mdns\":\"%s.local\",\"product\":\"vizzz.di\"}",
+      eName, ipStr(WiFi.localIP()).c_str(), mdnsName.c_str());
+    r->send(200, "application/json", buf);
+    sendBeacon();
+  });
+
   server.onNotFound([](AsyncWebServerRequest* r){ r->send(404, "text/plain", "Not found"); });
   server.begin();
 }
@@ -1213,7 +1243,7 @@ void loop() {
   wl_status_t curWiFiStatus = WiFi.status();
   if (curWiFiStatus != prevWiFiStatus) {
     prevWiFiStatus = curWiFiStatus;
-    if (curWiFiStatus == WL_CONNECTED) startMdns();
+    if (curWiFiStatus == WL_CONNECTED) { startMdns(); sendBeacon(); }
     refreshArtNetSocket();
     refreshSacnSocket();
   }
@@ -1233,6 +1263,17 @@ void loop() {
 
     sendDMX();
     sendArtNetOut();
+  }
+
+  // Discovery beacon every 30s + respond to incoming discovery requests
+  {
+    static uint32_t lastBeacon = 0;
+    if (now - lastBeacon >= 30000) { lastBeacon = now; sendBeacon(); }
+    int sz = discoverUdp.parsePacket();
+    if (sz > 0) {
+      discoverUdp.flush();
+      sendBeacon();  // unicast reply goes to subnet broadcast; good enough
+    }
   }
 
   // WebSocket status push ~400ms (only when web stack is enabled)
