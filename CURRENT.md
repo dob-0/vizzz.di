@@ -4,7 +4,7 @@ Read this before changing the firmware. Keep it short and replace stale facts.
 
 ## Last verified baseline
 
-`7ba3b27` - `chore: rename project to vizzz.di`
+`435d38d` - `docs: record agent memory workflow`
 Branch: `main`
 
 ## What works
@@ -39,3 +39,10 @@ Branch: `main`
 
 - `sg dialout` upload may need elevated shell permission in agent sandboxes.
 - Starship may warn about read-only cache; this is not a firmware failure.
+- PlatformIO `device monitor` needs an interactive TTY; in this agent shell it can fail with `termios.error: (25, 'Inappropriate ioctl for device')`.
+
+## Current hardware test
+
+- 2026-05-06: Uploaded current `vizzz.di` firmware to ESP32 on `/dev/ttyUSB0`; upload succeeded and hard-reset via RTS. Board MAC: `d4:e9:f4:bc:5a:64`.
+- Next: flash the second ESP when connected, then put both on studio WiFi from `/network` using unique node names/AP SSIDs.
+- For TouchDesigner control, use Art-Net UDP `6454`; set each node to `ARTNET_ONLY` for TD-only control or `MERGE_HTP` if the web layer should still participate. Same universe mirrors both nodes; separate universes controls them independently.
