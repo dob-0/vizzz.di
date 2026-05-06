@@ -192,12 +192,12 @@ webVals[512]   – values set via web UI / HTTP API  (0-based index)
 artVals[512]   – values received from Art-Net IN
 sacnVals[512]  – values received from sACN IN
 outVals[512]   – final mixed output (HTP merge or web-only or artnet-only)
-holdVals[512]  – last Art-Net values before timeout
-sceneBuf[512]  – scratch buffer for scene recall
 dmxFrame[513]  – byte 0 unused (DMX start code), bytes 1-512 = outVals
 ```
 
 All arrays are 0-based internally; DMX channel N maps to index N-1 in webVals but to index N in dmxFrame.
+
+Scene save/recall and protocol packet buffers use short-lived stack scratch space to keep static RAM low.
 
 Fade engine: `fadeActive`, `fadeStartMs`, `fadeTimeMs`, `fadeFrom[512]`, `fadeTo[512]` — all guarded by gLock.
 
@@ -250,8 +250,8 @@ If validation fails, do not push.
 
 | Resource | Used | Free | Headroom for features |
 |---|---|---|---|
-| RAM | 53.9 KB (16.4%) | ~274 KB | Large — room for OTA buffers, fixture maps |
-| Flash | 888.8 KB (67.8%) | ~422 KB | Moderate — limit large HTML additions |
+| RAM | 50.1 KB (15.3%) | ~278 KB | Large — room for OTA buffers, fixture maps |
+| Flash | 889.7 KB (67.9%) | ~421 KB | Moderate — limit large HTML additions |
 
 ---
 

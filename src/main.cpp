@@ -135,8 +135,6 @@ static uint8_t webVals  [MAX_CH];   // web layer — protected by gLock
 static uint8_t artVals  [MAX_CH];   // Art-Net IN — written from UDP task, race accepted
 static uint8_t sacnVals [MAX_CH];   // sACN IN
 static uint8_t outVals  [MAX_CH];   // final computed output
-static uint8_t holdVals [MAX_CH];   // last Art-Net values for hold-on-timeout
-static uint8_t sceneBuf [MAX_CH];
 
 static volatile uint32_t lastArtnetMs = 0;
 static volatile uint32_t lastSacnMs   = 0;
@@ -314,55 +312,49 @@ static void updateFade_locked() {
 }
 
 // ── Output ────────────────────────────────────────────────────────────────────
-static void computeOutput(const uint8_t* web, const uint8_t* art, const uint8_t* sacn, bool aActive, bool sActive) {
-  static uint8_t netIn[MAX_CH];
+static void computeOutput_locked(bool aActive, bool sActive) {
   bool netActive = aActive || sActive;
 
-  if (aActive && sActive) {
-    for (int i = 0; i < MAX_CH; i++) netIn[i] = max(art[i], sacn[i]);
-  } else if (aActive) {
-    memcpy(netIn, art, MAX_CH);
-  } else if (sActive) {
-    memcpy(netIn, sacn, MAX_CH);
-  }
+  for (int i = 0; i < MAX_CH; i++) {
+    uint8_t netIn = 0;
+    if (aActive && sActive) netIn = max(artVals[i], sacnVals[i]);
+    else if (aActive)       netIn = artVals[i];
+    else if (sActive)       netIn = sacnVals[i];
 
-  switch (mode) {
-    case MODE_WEB:
-      memcpy(outVals, web, MAX_CH);
-      break;
-    case MODE_ARTNET:
-      memcpy(outVals, netActive ? netIn : holdVals, MAX_CH);
-      break;
-    default: // MODE_HTP
-      if (netActive)
-        for (int i = 0; i < MAX_CH; i++) outVals[i] = max(web[i], netIn[i]);
-      else
-        memcpy(outVals, web, MAX_CH);
+    uint8_t v;
+    switch (mode) {
+      case MODE_WEB:
+        v = webVals[i];
+        break;
+      case MODE_ARTNET:
+        v = netActive ? netIn : outVals[i];
+        break;
+      default: // MODE_HTP
+        v = netActive ? max(webVals[i], netIn) : webVals[i];
+        break;
+    }
+
+    outVals[i] = masterDimmer < 255 ? vidili::applyMaster(v, masterDimmer) : v;
   }
-  // Apply master dimmer
-  if (masterDimmer < 255)
-    for (int i = 0; i < MAX_CH; i++)
-      outVals[i] = vidili::applyMaster(outVals[i], masterDimmer);
+  memcpy(dmxFrame + 1, outVals, MAX_CH);
 }
 
 static void sendDMX() {
   dmx_wait_sent(dmxPort, DMX_SEND_WAIT);
-  memcpy(dmxFrame + 1, outVals, MAX_CH);
   dmx_write(dmxPort, dmxFrame, MAX_CH + 1);
   dmx_send(dmxPort);
-  memcpy(holdVals, outVals, MAX_CH);
 }
 
 // ── Art-Net output (master → slaves broadcast) ────────────────────────────────
 static void sendArtNetOut() {
   if (!artOutEnabled) return;
   static uint8_t  seq = 1;
-  static uint8_t  pkt[18 + MAX_CH];
   static const uint8_t hdr[12] = {
     'A','r','t','-','N','e','t',0,   // ID
     0x00, 0x50,                       // OpDmx (little-endian)
     0x00, 0x0e                        // Protocol v14
   };
+  uint8_t pkt[18 + MAX_CH];
   memcpy(pkt, hdr, 12);
   pkt[12] = seq++;
   pkt[13] = 0;
@@ -370,7 +362,7 @@ static void sendArtNetOut() {
   pkt[15] = artNet;
   pkt[16] = 0x02;   // length hi (512)
   pkt[17] = 0x00;   // length lo
-  memcpy(pkt + 18, outVals, MAX_CH);
+  memcpy(pkt + 18, dmxFrame + 1, MAX_CH);
   artOutUdp.beginPacket(artOutTarget(), ARTNET_PORT);
   artOutUdp.write(pkt, sizeof(pkt));
   artOutUdp.endPacket();
@@ -387,7 +379,7 @@ static void onDmxFrame(uint16_t uni, uint16_t len, uint8_t /*seq*/, uint8_t* dat
 
 // ── sACN (E1.31) IN ─────────────────────────────────────────────────────────
 static void pollSacn() {
-  static uint8_t pkt[638]; // enough for E1.31 packet with full universe
+  uint8_t pkt[638]; // enough for E1.31 packet with full universe
 
   for (int size = sacnUdp.parsePacket(); size > 0; size = sacnUdp.parsePacket()) {
     int n = sacnUdp.read(pkt, min(int(sizeof(pkt)), size));
@@ -769,12 +761,15 @@ static String pageJSON(uint16_t page) {
   if (page >= PAGE_COUNT) page = PAGE_COUNT - 1;
   uint16_t base = page * PAGE_SIZE;
 
-  static uint8_t snapWeb[PAGE_SIZE];
+  uint8_t snapWeb[PAGE_SIZE];
+  uint8_t snapOut[PAGE_SIZE];
   if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
     memcpy(snapWeb, webVals + base, PAGE_SIZE);
+    memcpy(snapOut, outVals + base, PAGE_SIZE);
     xSemaphoreGive(gLock);
   } else {
-    memcpy(snapWeb, webVals + base, PAGE_SIZE);
+    memset(snapWeb, 0, PAGE_SIZE);
+    memset(snapOut, 0, PAGE_SIZE);
   }
 
   char buf[440];
@@ -784,16 +779,25 @@ static String pageJSON(uint16_t page) {
     pos += snprintf(buf + pos, sizeof(buf) - pos, i < PAGE_SIZE-1 ? "%u," : "%u", snapWeb[i]);
   pos += snprintf(buf + pos, sizeof(buf) - pos, "],\"out\":[");
   for (int i = 0; i < PAGE_SIZE; i++)
-    pos += snprintf(buf + pos, sizeof(buf) - pos, i < PAGE_SIZE-1 ? "%u," : "%u", outVals[base + i]);
+    pos += snprintf(buf + pos, sizeof(buf) - pos, i < PAGE_SIZE-1 ? "%u," : "%u", snapOut[i]);
   snprintf(buf + pos, sizeof(buf) - pos, "]}");
   return buf;
 }
 
 static String monitorJSON() {
+  uint8_t snapOut[64];
+  bool busy = xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE;
+  if (busy) {
+    memset(snapOut, 0, sizeof(snapOut));
+  } else {
+    memcpy(snapOut, outVals, sizeof(snapOut));
+    xSemaphoreGive(gLock);
+  }
+
   char buf[360];
-  int pos = snprintf(buf, sizeof(buf), "{\"out\":[");
+  int pos = snprintf(buf, sizeof(buf), "{\"busy\":%s,\"out\":[", busy ? "true" : "false");
   for (int i = 0; i < 64; i++)
-    pos += snprintf(buf + pos, sizeof(buf) - pos, i < 63 ? "%u," : "%u", outVals[i]);
+    pos += snprintf(buf + pos, sizeof(buf) - pos, i < 63 ? "%u," : "%u", snapOut[i]);
   snprintf(buf + pos, sizeof(buf) - pos, "]}");
   return buf;
 }
@@ -1001,7 +1005,7 @@ static void setupWeb() {
   server.on("/scene/save", HTTP_GET, [](AsyncWebServerRequest* r){
     if (!r->hasArg("n")) { r->send(400, "text/plain", "missing arg"); return; }
     uint8_t n = uint8_t(constrain(r->arg("n").toInt(), 0, SCENE_COUNT - 1));
-    static uint8_t snap[MAX_CH];
+    uint8_t snap[MAX_CH];
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
@@ -1016,12 +1020,13 @@ static void setupWeb() {
     if (!r->hasArg("n")) { r->send(400, "text/plain", "missing arg"); return; }
     uint8_t  n  = uint8_t(constrain(r->arg("n").toInt(), 0, SCENE_COUNT - 1));
     uint32_t ft = r->hasArg("fade") ? uint32_t(max(0L, r->arg("fade").toInt())) : 0;
-    loadScene(n, sceneBuf);
+    uint8_t target[MAX_CH];
+    loadScene(n, target);
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
     }
-    startFade_locked(sceneBuf, ft);
+    startFade_locked(target, ft);
     xSemaphoreGive(gLock);
     r->send(204);
   });
@@ -1071,8 +1076,8 @@ void setup() {
 
   memset(webVals,  0, MAX_CH);
   memset(artVals,  0, MAX_CH);
+  memset(sacnVals, 0, MAX_CH);
   memset(outVals,  0, MAX_CH);
-  memset(holdVals, 0, MAX_CH);
 
   setupDMX();
   startWiFi();
@@ -1124,16 +1129,12 @@ void loop() {
   if (now - lastDmx >= DMX_PERIOD_MS) {
     lastDmx = now;
 
-    static uint8_t snapWeb[MAX_CH];
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
       updateFade_locked();
-      memcpy(snapWeb, webVals, MAX_CH);
+      computeOutput_locked(artnetActive(), sacnActive());
       xSemaphoreGive(gLock);
-    } else {
-      memcpy(snapWeb, webVals, MAX_CH);
     }
 
-    computeOutput(snapWeb, artVals, sacnVals, artnetActive(), sacnActive());
     sendDMX();
     sendArtNetOut();
   }
