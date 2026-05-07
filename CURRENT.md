@@ -10,6 +10,7 @@ Branch: `main`
 ## What works
 
 - ESP32 firmware builds with project-local PlatformIO core data.
+- `onboard_device.py` reads an ESP MAC, can clean erase/flash one USB board, and can assign name/universe/mode over HTTP once the node is reachable.
 - Visible project identity, default node name, and generated AP prefix use `vizzz.di`.
 - Native Unity tests cover `vizzz_core.h` helpers.
 - DMX output uses `DMX_NUM_1`, GPIO25 TX, GPIO21 DIR.
@@ -68,4 +69,6 @@ Branch: `main`
 - 2026-05-07: Fleet control repair: moved peer HTTP forwarding out of `loop()` into a FreeRTOS queue/task, made discovery trust UDP sender IPs, whitelisted forwarded paths, fixed partial-success fleet route handling, and documented/manifested fleet routes. Validation: native tests PASS, esp32 build SUCCESS. RAM 52,356 bytes (16.0%), Flash 898,721 bytes (68.6%).
 - 2026-05-07: No-light triage over AP `10.0.0.1`: live node was reachable as `vizzz.di_EA8982`, STA disconnected, mode was `ARTNET_ONLY`, universe was `5`. Forced `WEB_ONLY`, master 255, and channels 1-4 to 255; `/page?i=0` reported web/out `[255,255,255,255,0...]`. Firmware bug found/fixed locally: `sendDMX()` now calls `dmx_write()`, `dmx_send()`, then `dmx_wait_sent()` per hardware rule. Validation PASS, but USB device was not visible (`/dev/ttyUSB0` absent), so this fix still needs flashing.
 - 2026-05-07: Two ESPs identified. Board A `D4:E9:F4:BA:6F:CC` was flashed first. Board B/light node `D4:E9:F4:BC:5A:64` was then verified on `/dev/ttyUSB0` and flashed successfully. After reboot it is reachable on STA `192.168.88.127`, AP SSID rotated to `vizzz.di_D05B23`, manifest has the new fleet/OSC routes, and direct test pattern reports web/out channels 1-4 at 255.
+- 2026-05-07: Clean-erased and reflashed Board B `D4:E9:F4:BC:5A:64` on `/dev/ttyUSB0`; erase wipes STA credentials/NVS, so old `10.0.0.1`/`192.168.88.127` checks timed out afterward until reconnecting to the newly generated AP or reconfiguring WiFi.
+- 2026-05-07: Added `onboard_device.py` for future multi-node onboarding: MAC check, optional erase, upload, and HTTP name/universe/mode/test setup. Use it one board at a time, and verify MAC before erase.
 - For TouchDesigner control: Art-Net to `192.168.88.255:6454` (broadcast) or `192.168.88.127:6454` (unicast), universe 0. Use `ARTNET_ONLY` for TD-only or `MERGE_HTP` if web layer should participate.

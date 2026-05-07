@@ -62,6 +62,27 @@ sg dialout -c "/home/nnn/.platformio/penv/bin/pio run -e esp32dev --target uploa
 /home/nnn/.platformio/penv/bin/pio test -e native
 ```
 
+## Device Onboarding
+
+For multiple ESP nodes, handle one physical board at a time and track it by MAC.
+`onboard_device.py` can read the connected ESP MAC, optionally erase all flash,
+upload the current firmware, then configure the node name and Art-Net/sACN
+universe once the node is reachable over HTTP.
+
+```bash
+# Clean erase + flash the ESP on /dev/ttyUSB0
+python3 onboard_device.py --erase
+
+# After connecting to its AP or STA address, assign a name and universe
+python3 onboard_device.py --skip-serial --skip-upload --host 10.0.0.1 --name vizzz.di-u2 --universe 2 --mode artnet
+
+# Configure an existing reachable node and set channels 1-4 full as a test
+python3 onboard_device.py --skip-serial --skip-upload --host 192.168.88.127 --universe 18 --mode web --test 4
+```
+
+`--universe` is the absolute 15-bit Art-Net universe number. The helper splits it
+into the firmware's `net/subnet/uni` values automatically.
+
 ## Multi-Node Sync
 
 One device can act as a controller node and broadcast the final output as
