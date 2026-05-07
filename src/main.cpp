@@ -194,7 +194,17 @@ static uint8_t cueIndex = 0;
 static bool cueRunning = false;
 static uint32_t cueNextMs = 0;
 
-enum FxMode : uint8_t { FX_NONE = 0, FX_STROBE = 1, FX_CHASE = 2, FX_PULSE = 3, FX_SINE = 4, FX_SPARKLE = 5 };
+enum FxMode : uint8_t {
+  FX_NONE = 0,
+  FX_STROBE = 1,
+  FX_CHASE = 2,
+  FX_PULSE = 3,
+  FX_SINE = 4,
+  FX_SPARKLE = 5,
+  FX_COMET = 6,
+  FX_BARS = 7,
+  FX_GLITCH = 8
+};
 static FxMode fxMode = FX_NONE;
 static bool fxEnabled = false;
 static uint16_t fxBpm = 120;
@@ -649,6 +659,40 @@ static void tickCueEngine(uint32_t now) {
   triggerCueStep(nextIdx);
 }
 
+static uint8_t tri8(uint8_t phase) {
+  return phase < 128 ? uint8_t(phase << 1) : uint8_t((255 - phase) << 1);
+}
+
+static uint8_t fxApplyDepth(uint8_t level) {
+  uint8_t floorLevel = uint8_t(255 - fxDepth);
+  return uint8_t(floorLevel + ((uint16_t(level) * fxDepth + 127) / 255));
+}
+
+static uint8_t fxLaneForChannel(uint16_t ch, uint8_t lanes) {
+  uint16_t laneSize = (MAX_CH + lanes - 1) / lanes;
+  if (laneSize == 0) laneSize = 1;
+  return min<uint8_t>(lanes - 1, uint8_t(ch / laneSize));
+}
+
+static uint32_t fxHash(uint32_t x) {
+  x ^= x >> 16;
+  x *= 0x7feb352dUL;
+  x ^= x >> 15;
+  x *= 0x846ca68bUL;
+  x ^= x >> 16;
+  return x;
+}
+
+static uint8_t tailLevel(uint8_t dist) {
+  switch (dist) {
+    case 0: return 255;
+    case 1: return 190;
+    case 2: return 110;
+    case 3: return 52;
+    default: return 0;
+  }
+}
+
 static uint8_t fxLevelForChannel(uint16_t ch, uint32_t now) {
   if (!fxEnabled || fxMode == FX_NONE) return 255;
   uint32_t bpm = max<uint16_t>(20, fxBpm);
@@ -656,44 +700,67 @@ static uint8_t fxLevelForChannel(uint16_t ch, uint32_t now) {
   if (beatMs == 0) beatMs = 1;
 
   if (fxMode == FX_STROBE) {
-    uint32_t phase = now % beatMs;
-    bool on = phase < (beatMs / 2);
-    return on ? 255 : uint8_t(255 - fxDepth);
+    uint32_t slice = max<uint32_t>(18, beatMs / 8);
+    bool on = (now % slice) < max<uint32_t>(6, slice / 3);
+    return fxApplyDepth(on ? 255 : 0);
   }
 
   if (fxMode == FX_CHASE) {
     const uint8_t lanes = 8;
-    uint16_t laneSize = MAX_CH / lanes;
-    if (laneSize == 0) laneSize = 1;
-    uint8_t activeLane = uint8_t((now / beatMs) % lanes);
-    uint8_t lane = min<uint8_t>(lanes - 1, uint8_t(ch / laneSize));
-    return (lane == activeLane) ? 255 : uint8_t(255 - fxDepth);
+    uint8_t activeLane = uint8_t((now / max<uint32_t>(24, beatMs / 2)) % lanes);
+    uint8_t lane = fxLaneForChannel(ch, lanes);
+    uint8_t dist = uint8_t((lane + lanes - activeLane) % lanes);
+    return fxApplyDepth(tailLevel(dist));
+  }
+
+  if (fxMode == FX_PULSE) {
+    uint8_t phase = uint8_t(((now % beatMs) * 255UL) / beatMs);
+    uint8_t level = tri8(phase);
+    level = uint8_t((uint16_t(level) * level + 255) >> 8);
+    return fxApplyDepth(level);
   }
 
   if (fxMode == FX_SINE) {
-    float phase = float(now % beatMs) / float(beatMs);
-    float s = 0.5f + 0.5f * sinf(phase * 6.2831853f);
-    uint8_t dyn = uint8_t(s * 255.0f);
-    uint8_t floorLevel = uint8_t(255 - fxDepth);
-    return max<uint8_t>(floorLevel, dyn);
+    const uint8_t lanes = 16;
+    uint8_t lane = fxLaneForChannel(ch, lanes);
+    uint8_t phase = uint8_t((((now % beatMs) * 255UL) / beatMs) + lane * 16);
+    uint8_t level = tri8(phase);
+    return fxApplyDepth(level);
   }
 
   if (fxMode == FX_SPARKLE) {
-    // Deterministic sparkle per channel/time slice to avoid RNG contention.
-    uint32_t slot = (now / max<uint32_t>(10, beatMs / 16));
-    uint32_t h = (uint32_t(ch + 1) * 1103515245UL) ^ (slot * 2654435761UL);
-    bool on = (h & 0x0F) == 0;
-    return on ? 255 : uint8_t(255 - fxDepth);
+    uint32_t slot = now / max<uint32_t>(18, beatMs / 16);
+    uint8_t r = uint8_t(fxHash((uint32_t(ch + 1) << 16) ^ slot) & 0x1F);
+    uint8_t level = r < 2 ? 255 : r < 5 ? 150 : r < 9 ? 58 : 0;
+    return fxApplyDepth(level);
   }
 
-  // Triangle pulse 0..255 scaled by depth.
-  uint32_t phase = now % beatMs;
-  uint16_t tri = (phase < beatMs / 2)
-    ? uint16_t((phase * 510UL) / beatMs)
-    : uint16_t(((beatMs - phase) * 510UL) / beatMs);
-  uint8_t pulse = uint8_t(min<uint16_t>(255, tri));
-  uint8_t floorLevel = uint8_t(255 - fxDepth);
-  return max<uint8_t>(floorLevel, pulse);
+  if (fxMode == FX_COMET) {
+    const uint8_t lanes = 16;
+    uint8_t activeLane = uint8_t((now / max<uint32_t>(24, beatMs / 4)) % lanes);
+    uint8_t lane = fxLaneForChannel(ch, lanes);
+    uint8_t dist = uint8_t((lane + lanes - activeLane) % lanes);
+    return fxApplyDepth(tailLevel(dist));
+  }
+
+  if (fxMode == FX_BARS) {
+    const uint8_t lanes = 16;
+    uint8_t lane = fxLaneForChannel(ch, lanes);
+    uint8_t flip = uint8_t((now / max<uint32_t>(24, beatMs / 2)) & 1);
+    uint8_t level = ((lane & 1) == flip) ? 255 : 18;
+    return fxApplyDepth(level);
+  }
+
+  if (fxMode == FX_GLITCH) {
+    const uint8_t lanes = 16;
+    uint8_t lane = fxLaneForChannel(ch, lanes);
+    uint32_t slot = now / max<uint32_t>(16, beatMs / 20);
+    uint8_t r = uint8_t(fxHash(slot ^ (uint32_t(lane) * 0x45d9f3bUL)) & 0x0F);
+    uint8_t level = r < 3 ? 255 : r < 6 ? 0 : r < 9 ? 115 : 32;
+    return fxApplyDepth(level);
+  }
+
+  return 255;
 }
 
 static void applyColorWash_locked() {
@@ -795,7 +862,7 @@ static void pollOsc() {
       }
     } else if (strcmp(addr, "/fx/mode") == 0) {
       if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
-        fxMode = FxMode(constrain(v, 0, 5));
+        fxMode = FxMode(constrain(v, 0, 8));
         fxEnabled = (fxMode != FX_NONE);
         xSemaphoreGive(gLock);
       }
@@ -980,7 +1047,7 @@ label{display:grid;gap:5px;font:700 .66rem/1 var(--di-mono);text-transform:upper
 input,select,button,textarea{border-radius:0;border:1px solid var(--di-cyan-border);min-height:44px;padding:10px;background:var(--di-black);color:var(--di-text);font:600 .9rem/1.2 "Inter","Segoe UI",sans-serif;outline:none}
 input:focus,select:focus,textarea:focus{border-color:var(--di-cyan);box-shadow:0 0 0 1px var(--di-cyan)}
 button{cursor:pointer;background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan);font-weight:800;text-transform:uppercase;letter-spacing:.04em}
-button:hover{background:rgba(77,249,255,.16)}button.alt{background:var(--di-black);border-color:var(--di-cyan-border);color:var(--di-text)}button.good,button.bad{background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan)}
+button:hover,button.active{background:rgba(77,249,255,.16)}button.alt{background:var(--di-black);border-color:var(--di-cyan-border);color:var(--di-text)}button.alt.active{border-color:var(--di-cyan);color:var(--di-cyan);background:var(--di-cyan-dim)}button.good,button.bad{background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan)}
 button.wide{width:100%}.actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .heroMeter{padding:12px;border-radius:0;background:var(--di-black);border:1px solid var(--di-cyan-border);color:var(--di-text);text-align:center}.heroMeter .big{font:700 2rem/1 var(--di-mono);color:var(--di-cyan)}
 .sceneGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.sceneBtn{height:68px;font-size:.9rem}.miniScene{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
@@ -1208,7 +1275,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
 
         <div class="card">
           <h2>FX Engine</h2>
-          <select id="fxModeSel" style="display:none"><option value="none">none</option><option value="strobe">strobe</option><option value="chase">chase</option><option value="pulse">pulse</option><option value="sine">sine</option><option value="sparkle">sparkle</option></select>
+          <select id="fxModeSel" style="display:none"><option value="none">none</option><option value="strobe">strobe</option><option value="chase">chase</option><option value="pulse">pulse</option><option value="sine">sine</option><option value="sparkle">sparkle</option><option value="comet">comet</option><option value="bars">bars</option><option value="glitch">glitch</option></select>
           <div class="vjPadGrid">
             <button class="vjPad" data-fx="none" onclick="fxMode('none')"><b>OFF</b><span>fx</span></button>
             <button class="vjPad" data-fx="strobe" onclick="fxMode('strobe')"><b>STRB</b><span>fx</span></button>
@@ -1216,6 +1283,9 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
             <button class="vjPad" data-fx="pulse" onclick="fxMode('pulse')"><b>PULS</b><span>fx</span></button>
             <button class="vjPad" data-fx="sine" onclick="fxMode('sine')"><b>SINE</b><span>fx</span></button>
             <button class="vjPad" data-fx="sparkle" onclick="fxMode('sparkle')"><b>SPRK</b><span>fx</span></button>
+            <button class="vjPad" data-fx="comet" onclick="fxMode('comet')"><b>COMT</b><span>fx</span></button>
+            <button class="vjPad" data-fx="bars" onclick="fxMode('bars')"><b>BARS</b><span>fx</span></button>
+            <button class="vjPad" data-fx="glitch" onclick="fxMode('glitch')"><b>GLCH</b><span>fx</span></button>
             <button class="vjPad" onclick="bpmStep(.5)"><b>1/2</b><span>bpm</span></button>
             <button class="vjPad" onclick="bpmStep(2)"><b>2X</b><span>bpm</span></button>
           </div>
@@ -1636,6 +1706,9 @@ static const char* fxModeName(FxMode m) {
     case FX_PULSE:  return "pulse";
     case FX_SINE:   return "sine";
     case FX_SPARKLE:return "sparkle";
+    case FX_COMET:  return "comet";
+    case FX_BARS:   return "bars";
+    case FX_GLITCH: return "glitch";
     default:        return "none";
   }
 }
@@ -2083,6 +2156,9 @@ static void setupWeb() {
       else if (m == "pulse"   || m == "3") fxMode = FX_PULSE;
       else if (m == "sine"    || m == "4") fxMode = FX_SINE;
       else if (m == "sparkle" || m == "5") fxMode = FX_SPARKLE;
+      else if (m == "comet"   || m == "6") fxMode = FX_COMET;
+      else if (m == "bars"    || m == "7") fxMode = FX_BARS;
+      else if (m == "glitch"  || m == "8") fxMode = FX_GLITCH;
       else fxMode = FX_NONE;
     }
     if (r->hasArg("en")) fxEnabled = r->arg("en").toInt() != 0;

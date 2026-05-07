@@ -14,7 +14,7 @@ and exposes a black/cyan browser console plus a machine-readable node manifest.
 | **Art-Net IN/OUT** | Configurable Net/Subnet/Universe, hold-last on loss, optional broadcast output |
 | **sACN IN** | E1.31 listener on port `5568`, same universe as Art-Net |
 | **Peer / fleet control** | Peer discovery plus network-wide blackout, full, master, and scene recall |
-| **VJ deck** | Mobile-first scene launcher, FX pads, color engine, cue runner, group mixer, and fleet controls |
+| **VJ deck** | Mobile-first scene launcher, smoother FX pads, color engine, cue runner, group mixer, and fleet controls |
 | **Scenes** | 8 slots, save/recall with fade |
 | **Master dimmer** | 0-255 applied on the output path |
 | **WebSocket** | Live status push every ~400 ms at `ws://10.0.0.1/ws` |
