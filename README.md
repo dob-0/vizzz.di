@@ -13,6 +13,7 @@ and exposes a black/cyan browser console plus a machine-readable node manifest.
 | **DMX output** | 512 channels on `DMX_NUM_1`, GPIO25 TX, GPIO21 DIR |
 | **Art-Net IN/OUT** | Configurable Net/Subnet/Universe, hold-last on loss, optional broadcast output |
 | **sACN IN** | E1.31 listener on port `5568`, same universe as Art-Net |
+| **Peer / fleet control** | Peer discovery plus network-wide blackout, full, master, and scene recall |
 | **Scenes** | 8 slots, save/recall with fade |
 | **Master dimmer** | 0-255 applied on the output path |
 | **WebSocket** | Live status push every ~400 ms at `ws://10.0.0.1/ws` |
@@ -70,6 +71,10 @@ Art-Net to other nodes on the same network.
 - Receiver nodes: set mode to `ARTNET_ONLY` and use the same universe
 - Broadcast target: STA subnet broadcast when joined to a router, otherwise
   `10.0.0.255:6454`
+- Nodes advertise themselves with UDP beacons on port `47777`; `GET /peers`
+  returns the live peer table.
+- The performance page includes fleet controls backed by `/net/blackout`,
+  `/net/full`, `/net/master`, and `/net/scene/recall`.
 
 ## HTTP API
 
@@ -82,13 +87,21 @@ Art-Net to other nodes on the same network.
 | GET | `/mode/set` | `m=0\|1\|2` | WEB / ARTNET / HTP |
 | GET | `/netmode/set` | `m=0\|1\|2` | AP_STA / STA_ONLY / AP_ONLY, then reboot |
 | GET | `/artout/set` | `en=0\|1` | Enable Art-Net OUT |
+| GET | `/artout/peer` | `ip=X` | Use one peer as Art-Net OUT unicast target |
 | GET | `/artnet/set` | `net=N&subnet=S&uni=U` | Configure Art-Net/sACN universe |
 | GET | `/scene/save` | `n=0-7` | Save current web layer |
 | GET | `/scene/recall` | `n=0-7&fade=ms` | Recall scene with fade |
+| GET | `/net/blackout` | - | Blackout this node and all discovered peers |
+| GET | `/net/full` | - | Full on this node and all discovered peers |
+| GET | `/net/master` | `v=0-255` | Set master on this node and all discovered peers |
+| GET | `/net/scene/recall` | `n=0-7&fade=ms` | Recall scene on this node and all discovered peers |
 | GET | `/wifi/scan` | - | JSON SSID scan |
 | GET | `/wifi/set` | `ssid=X&pass=Y` | Connect STA |
 | GET | `/wifi/forget` | - | Clear STA credentials |
 | GET | `/node/set` | `name=X&ap_ssid=Y&ap_pass=Z` | Update node identity |
+| GET | `/discover` | - | Return node identity and send a discovery beacon |
+| GET | `/peers` | - | Live discovered peer table |
+| GET | `/peer/cmd` | `ip=X&path=/blackout\|/full...` | Forward an allowed command to one known peer |
 | GET | `/status` | - | Live status JSON |
 | GET | `/page` | `i=0-15` | 32-channel page snapshot |
 | GET | `/monitor` | - | First 64 output channels |

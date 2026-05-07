@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <WiFiUdp.h>
+#include <freertos/queue.h>
 #include <freertos/semphr.h>
 
 #include <AsyncTCP.h>
@@ -79,6 +81,18 @@ static bool isGeneratedApSsid(const String& ssid) {
   return ssid.startsWith(AP_SSID_PREFIX) || ssid.startsWith(LEGACY_AP_SSID_PREFIX);
 }
 
+static bool isGeneratedNodeName(const String& name) {
+  return name == PRODUCT_NAME || name.startsWith(String(PRODUCT_NAME) + "-");
+}
+
+static String makeNodeNameFromMac() {
+  uint64_t mac = ESP.getEfuseMac();
+  uint16_t tail = uint16_t(mac & 0xFFFF);
+  char suffix[5];
+  snprintf(suffix, sizeof(suffix), "%04X", tail);
+  return String(PRODUCT_NAME) + "-" + suffix;
+}
+
 static void saveConfig() {
   prefs.begin("cfg", false);
   prefs.putString("name",     nodeName);
@@ -121,6 +135,7 @@ static void loadConfig() {
   // New firmware image flashed: rotate default SSID once, then persist.
   if (savedFwTag != FW_TAG) {
     if (apSsid.isEmpty() || isGeneratedApSsid(apSsid)) apSsid = "";
+    if (nodeName.isEmpty() || isGeneratedNodeName(nodeName)) nodeName = makeNodeNameFromMac();
     needSaveConfig = true;
   }
 }
@@ -206,6 +221,17 @@ static volatile bool     pendingReboot        = false;
 static volatile bool     pendingWifiReconnect = false;
 static volatile bool     pendingWifiForget    = false;
 
+// ── Broadcast queue (web callbacks write, peer task drains) ───────────────────
+static constexpr uint8_t BCAST_CAP      = 8;
+static constexpr size_t  BCAST_PATH_LEN = 72;
+static constexpr size_t  BCAST_IP_LEN   = 16;
+struct BcastEntry {
+  char path[BCAST_PATH_LEN];
+  char targetIp[BCAST_IP_LEN];  // empty → all peers; non-empty → specific peer only
+};
+static QueueHandle_t bcastQueue = nullptr;
+static TaskHandle_t  bcastTaskHandle = nullptr;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 static void ipToCStr(char* dst, size_t n, IPAddress ip) {
   snprintf(dst, n, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
@@ -251,6 +277,103 @@ static bool jsonExtract(const char* json, const char* key, char* dst, size_t dst
   while (*p && *p != '"' && i < dstLen - 1) dst[i++] = *p++;
   dst[i] = '\0';
   return i > 0;
+}
+
+// ── Fleet broadcast helpers ───────────────────────────────────────────────────
+static bool startsWithCStr(const char* s, const char* prefix) {
+  return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
+static bool isCleanPeerPath(const char* path) {
+  if (!path || path[0] != '/' || path[1] == '/') return false;
+  for (size_t i = 0; i < BCAST_PATH_LEN; i++) {
+    uint8_t c = uint8_t(path[i]);
+    if (c == 0) return i > 1;
+    if (c <= 0x20 || c >= 0x7f || c == '#') return false;
+  }
+  return false;  // too long for the fixed queue entry
+}
+
+static bool isAllowedPeerPath(const char* path) {
+  if (!isCleanPeerPath(path) || strstr(path, "://")) return false;
+  return strcmp(path, "/blackout") == 0 ||
+         strcmp(path, "/full") == 0 ||
+         startsWithCStr(path, "/master?v=") ||
+         startsWithCStr(path, "/scene/recall?n=");
+}
+
+static bool sendPeerGet(const char* ip, const char* path) {
+  IPAddress addr;
+  if (!addr.fromString(ip) || !isAllowedPeerPath(path)) return false;
+
+  WiFiClient client;
+  client.setTimeout(120);
+  if (!client.connect(addr, 80, 120)) {
+    client.stop();
+    return false;
+  }
+
+  char req[180];
+  int len = snprintf(req, sizeof(req),
+    "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+    path, ip);
+  if (len <= 0 || size_t(len) >= sizeof(req)) {
+    client.stop();
+    return false;
+  }
+  client.write(reinterpret_cast<const uint8_t*>(req), size_t(len));
+  client.flush();
+  client.stop();
+  return true;
+}
+
+static void bcastTask(void*) {
+  BcastEntry entry;
+  for (;;) {
+    if (xQueueReceive(bcastQueue, &entry, portMAX_DELAY) != pdTRUE) continue;
+    if (!isAllowedPeerPath(entry.path)) continue;
+
+    if (entry.targetIp[0]) {
+      sendPeerGet(entry.targetIp, entry.path);
+      continue;
+    }
+
+    char ips[MAX_PEERS][BCAST_IP_LEN];
+    uint8_t cnt = 0;
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
+      cnt = peerCount;
+      for (uint8_t i = 0; i < cnt; i++) strlcpy(ips[i], peers[i].ip, BCAST_IP_LEN);
+      xSemaphoreGive(gLock);
+    }
+    for (uint8_t i = 0; i < cnt; i++) {
+      sendPeerGet(ips[i], entry.path);
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
+  }
+}
+
+static bool startBcastTask() {
+  if (bcastQueue) return true;
+  bcastQueue = xQueueCreate(BCAST_CAP, sizeof(BcastEntry));
+  if (!bcastQueue) return false;
+  BaseType_t ok = xTaskCreatePinnedToCore(
+    bcastTask, "peerBcast", 4096, nullptr, 1, &bcastTaskHandle, 0);
+  if (ok != pdPASS) {
+    vQueueDelete(bcastQueue);
+    bcastQueue = nullptr;
+    bcastTaskHandle = nullptr;
+    return false;
+  }
+  return true;
+}
+
+// Called from async web callbacks. targetIp = nullptr -> all peers.
+static bool enqueueBcast(const char* path, const char* targetIp = nullptr) {
+  if (!bcastQueue || !isAllowedPeerPath(path)) return false;
+  BcastEntry entry{};
+  strlcpy(entry.path, path, sizeof(entry.path));
+  if (targetIp) strlcpy(entry.targetIp, targetIp, sizeof(entry.targetIp));
+  return xQueueSend(bcastQueue, &entry, 0) == pdTRUE;
 }
 
 // ── WiFi ──────────────────────────────────────────────────────────────────────
@@ -367,10 +490,11 @@ static void pollDiscovery() {
   buf[n] = '\0';
   if (!strstr(buf, "vizzz.di")) return;  // ignore non-vizzz packets
 
-  char pName[40], pIp[16], pMdns[48];
+  char pName[40], pIp[16], pIpJson[16], pMdns[48];
   if (!jsonExtract(buf, "name", pName, sizeof(pName))) return;
-  if (!jsonExtract(buf, "ip",   pIp,   sizeof(pIp)))   return;
+  if (!jsonExtract(buf, "ip",   pIpJson, sizeof(pIpJson))) return;
   jsonExtract(buf, "mdns", pMdns, sizeof(pMdns));
+  ipToCStr(pIp, sizeof(pIp), discoverUdp.remoteIP());
 
   // Ignore our own beacon
   if (WiFi.status() == WL_CONNECTED) {
@@ -1097,6 +1221,21 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
         <div class="actions" style="margin-top:8px"><button onclick="setGroup()">Save Group</button><button class="alt" onclick="applyGroup()">Apply Value</button></div>
         <pre id="vjDump" style="margin-top:8px">VJ status pending…</pre>
       </div>
+      <div class="card">
+        <h2>Fleet</h2>
+        <div id="fleetList" class="footerNote" style="margin-bottom:10px">—</div>
+        <div class="actions">
+          <button class="bad" onclick="netBlackout()">ALL Blackout</button>
+          <button class="good" onclick="netFull()">ALL Full</button>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <label class="grow">ALL Master<input id="netMaster" type="range" min="0" max="255" value="255" oninput="queueNetMaster(+this.value)"></label>
+          <div class="heroMeter"><div class="big" id="netMasterPct">100%</div><div>fleet</div></div>
+        </div>
+        <div class="row" style="margin-top:8px"><label class="grow">Fade ms<input id="netFade" type="number" value="1000"></label></div>
+        <div class="sceneGrid" id="netScenes" style="margin-top:8px"></div>
+        <div class="row" style="margin-top:8px"><button class="alt" onclick="loadFleet()">Refresh Peers</button></div>
+      </div>
     </div>
   </section>
 </div>
@@ -1115,6 +1254,7 @@ function makeScenes(){
   $('sceneRecall').innerHTML=[...Array(8)].map((_,i)=>`<button class="sceneBtn" onclick="recallScene(${i})">Recall ${i+1}</button>`).join('');
   $('sceneSave').innerHTML=[...Array(8)].map((_,i)=>`<button onclick="saveScene(${i})">Save ${i+1}</button>`).join('');
   $('perfScenes').innerHTML=[...Array(8)].map((_,i)=>`<button class="sceneBtn" onclick="recallPerf(${i})">Scene ${i+1}</button>`).join('');
+  $('netScenes').innerHTML=[...Array(8)].map((_,i)=>`<button class="sceneBtn" onclick="netRecall(${i})">Scene ${i+1}</button>`).join('');
 }
 function makePages(){ $('pageSel').innerHTML=[...Array(16)].map((_,i)=>`<option value="${i}">Page ${i+1}</option>`).join(''); }
 function updateMasterDisplays(v){const pct=Math.round((v/255)*100);$('masterPct').textContent=pct+'%';$('perfPct').textContent=pct+'%';if(document.activeElement!==$('master'))$('master').value=v;if(document.activeElement!==$('perfMaster'))$('perfMaster').value=v;}
@@ -1156,7 +1296,8 @@ function showNetworks(nets){$('networks').innerHTML=nets.length?nets.map(n=>`<bu
 async function refreshMonitor(){const r=await qs('/monitor'); if(r) $('monitorDump').textContent=JSON.stringify(r.out);}
 async function loadManifest(){const r=await qs('/node/manifest'); if(r) $('manifestDump').textContent=JSON.stringify(r,null,2);}
 function openManifest(){window.open('/node/manifest','_blank');}
-async function loadPeers(){const r=await qs('/peers');if(!r){$('peerCount').textContent='error';return;}const c=r.count||0;$('peerCount').textContent=c?c+(c===1?' peer found':' peers found'):'none found';$('peerList').innerHTML=c?r.peers.map(p=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px;border:1px solid var(--di-cyan-border);margin-bottom:4px"><div><b>${escHtml(p.name)}</b> <span class="footerNote">${escHtml(p.ip)}</span><br><span class="footerNote">${escHtml(p.mdns)||''} &bull; ${p.age_s}s ago</span></div><button onclick="targetPeer('${escJsSq(p.ip)}')" style="min-height:30px;padding:3px 10px;font-size:.7rem;flex:0 0 auto">Link</button></div>`).join(''):'<span class="footerNote">No vizzz.di nodes found. Devices must share a WiFi network. Retry after 30s.</span>';}
+function peerCmd(ip,path){hit('/peer/cmd?ip='+encodeURIComponent(ip)+'&path='+encodeURIComponent(path));}
+async function loadPeers(){const r=await qs('/peers');if(!r){$('peerCount').textContent='error';return;}const c=r.count||0;$('peerCount').textContent=c?c+(c===1?' peer found':' peers found'):'none found';$('peerList').innerHTML=c?r.peers.map(p=>`<div style="padding:8px;border:1px solid var(--di-cyan-border);margin-bottom:6px"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px"><div><b>${escHtml(p.name)}</b> <span class="footerNote">${escHtml(p.ip)}</span><br><span class="footerNote">${escHtml(p.mdns)||''} &bull; ${p.age_s}s ago</span></div><button onclick="window.open('http://${escJsSq(p.ip)}','_blank')" style="min-height:28px;padding:3px 10px;font-size:.7rem;flex:0 0 auto">Open UI</button></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px"><button onclick="peerCmd('${escJsSq(p.ip)}','/blackout')" style="min-height:32px;font-size:.72rem" class="bad">Blackout</button><button onclick="peerCmd('${escJsSq(p.ip)}','/full')" style="min-height:32px;font-size:.72rem" class="good">Full</button><button onclick="targetPeer('${escJsSq(p.ip)}')" style="min-height:32px;font-size:.72rem">Link AO</button></div></div>`).join(''):'<span class="footerNote">No vizzz.di nodes found. Devices must share a WiFi network. Retry after 30s.</span>';}
 function targetPeer(ip){if(!confirm('Route Art-Net OUT directly to '+ip+'? (enables unicast, overrides broadcast)'))return;fetch('/artout/peer?ip='+encodeURIComponent(ip),{cache:'no-store'}).then(()=>fetch('/artout/set?en=1',{cache:'no-store'}));artOutEnabled=true;$('aoBtn').textContent='Art OUT ON';$('aoTarget').textContent=ip;}
 function applyFx(){hit('/fx/set?en=1&mode='+encodeURIComponent($('fxModeSel').value)+'&bpm='+(+$('fxBpm').value||120)+'&depth='+(+$('fxDepth').value||255));}
 function tapFx(){hit('/fx/tap');}
@@ -1192,6 +1333,12 @@ async function refreshVj(){
   $('vjDump').textContent=JSON.stringify({fx, cue, groups:groups.groups?.slice(0,4)},null,2);
 }
 function applyMode(){hit('/mode/set?m='+$('modeSel').value);} function applyNetMode(){if(confirm('Switch network profile and reboot?')) hit('/netmode/set?m='+$('netModeSel').value);}
+let netMasterTimer=null;
+function netBlackout(){hit('/net/blackout');}
+function netFull(){hit('/net/full');}
+function queueNetMaster(v){$('netMasterPct').textContent=Math.round(v/255*100)+'%';clearTimeout(netMasterTimer);netMasterTimer=setTimeout(()=>hit('/net/master?v='+v),40);}
+function netRecall(i){hit('/net/scene/recall?n='+i+'&fade='+(+$('netFade').value||0));}
+async function loadFleet(){const r=await qs('/peers');if(!r)return;const c=r.count||0;$('fleetList').innerHTML=c?r.peers.map(p=>`<b>${escHtml(p.name)}</b> · ${escHtml(p.ip)} · ${p.age_s}s ago`).join('<br>'):'This node only — no peers on network';}
 
 $('modeSel').addEventListener('change',applyMode); $('netModeSel').addEventListener('change',applyNetMode); $('master').addEventListener('input',e=>queueMaster(+e.target.value)); $('perfMaster').addEventListener('input',e=>queueMaster(+e.target.value)); $('pageSel').addEventListener('change',e=>{curPage=+e.target.value;loadPage();});
 
@@ -1199,9 +1346,10 @@ const ws=new WebSocket('ws://'+location.host+'/ws');
 ws.onmessage=e=>{let s; try{s=JSON.parse(e.data);}catch{return;} state=s; updatePills(s); syncFields(s);};
 ws.onclose=()=>setTimeout(()=>location.reload(),2000);
 
-setActiveRoute(); makeScenes(); makePages(); loadPage(); refreshMonitor(); loadManifest(); loadPeers();
+setActiveRoute(); makeScenes(); makePages(); loadPage(); refreshMonitor(); loadManifest(); loadPeers(); loadFleet();
 setInterval(async()=>{const s=await qs('/page?i='+curPage); if(!s) return; pageWeb=s.web||[]; pageOut=s.out||[]; refreshOutGrid();},1000);
 refreshVj(); vjTimer=setInterval(refreshVj,2000);
+setInterval(loadFleet,5000);
 </script>
 </body></html>)HTML";
 
@@ -1468,7 +1616,7 @@ static String nodeManifestJSON() {
   String mac = WiFi.macAddress();
   String outTarget = ipStr(artOutTarget());
 
-  char buf[2600];
+  char buf[3400];
   snprintf(buf, sizeof(buf),
     "{"
     "\"schema\":\"vizzz.di.node.manifest.v1\","
@@ -1480,7 +1628,7 @@ static String nodeManifestJSON() {
     "\"network\":{\"mode\":\"%s\",\"ap_ip\":\"%s\",\"sta_connected\":%s,\"sta_ip\":\"%s\"},"
     "\"hardware\":{\"board\":\"ESP32 DevKit\",\"dmx_uart\":\"DMX_NUM_1\",\"dmx_tx_gpio\":%d,\"dmx_dir_gpio\":%d,\"max_channels\":%d,\"dmx_period_ms\":%lu},"
     "\"protocols\":["
-      "{\"id\":\"http\",\"role\":\"control\",\"routes\":[\"/\",\"/control\",\"/patch\",\"/scenes\",\"/network\",\"/system\",\"/performance\",\"/vj\",\"/status\",\"/page\",\"/monitor\",\"/groups\",\"/group/set\",\"/group/apply\",\"/cue/status\",\"/cue/count\",\"/cue/set\",\"/cue/run\",\"/cue/next\",\"/fx/status\",\"/fx/set\",\"/fx/tap\",\"/color/set\",\"/node/manifest\",\"/manifest.json\"]},"
+      "{\"id\":\"http\",\"role\":\"control\",\"routes\":[\"/\",\"/control\",\"/patch\",\"/scenes\",\"/network\",\"/system\",\"/performance\",\"/vj\",\"/status\",\"/page\",\"/monitor\",\"/blackout\",\"/full\",\"/master\",\"/mode/set\",\"/netmode/set\",\"/web/set\",\"/artnet/set\",\"/artout/set\",\"/artout/peer\",\"/scene/save\",\"/scene/recall\",\"/wifi/scan\",\"/wifi/set\",\"/wifi/forget\",\"/node/set\",\"/reboot\",\"/discover\",\"/peers\",\"/peer/cmd\",\"/net/blackout\",\"/net/full\",\"/net/master\",\"/net/scene/recall\",\"/groups\",\"/group/set\",\"/group/apply\",\"/cue/status\",\"/cue/count\",\"/cue/set\",\"/cue/run\",\"/cue/next\",\"/fx/status\",\"/fx/set\",\"/fx/tap\",\"/color/set\",\"/node/manifest\",\"/manifest.json\"]},"
       "{\"id\":\"websocket\",\"role\":\"live-status\",\"endpoint\":\"/ws\",\"push_ms\":400},"
       "{\"id\":\"artnet\",\"role\":\"input-output\",\"port\":%u,\"universe\":%u,\"output_target\":\"%s\",\"output_enabled\":%s},"
       "{\"id\":\"sacn\",\"role\":\"input\",\"port\":%u,\"universe\":%u},"
@@ -1831,11 +1979,11 @@ static void setupWeb() {
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     if (r->hasArg("mode")) {
       String m = r->arg("mode");
-      if (m == "strobe") fxMode = FX_STROBE;
-      else if (m == "chase") fxMode = FX_CHASE;
-      else if (m == "pulse") fxMode = FX_PULSE;
-      else if (m == "sine") fxMode = FX_SINE;
-      else if (m == "sparkle") fxMode = FX_SPARKLE;
+      if (m == "strobe" || m == "1") fxMode = FX_STROBE;
+      else if (m == "chase"   || m == "2") fxMode = FX_CHASE;
+      else if (m == "pulse"   || m == "3") fxMode = FX_PULSE;
+      else if (m == "sine"    || m == "4") fxMode = FX_SINE;
+      else if (m == "sparkle" || m == "5") fxMode = FX_SPARKLE;
       else fxMode = FX_NONE;
     }
     if (r->hasArg("en")) fxEnabled = r->arg("en").toInt() != 0;
@@ -1876,6 +2024,78 @@ static void setupWeb() {
     r->send(204);
   });
 
+  // ── Peer proxy (forward a command to one specific known peer) ────────────────
+  server.on("/peer/cmd", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (!r->hasArg("ip") || !r->hasArg("path")) { r->send(400, "text/plain", "missing arg"); return; }
+    String ip   = r->arg("ip");
+    String path = r->arg("path");
+    if (!isAllowedPeerPath(path.c_str())) { r->send(400, "text/plain", "unsupported path"); return; }
+    // Only allow forwarding to known peers (prevents open proxy abuse)
+    bool known = false;
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
+      for (uint8_t i = 0; i < peerCount; i++) {
+        if (ip == peers[i].ip) { known = true; break; }
+      }
+      xSemaphoreGive(gLock);
+    }
+    if (!known) { r->send(403, "text/plain", "unknown peer"); return; }
+    if (!enqueueBcast(path.c_str(), ip.c_str())) { r->send(503, "text/plain", "queue full"); return; }
+    r->send(204);
+  });
+
+  // ── Fleet (broadcast to self + all peers) ────────────────────────────────────
+  server.on("/net/blackout", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
+      r->send(503, "text/plain", "busy");
+      return;
+    }
+    memset(webVals, 0, MAX_CH);
+    fadeActive = false;
+    xSemaphoreGive(gLock);
+    if (!enqueueBcast("/blackout")) { r->send(503, "text/plain", "queue full"); return; }
+    r->send(204);
+  });
+
+  server.on("/net/full", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
+      r->send(503, "text/plain", "busy");
+      return;
+    }
+    memset(webVals, 255, MAX_CH);
+    fadeActive = false;
+    xSemaphoreGive(gLock);
+    if (!enqueueBcast("/full")) { r->send(503, "text/plain", "queue full"); return; }
+    r->send(204);
+  });
+
+  server.on("/net/master", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (r->hasArg("v")) {
+      masterDimmer = uint8_t(constrain(r->arg("v").toInt(), 0, 255));
+    }
+    char path[24];
+    snprintf(path, sizeof(path), "/master?v=%u", masterDimmer);
+    if (!enqueueBcast(path)) { r->send(503, "text/plain", "queue full"); return; }
+    r->send(204);
+  });
+
+  server.on("/net/scene/recall", HTTP_GET, [](AsyncWebServerRequest* r){
+    if (!r->hasArg("n")) { r->send(400, "text/plain", "missing n"); return; }
+    uint8_t  n  = uint8_t(constrain(r->arg("n").toInt(), 0, SCENE_COUNT - 1));
+    uint32_t ft = r->hasArg("fade") ? uint32_t(max(0L, r->arg("fade").toInt())) : 0;
+    uint8_t target[MAX_CH];
+    loadScene(n, target);
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
+      r->send(503, "text/plain", "busy");
+      return;
+    }
+    startFade_locked(target, ft);
+    xSemaphoreGive(gLock);
+    char path[56];
+    snprintf(path, sizeof(path), "/scene/recall?n=%u&fade=%lu", n, (unsigned long)ft);
+    if (!enqueueBcast(path)) { r->send(503, "text/plain", "queue full"); return; }
+    r->send(204);
+  });
+
   server.onNotFound([](AsyncWebServerRequest* r){ r->send(404, "text/plain", "Not found"); });
   server.begin();
 }
@@ -1903,7 +2123,10 @@ void setup() {
   refreshSacnSocket();
   discoverUdp.begin(DISCOVERY_PORT);
   oscUdp.begin(OSC_PORT);
-  if (webEnabled) setupWeb();
+  if (webEnabled) {
+    startBcastTask();
+    setupWeb();
+  }
 
   lastArtnetMs = 0;
   lastSacnMs = 0;
