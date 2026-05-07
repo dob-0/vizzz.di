@@ -860,9 +860,9 @@ static void computeOutput_locked(bool aActive, bool sActive, uint32_t nowMs) {
 }
 
 static void sendDMX() {
-  dmx_wait_sent(dmxPort, DMX_SEND_WAIT);
   dmx_write(dmxPort, dmxFrame, MAX_CH + 1);
   dmx_send(dmxPort);
+  dmx_wait_sent(dmxPort, DMX_SEND_WAIT);
 }
 
 // ── Art-Net output (master → slaves broadcast) ────────────────────────────────
