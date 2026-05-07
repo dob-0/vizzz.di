@@ -26,7 +26,8 @@ Branch: `main`
 - Firmware node manifest is served at `/node/manifest` and `/manifest.json`.
 - Peer discovery: nodes broadcast a UDP beacon on port 47777 every 30s; incoming beacons are parsed and stored in a peer table (max 4, expire after 90s). `/peers` returns the live list. Network tab shows WiFi status (AP clients, STA RSSI) and peers with a Link button.
 - Fleet controls run peer HTTP forwarding from a FreeRTOS task via a fixed queue, not from `loop()`, so offline peers do not stall DMX timing. Peer table IPs come from the UDP sender address, and forwarded paths are limited to blackout, full, master, and scene recall.
-- VJ controls on `/performance` now include stabilized FX + color wash: FX (`strobe`/`chase`/`pulse`/`sine`/`sparkle` with BPM + tap), cue runner (up to 16 steps), and fixture groups (8 ranges). External control endpoints: `/fx/*`, `/cue/*`, `/group/*`, `/color/set`, plus OSC input on UDP/9000 (`/ch/N`, `/group/G`, `/master`, `/scene/recall`, `/cue/run`, `/fx/mode`, `/fx/bpm`, `/color/r|g|b`).
+- VJ controls on `/vj` include stabilized FX + color wash: FX (`strobe`/`chase`/`pulse`/`sine`/`sparkle` with BPM + tap), cue runner (up to 16 steps), and fixture groups (8 ranges). External control endpoints: `/fx/*`, `/cue/*`, `/group/*`, `/color/set`, plus OSC input on UDP/9000 (`/ch/N`, `/group/G`, `/master`, `/scene/recall`, `/cue/run`, `/fx/mode`, `/fx/bpm`, `/color/r|g|b`).
+- `/vj` is the main mobile VJ controller: command strip, scene pads, FX pad matrix, RGB swatches/sliders, cue runner, group fader deck, and fleet controls. `/performance` remains an alias.
 - Unit test file fixed: was referencing old `vidili_core.h` / `vidili::` namespace, corrected to `vizzz_core.h` / `vizzz::`.
 
 ## Hard rules
@@ -71,4 +72,5 @@ Branch: `main`
 - 2026-05-07: Two ESPs identified. Board A `D4:E9:F4:BA:6F:CC` was flashed first. Board B/light node `D4:E9:F4:BC:5A:64` was then verified on `/dev/ttyUSB0` and flashed successfully. After reboot it is reachable on STA `192.168.88.127`, AP SSID rotated to `vizzz.di_D05B23`, manifest has the new fleet/OSC routes, and direct test pattern reports web/out channels 1-4 at 255.
 - 2026-05-07: Clean-erased and reflashed Board B `D4:E9:F4:BC:5A:64` on `/dev/ttyUSB0`; erase wipes STA credentials/NVS, so old `10.0.0.1`/`192.168.88.127` checks timed out afterward until reconnecting to the newly generated AP or reconfiguring WiFi.
 - 2026-05-07: Added `onboard_device.py` for future multi-node onboarding: MAC check, optional erase, upload, and HTTP name/universe/mode/test setup. Use it one board at a time, and verify MAC before erase.
+- 2026-05-07: Rebuilt the embedded `/vj` UI into a mobile-first VJ deck using existing firmware endpoints; no new DMX hardware behavior changed. Validation: native tests PASS, esp32 build SUCCESS. RAM 52,356 bytes (16.0%), Flash 907,569 bytes (69.2%).
 - For TouchDesigner control: Art-Net to `192.168.88.255:6454` (broadcast) or `192.168.88.127:6454` (unicast), universe 0. Use `ARTNET_ONLY` for TD-only or `MERGE_HTP` if web layer should participate.

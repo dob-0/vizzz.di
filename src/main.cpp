@@ -990,7 +990,11 @@ input[type=range]{width:100%;accent-color:var(--di-cyan)}
 .nets{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}.net{padding:9px;border-radius:0;border:1px solid var(--di-cyan-border);background:var(--di-black);cursor:pointer;font-size:.8rem;text-align:left;overflow:hidden;text-overflow:ellipsis}
 pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border:1px solid var(--di-cyan-border);border-radius:0;padding:10px;font:11px/1.4 var(--di-mono);max-height:260px;overflow:auto;color:var(--di-text)}
 .footerNote{font:600 .7rem/1.35 var(--di-mono);color:var(--di-muted);letter-spacing:.02em}
-@media (max-width:760px){body{font-size:13px}.shell{padding:6px}.hero{padding:8px;margin-bottom:8px}.brand{display:block}.pillbar{overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px}.pill{flex:0 0 auto}.grid,.split,.triple{grid-template-columns:1fr}.section.active,.stack{gap:8px}.card{padding:9px}.actions{grid-template-columns:1fr}.sceneGrid,.miniScene{grid-template-columns:repeat(2,minmax(0,1fr))}.channels{grid-template-columns:42px 1fr 32px 32px;gap:6px}.chLabel{font-size:.62rem}.footerNote{margin-top:6px}.heroMeter .big{font-size:1.7rem}}
+.vjStatus{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.vjReadout{border:1px solid var(--di-cyan-border);background:var(--di-black);padding:10px;min-height:64px}.vjReadout b{display:block;font:800 1.25rem/1 var(--di-mono);color:var(--di-cyan)}.vjReadout span{display:block;margin-top:6px;font:700 .62rem/1 var(--di-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--di-muted)}
+.vjPadGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.vjPad{min-height:66px;text-align:left;display:grid;align-content:center;gap:4px;touch-action:manipulation}.vjPad b{display:block;font:800 1.05rem/1 var(--di-mono);color:inherit}.vjPad span{display:block;font:700 .58rem/1 var(--di-mono);color:var(--di-muted);letter-spacing:.04em;text-transform:uppercase}.vjPad.active{background:var(--di-cyan-dim);border-color:var(--di-cyan);color:var(--di-cyan)}
+.vjStrip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.vjStrip button{min-height:54px}.vjFaders{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.groupTile{border:1px solid var(--di-cyan-border);background:var(--di-black);padding:8px;display:grid;gap:8px;min-width:0}.groupTile .top{display:flex;justify-content:space-between;gap:6px;align-items:flex-start}.groupTile b{font:800 .78rem/1 var(--di-mono);color:var(--di-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.groupTile span{font:700 .58rem/1 var(--di-mono);color:var(--di-muted)}.groupTile input{min-height:38px;padding:0}.groupTile .miniActions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.groupTile button{min-height:34px;padding:6px;font-size:.64rem}
+.swatches{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.swatch{min-height:44px;border:1px solid var(--di-cyan-border);color:#fff;text-shadow:0 1px 1px #000;font:800 .62rem/1 var(--di-mono);text-transform:uppercase}.swatch.cyan{background:#00484d}.swatch.mag{background:#4a004d}.swatch.amber{background:#4d2a00}.swatch.red{background:#4d0000}.swatch.green{background:#004d18}.swatch.blue{background:#001f4d}.swatch.white{background:#eee;color:#000;text-shadow:none}.swatch.black{background:#000;color:var(--di-muted)}
+@media (max-width:760px){body{font-size:13px}.shell{padding:6px}.hero{padding:8px;margin-bottom:8px}.brand{display:block}.pillbar{overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px}.pill{flex:0 0 auto}.grid,.split,.triple,.vjStatus{grid-template-columns:1fr}.section.active,.stack{gap:8px}.card{padding:9px}.actions,.vjStrip{grid-template-columns:1fr}.sceneGrid,.miniScene,.vjPadGrid,.vjFaders,.swatches{grid-template-columns:repeat(2,minmax(0,1fr))}.channels{grid-template-columns:42px 1fr 32px 32px;gap:6px}.chLabel{font-size:.62rem}.footerNote{margin-top:6px}.heroMeter .big{font-size:1.7rem}.vjPad{min-height:62px}.vjReadout{min-height:54px}}
 </style>
 </head>
 <body>
@@ -1019,7 +1023,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
       <a class="tab" data-route="/scenes" href="/scenes">Scenes</a>
       <a class="tab" data-route="/network" href="/network">WiFi</a>
       <a class="tab" data-route="/system" href="/system">System</a>
-      <a class="tab" data-route="/performance" href="/performance">Show</a>
+      <a class="tab" data-route="/vj" href="/vj">VJ</a>
     </nav>
   </div>
 
@@ -1165,51 +1169,117 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
     </div>
   </section>
 
-  <section class="section" data-route="/performance">
-    <div class="grid">
+  <section class="section" data-route="/vj">
+    <div class="stack">
       <div class="card">
-        <h2>Show</h2>
-        <div class="meta">Big actions only: scenes, master, blackout, full on.</div>
-        <div class="actions"><button class="bad" onclick="blackout()">Blackout</button><button class="good" onclick="fullOn()">Full</button></div>
-        <div class="row" style="margin-top:8px"><label class="grow">Master<input id="perfMaster" type="range" min="0" max="255" value="255"></label></div>
-        <div class="heroMeter" style="margin-top:8px"><div class="big" id="perfPct">100%</div><div>level</div></div>
-        <div class="row" style="margin-top:8px"><label class="grow">FX Mode<select id="fxModeSel"><option value="none">none</option><option value="strobe">strobe</option><option value="chase">chase</option><option value="pulse">pulse</option><option value="sine">sine</option><option value="sparkle">sparkle</option></select></label></div>
-        <div class="split" style="margin-top:8px">
-          <label>BPM<input id="fxBpm" type="number" min="20" max="240" value="120"></label>
-          <label>Depth<input id="fxDepth" type="number" min="0" max="255" value="255"></label>
+        <h2>VJ Deck</h2>
+        <div class="vjStatus">
+          <div class="vjReadout"><b id="vjMasterPct">100%</b><span>master</span></div>
+          <div class="vjReadout"><b id="vjModeRead">HTP</b><span>output</span></div>
+          <div class="vjReadout"><b id="vjFxRead">none</b><span>fx</span></div>
         </div>
-        <div class="actions" style="margin-top:8px"><button onclick="applyFx()">Apply FX</button><button class="alt" onclick="tapFx()">Tap BPM</button></div>
-        <div class="split" style="margin-top:8px">
-          <label>R<input id="colorR" type="number" min="0" max="255" value="255"></label>
-          <label>G<input id="colorG" type="number" min="0" max="255" value="255"></label>
+        <div class="vjStrip" style="margin-top:8px">
+          <button class="bad" onclick="vjPanic()">Panic</button>
+          <button onclick="blackout()">Blackout</button>
+          <button class="good" onclick="fullOn()">Full</button>
         </div>
-        <div class="split" style="margin-top:8px">
-          <label>B<input id="colorB" type="number" min="0" max="255" value="255"></label>
-          <label>Color<input id="colorEn" type="checkbox" checked></label>
+        <div class="vjStrip" style="margin-top:8px">
+          <button id="vjModeWeb" class="alt" onclick="setMode(0)">Web</button>
+          <button id="vjModeHtp" class="alt" onclick="setMode(2)">HTP</button>
+          <button id="vjModeArt" class="alt" onclick="setMode(1)">Art</button>
         </div>
-        <div class="actions" style="margin-top:8px"><button onclick="applyColor()">Apply Color</button><button class="alt" onclick="colorPreset('amber')">Amber</button></div>
-        <div class="actions" style="margin-top:8px"><button class="alt" onclick="colorPreset('cyan')">Cyan</button><button class="alt" onclick="colorPreset('magenta')">Magenta</button></div>
+        <div class="row" style="margin-top:8px">
+          <label class="grow">Master<input id="perfMaster" type="range" min="0" max="255" value="255"></label>
+          <div class="heroMeter"><div class="big" id="perfPct">100%</div><div>level</div></div>
+        </div>
       </div>
-      <div class="card">
-        <h2>Scenes</h2>
-        <div class="meta">Single-tap recalls with the shared fade setting.</div>
-        <div class="row"><label class="grow">Fade ms<input id="perfFade" type="number" value="1000"></label></div>
-        <div class="sceneGrid" id="perfScenes" style="margin-top:12px"></div>
-        <div class="split" style="margin-top:12px">
-          <label>Cue Count<input id="cueCount" type="number" min="1" max="16" value="4"></label>
-          <label>Cue Step<input id="cueStep" type="number" min="0" max="15" value="0"></label>
+
+      <div class="grid">
+        <div class="card">
+          <h2>Scene Launcher</h2>
+          <div class="row"><label class="grow">Fade ms<input id="perfFade" type="number" value="1000"></label></div>
+          <div class="vjPadGrid" id="vjScenes" style="margin-top:10px"></div>
+          <div class="vjStrip" style="margin-top:10px">
+            <button class="alt" onclick="saveScene(0)">Save 1</button>
+            <button class="alt" onclick="saveScene(1)">Save 2</button>
+            <button class="alt" onclick="saveScene(2)">Save 3</button>
+          </div>
         </div>
-        <div class="split" style="margin-top:8px">
-          <label>Scene<input id="cueScene" type="number" min="0" max="7" value="0"></label>
-          <label>Dwell ms<input id="cueDwell" type="number" min="0" value="1500"></label>
+
+        <div class="card">
+          <h2>FX Engine</h2>
+          <select id="fxModeSel" style="display:none"><option value="none">none</option><option value="strobe">strobe</option><option value="chase">chase</option><option value="pulse">pulse</option><option value="sine">sine</option><option value="sparkle">sparkle</option></select>
+          <div class="vjPadGrid">
+            <button class="vjPad" data-fx="none" onclick="fxMode('none')"><b>OFF</b><span>fx</span></button>
+            <button class="vjPad" data-fx="strobe" onclick="fxMode('strobe')"><b>STRB</b><span>fx</span></button>
+            <button class="vjPad" data-fx="chase" onclick="fxMode('chase')"><b>CHAS</b><span>fx</span></button>
+            <button class="vjPad" data-fx="pulse" onclick="fxMode('pulse')"><b>PULS</b><span>fx</span></button>
+            <button class="vjPad" data-fx="sine" onclick="fxMode('sine')"><b>SINE</b><span>fx</span></button>
+            <button class="vjPad" data-fx="sparkle" onclick="fxMode('sparkle')"><b>SPRK</b><span>fx</span></button>
+            <button class="vjPad" onclick="bpmStep(.5)"><b>1/2</b><span>bpm</span></button>
+            <button class="vjPad" onclick="bpmStep(2)"><b>2X</b><span>bpm</span></button>
+          </div>
+          <div class="split" style="margin-top:10px">
+            <label>BPM<input id="fxBpm" type="range" min="20" max="240" value="120" oninput="setBpmLabel(+this.value)"></label>
+            <label>Depth<input id="fxDepth" type="range" min="0" max="255" value="255" oninput="setDepthLabel(+this.value)"></label>
+          </div>
+          <div class="vjStrip" style="margin-top:8px">
+            <button onclick="applyFx()">Apply</button>
+            <button class="alt" onclick="tapFx()">Tap</button>
+            <button class="alt" onclick="killFx()">Kill FX</button>
+          </div>
+          <div class="footerNote" style="margin-top:8px"><span id="bpmLabel">120 bpm</span> · <span id="depthLabel">depth 255</span></div>
         </div>
-        <div class="row" style="margin-top:8px"><label class="grow">Fade ms<input id="cueFade" type="number" min="0" value="500"></label></div>
-        <div class="actions" style="margin-top:8px"><button onclick="setCueStep()">Save Step</button><button class="alt" onclick="cueNext()">Next</button></div>
-        <div class="actions" style="margin-top:8px"><button onclick="cueRun(1)">Run Cue</button><button class="alt" onclick="cueRun(0)">Stop Cue</button></div>
       </div>
+
+      <div class="grid">
+        <div class="card">
+          <h2>Color Engine</h2>
+          <div class="swatches">
+            <button class="swatch white" onclick="colorPreset('white')">White</button>
+            <button class="swatch amber" onclick="colorPreset('amber')">Amber</button>
+            <button class="swatch red" onclick="colorPreset('red')">Red</button>
+            <button class="swatch green" onclick="colorPreset('green')">Green</button>
+            <button class="swatch blue" onclick="colorPreset('blue')">Blue</button>
+            <button class="swatch cyan" onclick="colorPreset('cyan')">Cyan</button>
+            <button class="swatch mag" onclick="colorPreset('magenta')">Mag</button>
+            <button class="swatch black" onclick="killColor()">Off</button>
+          </div>
+          <div class="triple" style="margin-top:10px">
+            <label>R<input id="colorR" type="range" min="0" max="255" value="255" oninput="queueColor()"></label>
+            <label>G<input id="colorG" type="range" min="0" max="255" value="255" oninput="queueColor()"></label>
+            <label>B<input id="colorB" type="range" min="0" max="255" value="255" oninput="queueColor()"></label>
+          </div>
+          <div class="vjStrip" style="margin-top:8px">
+            <button onclick="applyColor()">Apply</button>
+            <button class="alt" onclick="$('colorEn').checked=true;applyColor()">Color On</button>
+            <button class="alt" onclick="killColor()">Color Off</button>
+          </div>
+          <input id="colorEn" type="checkbox" checked style="display:none">
+          <div class="footerNote" id="colorLabel" style="margin-top:8px">rgb 255 / 255 / 255</div>
+        </div>
+
+        <div class="card">
+          <h2>Cue Runner</h2>
+          <div class="split">
+            <label>Cue Count<input id="cueCount" type="number" min="1" max="16" value="4"></label>
+            <label>Cue Step<input id="cueStep" type="number" min="0" max="15" value="0"></label>
+          </div>
+          <div class="split" style="margin-top:8px">
+            <label>Scene<input id="cueScene" type="number" min="0" max="7" value="0"></label>
+            <label>Dwell ms<input id="cueDwell" type="number" min="0" value="1500"></label>
+          </div>
+          <div class="row" style="margin-top:8px"><label class="grow">Fade ms<input id="cueFade" type="number" min="0" value="500"></label></div>
+          <div class="vjStrip" style="margin-top:8px"><button onclick="setCueStep()">Save</button><button onclick="cueRun(1)">Run</button><button class="alt" onclick="cueNext()">Next</button></div>
+          <div class="vjStrip" style="margin-top:8px"><button class="alt" onclick="cueRun(0)">Stop</button><button class="alt" onclick="cueBuildBasic()">Build 1-4</button><button class="alt" onclick="cueBuildAll()">Build 1-8</button></div>
+          <pre id="vjDump" style="margin-top:8px">VJ status pending…</pre>
+        </div>
+      </div>
+
       <div class="card">
-        <h2>Groups</h2>
-        <div class="split">
+        <h2>Group Mixer</h2>
+        <div class="vjFaders" id="groupDeck"></div>
+        <div class="split" style="margin-top:10px">
           <label>Group<input id="grpId" type="number" min="0" max="7" value="0"></label>
           <label>Name<input id="grpName" value="G1"></label>
         </div>
@@ -1218,15 +1288,16 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
           <label>End Ch<input id="grpEnd" type="number" min="1" max="512" value="64"></label>
         </div>
         <div class="row" style="margin-top:8px"><label class="grow">Value<input id="grpValue" type="range" min="0" max="255" value="180"></label></div>
-        <div class="actions" style="margin-top:8px"><button onclick="setGroup()">Save Group</button><button class="alt" onclick="applyGroup()">Apply Value</button></div>
-        <pre id="vjDump" style="margin-top:8px">VJ status pending…</pre>
+        <div class="vjStrip" style="margin-top:8px"><button onclick="setGroup()">Save Group</button><button class="alt" onclick="applyGroup()">Apply</button><button class="alt" onclick="groupAllOff()">All Groups 0</button></div>
       </div>
+
       <div class="card">
         <h2>Fleet</h2>
         <div id="fleetList" class="footerNote" style="margin-bottom:10px">—</div>
-        <div class="actions">
+        <div class="vjStrip">
           <button class="bad" onclick="netBlackout()">ALL Blackout</button>
           <button class="good" onclick="netFull()">ALL Full</button>
+          <button class="alt" onclick="loadFleet()">Refresh</button>
         </div>
         <div class="row" style="margin-top:10px">
           <label class="grow">ALL Master<input id="netMaster" type="range" min="0" max="255" value="255" oninput="queueNetMaster(+this.value)"></label>
@@ -1234,7 +1305,6 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
         </div>
         <div class="row" style="margin-top:8px"><label class="grow">Fade ms<input id="netFade" type="number" value="1000"></label></div>
         <div class="sceneGrid" id="netScenes" style="margin-top:8px"></div>
-        <div class="row" style="margin-top:8px"><button class="alt" onclick="loadFleet()">Refresh Peers</button></div>
       </div>
     </div>
   </section>
@@ -1242,8 +1312,8 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
 
 <script>
 const $=id=>document.getElementById(id);
-const route=location.pathname==='/vj'?'/performance':(location.pathname==='/'?'/control':location.pathname);
-let state=null,pageWeb=[],pageOut=[],curPage=0,masterTimer=null,scanTimer=null,artOutEnabled=false,webEnabled=true,vjTimer=null;
+const route=location.pathname==='/performance'?'/vj':(location.pathname==='/'?'/control':location.pathname);
+let state=null,pageWeb=[],pageOut=[],curPage=0,masterTimer=null,scanTimer=null,artOutEnabled=false,webEnabled=true,vjTimer=null,colorTimer=null,vjGroups=[],groupTimers={},groupSig='';
 
 function escHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function escJsSq(s){return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,'\\r');}
@@ -1253,11 +1323,11 @@ function setActiveRoute(){document.querySelectorAll('.section').forEach(x=>x.cla
 function makeScenes(){
   $('sceneRecall').innerHTML=[...Array(8)].map((_,i)=>`<button class="sceneBtn" onclick="recallScene(${i})">Recall ${i+1}</button>`).join('');
   $('sceneSave').innerHTML=[...Array(8)].map((_,i)=>`<button onclick="saveScene(${i})">Save ${i+1}</button>`).join('');
-  $('perfScenes').innerHTML=[...Array(8)].map((_,i)=>`<button class="sceneBtn" onclick="recallPerf(${i})">Scene ${i+1}</button>`).join('');
+  $('vjScenes').innerHTML=[...Array(8)].map((_,i)=>`<button class="vjPad" onclick="recallPerf(${i})"><b>${i+1}</b><span>scene</span></button>`).join('');
   $('netScenes').innerHTML=[...Array(8)].map((_,i)=>`<button class="sceneBtn" onclick="netRecall(${i})">Scene ${i+1}</button>`).join('');
 }
 function makePages(){ $('pageSel').innerHTML=[...Array(16)].map((_,i)=>`<option value="${i}">Page ${i+1}</option>`).join(''); }
-function updateMasterDisplays(v){const pct=Math.round((v/255)*100);$('masterPct').textContent=pct+'%';$('perfPct').textContent=pct+'%';if(document.activeElement!==$('master'))$('master').value=v;if(document.activeElement!==$('perfMaster'))$('perfMaster').value=v;}
+function updateMasterDisplays(v){const pct=Math.round((v/255)*100);$('masterPct').textContent=pct+'%';$('perfPct').textContent=pct+'%';$('vjMasterPct').textContent=pct+'%';if(document.activeElement!==$('master'))$('master').value=v;if(document.activeElement!==$('perfMaster'))$('perfMaster').value=v;}
 function updatePills(s){
   $('apIp').textContent=s.ip||'-'; $('aoTarget').textContent=s.ao_target||'-'; if(s.mdns) $('mdnsLabel').textContent=s.mdns+'.local';
   const set=(id,text,on,hot)=>{const el=$(id);el.textContent=text;el.className='pill'+(hot?' hot':on?' on':'');};
@@ -1269,6 +1339,8 @@ function syncFields(s){
   $('modeSel').value=String(s.mode); $('netModeSel').value=String(s.net_mode); $('netInput').value=s.net; $('subInput').value=s.subnet; $('uniInput').value=s.uni; $('uni15').textContent='15-bit: '+s.uni15; $('statusDump').textContent=JSON.stringify(s,null,2); $('diagDump').textContent=`mode=${s.mode_name}\nnetwork=${s.net_mode_name}\nartnet=${s.artnet_active}\nsacn=${s.sacn_active}\nweb=${s.web}\nout_target=${s.ao_target}`;
   artOutEnabled=!!s.ao; webEnabled=!!s.web; $('aoBtn').textContent='Art OUT '+(artOutEnabled?'ON':'OFF'); $('webBtn').textContent='Web '+(webEnabled?'ON':'OFF');
   if(!$('staSsid').value && s.sta_ssid) $('staSsid').placeholder=s.sta_ssid; if(!$('nodeName').value) $('nodeName').placeholder=s.name; if(!$('apSsid').value) $('apSsid').placeholder=s.ssid; updateMasterDisplays(s.dim||255);
+  $('vjModeRead').textContent=(s.mode_name||'').replace('_ONLY',''); $('vjFxRead').textContent=(document.querySelector('[data-fx].active')?.dataset.fx)||'none';
+  $('vjModeWeb').classList.toggle('active',s.mode===0); $('vjModeArt').classList.toggle('active',s.mode===1); $('vjModeHtp').classList.toggle('active',s.mode===2);
   const rssiLabel=s.sta_connected&&s.sta_rssi?(' \u00b7 '+s.sta_rssi+'dBm'):'';
   if($('wsAP'))$('wsAP').textContent='AP: '+escHtml(s.ssid||'?')+' \u00b7 '+s.ip+' \u00b7 '+(s.ap_clients||0)+' client'+(s.ap_clients===1?'':'s');
   if($('wsSTA'))$('wsSTA').textContent=s.sta_connected?('STA \u2713 '+(s.sta_ssid||'')+' \u00b7 '+s.sta_ip+rssiLabel):s.sta_ssid?('STA \u2192 '+(s.sta_ssid||'')+'\u2026'):'STA idle';
@@ -1299,14 +1371,25 @@ function openManifest(){window.open('/node/manifest','_blank');}
 function peerCmd(ip,path){hit('/peer/cmd?ip='+encodeURIComponent(ip)+'&path='+encodeURIComponent(path));}
 async function loadPeers(){const r=await qs('/peers');if(!r){$('peerCount').textContent='error';return;}const c=r.count||0;$('peerCount').textContent=c?c+(c===1?' peer found':' peers found'):'none found';$('peerList').innerHTML=c?r.peers.map(p=>`<div style="padding:8px;border:1px solid var(--di-cyan-border);margin-bottom:6px"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px"><div><b>${escHtml(p.name)}</b> <span class="footerNote">${escHtml(p.ip)}</span><br><span class="footerNote">${escHtml(p.mdns)||''} &bull; ${p.age_s}s ago</span></div><button onclick="window.open('http://${escJsSq(p.ip)}','_blank')" style="min-height:28px;padding:3px 10px;font-size:.7rem;flex:0 0 auto">Open UI</button></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px"><button onclick="peerCmd('${escJsSq(p.ip)}','/blackout')" style="min-height:32px;font-size:.72rem" class="bad">Blackout</button><button onclick="peerCmd('${escJsSq(p.ip)}','/full')" style="min-height:32px;font-size:.72rem" class="good">Full</button><button onclick="targetPeer('${escJsSq(p.ip)}')" style="min-height:32px;font-size:.72rem">Link AO</button></div></div>`).join(''):'<span class="footerNote">No vizzz.di nodes found. Devices must share a WiFi network. Retry after 30s.</span>';}
 function targetPeer(ip){if(!confirm('Route Art-Net OUT directly to '+ip+'? (enables unicast, overrides broadcast)'))return;fetch('/artout/peer?ip='+encodeURIComponent(ip),{cache:'no-store'}).then(()=>fetch('/artout/set?en=1',{cache:'no-store'}));artOutEnabled=true;$('aoBtn').textContent='Art OUT ON';$('aoTarget').textContent=ip;}
-function applyFx(){hit('/fx/set?en=1&mode='+encodeURIComponent($('fxModeSel').value)+'&bpm='+(+$('fxBpm').value||120)+'&depth='+(+$('fxDepth').value||255));}
+function setMode(m){$('modeSel').value=String(m);hit('/mode/set?m='+m);}
+function vjPanic(){setMode(0);cueRun(0);killFx();killColor();hit('/master?v=255');updateMasterDisplays(255);blackout();}
+function setBpmLabel(v){$('bpmLabel').textContent=v+' bpm';}
+function setDepthLabel(v){$('depthLabel').textContent='depth '+v;}
+function markFx(mode){document.querySelectorAll('[data-fx]').forEach(b=>b.classList.toggle('active',b.dataset.fx===mode));$('vjFxRead').textContent=mode||'none';}
+function fxMode(mode){$('fxModeSel').value=mode;markFx(mode);applyFx();}
+function applyFx(){const mode=$('fxModeSel').value;markFx(mode);hit('/fx/set?en='+(mode==='none'?0:1)+'&mode='+encodeURIComponent(mode)+'&bpm='+(+$('fxBpm').value||120)+'&depth='+(+$('fxDepth').value||255));}
 function tapFx(){hit('/fx/tap');}
-function applyColor(){hit('/color/set?en='+(($('colorEn').checked)?1:0)+'&r='+(+$('colorR').value||0)+'&g='+(+$('colorG').value||0)+'&b='+(+$('colorB').value||0));}
+function bpmStep(mult){const v=Math.max(20,Math.min(240,Math.round((+$('fxBpm').value||120)*mult)));$('fxBpm').value=v;setBpmLabel(v);applyFx();}
+function killFx(){$('fxModeSel').value='none';markFx('none');hit('/fx/set?en=0&mode=none');}
+function colorLabel(){const r=+$('colorR').value||0,g=+$('colorG').value||0,b=+$('colorB').value||0;$('colorLabel').textContent='rgb '+r+' / '+g+' / '+b;}
+function queueColor(){colorLabel();$('colorEn').checked=true;clearTimeout(colorTimer);colorTimer=setTimeout(applyColor,55);}
+function applyColor(){colorLabel();hit('/color/set?en='+(($('colorEn').checked)?1:0)+'&r='+(+$('colorR').value||0)+'&g='+(+$('colorG').value||0)+'&b='+(+$('colorB').value||0));}
 function colorPreset(name){
-  const p={amber:[255,140,20],cyan:[0,220,255],magenta:[255,0,220]}[name]||[255,255,255];
+  const p={white:[255,255,255],amber:[255,140,20],red:[255,0,0],green:[0,255,70],blue:[0,70,255],cyan:[0,220,255],magenta:[255,0,220]}[name]||[255,255,255];
   $('colorR').value=p[0]; $('colorG').value=p[1]; $('colorB').value=p[2]; $('colorEn').checked=true;
   applyColor();
 }
+function killColor(){$('colorEn').checked=false;hit('/color/set?en=0');}
 function cueRun(en){hit('/cue/run?en='+en);}
 function cueNext(){hit('/cue/next');}
 function setCueStep(){
@@ -1315,6 +1398,8 @@ function setCueStep(){
   hit('/cue/count?c='+q);
   hit('/cue/set?i='+i+'&scene='+(+$('cueScene').value||0)+'&dwell='+(+$('cueDwell').value||0)+'&fade='+(+$('cueFade').value||0));
 }
+function cueBuildBasic(){hit('/cue/count?c=4');for(let i=0;i<4;i++)hit('/cue/set?i='+i+'&scene='+i+'&dwell=1500&fade=500');}
+function cueBuildAll(){hit('/cue/count?c=8');for(let i=0;i<8;i++)hit('/cue/set?i='+i+'&scene='+i+'&dwell=1500&fade=500');}
 function setGroup(){
   const g=+$('grpId').value||0;
   hit('/group/set?g='+g+'&name='+encodeURIComponent($('grpName').value||('G'+(g+1)))+'&start='+(+$('grpStart').value||1)+'&end='+(+$('grpEnd').value||1)+'&en=1');
@@ -1324,13 +1409,27 @@ function applyGroup(){
   const v=+$('grpValue').value||0;
   hit('/group/apply?g='+g+'&v='+v);
 }
+function groupValue(g,v){const el=$('gv'+g);if(el)el.textContent=v;clearTimeout(groupTimers[g]);groupTimers[g]=setTimeout(()=>hit('/group/apply?g='+g+'&v='+v),35);}
+function groupBump(g,v){const sl=$('gf'+g);if(sl)sl.value=v;groupValue(g,v);}
+function groupEdit(g){const x=vjGroups.find(a=>a.id===g);if(!x)return;$('grpId').value=x.id;$('grpName').value=x.name;$('grpStart').value=x.start;$('grpEnd').value=x.end;}
+function groupAllOff(){for(let g=0;g<8;g++)groupBump(g,0);}
+function renderGroupDeck(groups){
+  vjGroups=groups||[];
+  const sig=vjGroups.map(g=>[g.id,g.name,g.start,g.end,g.enabled].join(':')).join('|');
+  if(sig===groupSig) return;
+  groupSig=sig;
+  $('groupDeck').innerHTML=vjGroups.map(g=>`<div class="groupTile"><div class="top"><b>${escHtml(g.name)}</b><span>${g.start}-${g.end}</span></div><input id="gf${g.id}" type="range" min="0" max="255" value="0" oninput="groupValue(${g.id},+this.value)"><div class="top"><span id="gv${g.id}">0</span><button class="alt" onclick="groupEdit(${g.id})">Edit</button></div><div class="miniActions"><button onclick="groupBump(${g.id},255)">Bump</button><button class="alt" onclick="groupBump(${g.id},0)">Out</button></div></div>`).join('');
+}
 async function refreshVj(){
   const [fx,cue,groups]=await Promise.all([qs('/fx/status'),qs('/cue/status'),qs('/groups')]);
   if(!fx||!cue||!groups) return;
   $('fxModeSel').value=fx.mode_name||'none'; $('fxBpm').value=fx.bpm||120; $('fxDepth').value=fx.depth||255;
+  setBpmLabel(fx.bpm||120); setDepthLabel(fx.depth||255); markFx(fx.mode_name||'none');
   $('colorR').value=fx.r??255; $('colorG').value=fx.g??255; $('colorB').value=fx.b??255; $('colorEn').checked=!!fx.color_en;
+  colorLabel();
   $('cueCount').value=cue.count||1;
-  $('vjDump').textContent=JSON.stringify({fx, cue, groups:groups.groups?.slice(0,4)},null,2);
+  renderGroupDeck(groups.groups||[]);
+  $('vjDump').textContent=JSON.stringify({fx, cue},null,2);
 }
 function applyMode(){hit('/mode/set?m='+$('modeSel').value);} function applyNetMode(){if(confirm('Switch network profile and reboot?')) hit('/netmode/set?m='+$('netModeSel').value);}
 let netMasterTimer=null;

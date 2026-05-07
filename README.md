@@ -9,11 +9,12 @@ and exposes a black/cyan browser console plus a machine-readable node manifest.
 | Feature | Detail |
 |---|---|
 | **3 output modes** | `WEB_ONLY`, `ARTNET_ONLY`, `MERGE_HTP` |
-| **Console UI** | Routes: `/`, `/control`, `/patch`, `/scenes`, `/network`, `/system`, `/performance`, `/vj` |
+| **Console UI** | Routes: `/`, `/control`, `/patch`, `/scenes`, `/network`, `/system`, `/vj` (`/performance` alias) |
 | **DMX output** | 512 channels on `DMX_NUM_1`, GPIO25 TX, GPIO21 DIR |
 | **Art-Net IN/OUT** | Configurable Net/Subnet/Universe, hold-last on loss, optional broadcast output |
 | **sACN IN** | E1.31 listener on port `5568`, same universe as Art-Net |
 | **Peer / fleet control** | Peer discovery plus network-wide blackout, full, master, and scene recall |
+| **VJ deck** | Mobile-first scene launcher, FX pads, color engine, cue runner, group mixer, and fleet controls |
 | **Scenes** | 8 slots, save/recall with fade |
 | **Master dimmer** | 0-255 applied on the output path |
 | **WebSocket** | Live status push every ~400 ms at `ws://10.0.0.1/ws` |
@@ -39,7 +40,7 @@ DMX output.
 1. Build and flash with PlatformIO.
 2. Connect to AP `vizzz.di` or the generated `vizzz.di_XXXXXX` AP.
 3. Open `http://10.0.0.1`.
-4. Use `/vj` or `/performance` for the performance deck.
+4. Use `/vj` for the VJ controller.
 5. Use `/system` or `/node/manifest` to inspect the firmware-node contract.
 
 Default AP password: `Poghka888$`.
