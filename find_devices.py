@@ -44,4 +44,4 @@ if found:
         print(f"  {d['name']:<20} http://{ip:<18} AP: http://{d['ap_ip']}  mDNS: {d['mdns']}")
 else:
     print('  No devices found.')
-    print(f'  Tip: connect to the device AP (vizzz.di_XXXXXX) and open http://10.0.0.1')
+    print(f'  Tip: connect to the device AP (vizzz.di_XXXXXX) and open http://192.168.4.1')

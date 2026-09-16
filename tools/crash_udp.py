@@ -4,8 +4,8 @@
 Sends randomized Art-Net, sACN, and OSC packets to stress parser paths.
 
 Examples:
-  python3 tools/crash_udp.py --host 10.0.0.1 --seconds 120 --pps 300
-  python3 tools/crash_udp.py --host 10.0.0.1 --seconds 300 --artnet-universe 0
+  python3 tools/crash_udp.py --host 192.168.4.1 --seconds 120 --pps 300
+  python3 tools/crash_udp.py --host 192.168.4.1 --seconds 300 --artnet-universe 0
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ def malformed_packet() -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="UDP crash/stress sender for vizzz.di")
-    parser.add_argument("--host", default="10.0.0.1", help="Target host")
+    parser.add_argument("--host", default="192.168.4.1", help="Target host")
     parser.add_argument("--seconds", type=int, default=120, help="Duration")
     parser.add_argument("--pps", type=int, default=200, help="Approx packets per second")
     parser.add_argument("--artnet-universe", type=int, default=0, help="15-bit universe for Art-Net")

@@ -18,7 +18,7 @@ and exposes a black/cyan browser console plus a machine-readable node manifest.
 | **Scenes** | 8 slots, save/recall with fade |
 | **Master dimmer** | 0-255 applied on the output path |
 | **Burn-safe mode** | Optional stress profile with reduced output ceiling/slew (`/safety/set?burn=1`) |
-| **WebSocket** | Live status push every ~400 ms at `ws://10.0.0.1/ws` |
+| **WebSocket** | Live status push every ~400 ms at `ws://192.168.4.1/ws` |
 | **Node manifest** | `GET /node/manifest` and `GET /manifest.json` |
 | **WiFi** | AP always recoverable, optional STA client mode |
 | **Persistent config** | ESP32 Preferences NVS |
@@ -40,7 +40,7 @@ DMX output.
 
 1. Build and flash with PlatformIO.
 2. Connect to AP `vizzz.di` or the generated `vizzz.di_XXXXXX` AP.
-3. Open `http://10.0.0.1`.
+3. Open `http://192.168.4.1`.
 4. Use `/vj` for the VJ controller.
 5. Use `/system` or `/node/manifest` to inspect the firmware-node contract.
 
@@ -94,7 +94,7 @@ universe once the node is reachable over HTTP.
 python3 onboard_device.py --erase
 
 # After connecting to its AP or STA address, assign a name and universe
-python3 onboard_device.py --skip-serial --skip-upload --host 10.0.0.1 --name vizzz.di-u2 --universe 2 --mode artnet
+python3 onboard_device.py --skip-serial --skip-upload --host 192.168.4.1 --name vizzz.di-u2 --universe 2 --mode artnet
 
 # Configure an existing reachable node and set channels 1-4 full as a test
 python3 onboard_device.py --skip-serial --skip-upload --host 192.168.88.127 --universe 18 --mode web --test 4
@@ -111,7 +111,7 @@ Art-Net to other nodes on the same network.
 - Controller: enable Art-Net OUT in the console or call `/artout/set?en=1`
 - Receiver nodes: set mode to `ARTNET_ONLY` and use the same universe
 - Broadcast target: STA subnet broadcast when joined to a router, otherwise
-  `10.0.0.255:6454`
+  `192.168.4.255:6454`
 - Nodes advertise themselves with UDP beacons on port `47777`; `GET /peers`
   returns the live peer table.
 - The performance page includes fleet controls backed by `/net/blackout`,
@@ -198,10 +198,10 @@ Software stress tools live in `tools/`.
 
 ```bash
 # HTTP stress/fuzz (safe defaults: burn-safe on, dangerous routes off)
-python3 tools/crash_http.py --host 10.0.0.1 --seconds 300 --workers 10
+python3 tools/crash_http.py --host 192.168.4.1 --seconds 300 --workers 10
 
 # UDP parser flood (Art-Net/sACN/OSC + malformed packets)
-python3 tools/crash_udp.py --host 10.0.0.1 --seconds 180 --pps 300
+python3 tools/crash_udp.py --host 192.168.4.1 --seconds 180 --pps 300
 ```
 
 Recommended sequence:

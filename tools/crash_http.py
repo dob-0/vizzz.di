@@ -6,8 +6,8 @@ Safe by default:
 - Avoids dangerous routes (reboot/factory reset/network profile changes).
 
 Examples:
-  python3 tools/crash_http.py --host 10.0.0.1 --seconds 300 --workers 10
-  python3 tools/crash_http.py --host 10.0.0.1 --seconds 120 --allow-dangerous
+  python3 tools/crash_http.py --host 192.168.4.1 --seconds 300 --workers 10
+  python3 tools/crash_http.py --host 192.168.4.1 --seconds 120 --allow-dangerous
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ def set_burn_safe(host: str, enabled: bool) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="HTTP crash/stress test for vizzz.di")
-    parser.add_argument("--host", default="10.0.0.1", help="Target host")
+    parser.add_argument("--host", default="192.168.4.1", help="Target host")
     parser.add_argument("--seconds", type=int, default=180, help="Test duration")
     parser.add_argument("--workers", type=int, default=8, help="Parallel workers")
     parser.add_argument("--allow-dangerous", action="store_true", help="Include dangerous reboot/reset/network routes")

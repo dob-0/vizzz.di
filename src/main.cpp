@@ -542,11 +542,11 @@ static IPAddress artOutTarget() {
     uint32_t mask = (uint32_t)WiFi.subnetMask();
     return IPAddress((ip & mask) | (~mask));
   }
-  return IPAddress(10, 0, 0, 255);
+  return IPAddress(192, 168, 4, 255);
 }
 
 static void startSoftAP() {
-  WiFi.softAPConfig(IPAddress(10,0,0,1), IPAddress(10,0,0,1), IPAddress(255,255,255,0));
+  WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
   WiFi.softAP(apSsid.c_str(), apPass.c_str());
 }
 
@@ -1359,7 +1359,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
           <span class="pill" id="peersPill">0 peers</span>
         </div>
       </div>
-      <div class="footerNote">AP <b id="apIp">10.0.0.1</b><br>Target <b id="aoTarget">-</b><br>mDNS <b id="mdnsLabel">-</b></div>
+      <div class="footerNote">AP <b id="apIp">192.168.4.1</b><br>Target <b id="aoTarget">-</b><br>mDNS <b id="mdnsLabel">-</b></div>
     </div>
     <nav class="tabs" id="tabs">
       <a class="tab" data-route="/control" href="/control">Control</a>

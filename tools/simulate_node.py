@@ -142,7 +142,7 @@ class Node:
 
     def status(self):
         return {
-            "ap_ip": "10.0.0.1", "sta_ip": "192.168.88.140", "sta": True,
+            "ap_ip": "192.168.4.1", "sta_ip": "192.168.88.140", "sta": True,
             "sta_ssid": "sim-net", "wl_status": 3, "ssid": self.ap_ssid,
             "name": self.name, "mdns": self.name.lower(),
             "net_mode": self.net_mode,
@@ -238,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/peers":
             return self._json({"peers": n.peers, "count": len(n.peers)})
         if p == "/discover":
-            return self._json({"name": n.name, "mac": n.mac, "ip": "10.0.0.1",
+            return self._json({"name": n.name, "mac": n.mac, "ip": "192.168.4.1",
                                "uni": n.status()["uni15"]})
         if p == "/groups":
             return self._json({"groups": n.groups})

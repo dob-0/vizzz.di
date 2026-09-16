@@ -3,7 +3,7 @@
 
 Examples:
   python3 onboard_device.py --erase
-  python3 onboard_device.py --erase --host 10.0.0.1 --universe 2 --name vizzz.di-u2
+  python3 onboard_device.py --erase --host 192.168.4.1 --universe 2 --name vizzz.di-u2
   python3 onboard_device.py --skip-serial --skip-upload --host 192.168.88.127 --universe 18 --mode artnet
 """
 
@@ -119,7 +119,7 @@ def parse_args():
     parser.add_argument("--erase", action="store_true", help="chip erase before upload")
     parser.add_argument("--skip-serial", action="store_true", help="do not read USB MAC")
     parser.add_argument("--skip-upload", action="store_true", help="only read/configure")
-    parser.add_argument("--host", help="node HTTP host after boot, for example 10.0.0.1")
+    parser.add_argument("--host", help="node HTTP host after boot, for example 192.168.4.1")
     parser.add_argument("--name", help="node name to set over HTTP")
     parser.add_argument(
         "--universe",
