@@ -108,7 +108,7 @@ into the firmware's `net/subnet/uni` values automatically.
 One device can act as a controller node and broadcast the final output as
 Art-Net to other nodes on the same network.
 
-- Controller: enable Art-Net OUT in the console or call `/artout/set?en=1`
+- Controller: enable Art-Net OUT in the console or POST `/artout/set?en=1` with `X-Vizzz-Console: 1`
 - Receiver nodes: set mode to `ARTNET_ONLY` and use the same universe
 - Broadcast target: STA subnet broadcast when joined to a router, otherwise
   `192.168.4.255:6454`
@@ -119,50 +119,86 @@ Art-Net to other nodes on the same network.
 
 ## HTTP API
 
-Mutating routes support both `GET` and `POST` for transition compatibility.
+One route table, `vizzz::kRoutes` in `include/vizzz_core.h`, decides every
+route's methods, header and CORS; `setupWeb()` registers only from it and the
+manifest is generated from it. `tools/check_routes.py` fails if this README,
+`main.cpp` or di.iiii's client disagree with it (audit 2026-10-15 2-H2, 2-M4, 2-M7).
 
-| Method | Path | Query | Description |
-|---|---|---|---|
-| GET/POST | `/set` | `ch=1-512&v=0-255` | Set one web-layer channel |
-| GET/POST | `/blackout` | - | Set all web-layer channels to 0 |
-| GET/POST | `/full` | - | Set all web-layer channels to 255 |
-| GET/POST | `/master` | `v=0-255` | Set master dimmer |
-| GET/POST | `/mode/set` | `m=0\|1\|2` | WEB / ARTNET / HTP |
-| GET/POST | `/mode/fallback` | `en=0\|1` | In ARTNET mode, fall back to web layer when network input is inactive |
-| GET/POST | `/netmode/set` | `m=0\|1\|2` | AP_STA / STA_ONLY / AP_ONLY, then reboot |
-| GET/POST | `/artout/set` | `en=0\|1` | Enable Art-Net OUT |
-| GET | `/artout/peer` | `ip=X` | Use one peer as Art-Net OUT unicast target |
-| GET/POST | `/artnet/set` | `net=N&subnet=S&uni=U` | Configure Art-Net/sACN universe |
-| GET/POST | `/scene/save` | `n=0-7` | Save current web layer |
-| GET/POST | `/scene/recall` | `n=0-7&fade=ms` | Recall scene with fade |
-| GET/POST | `/net/blackout` | - | Blackout this node and all discovered peers |
-| GET/POST | `/net/full` | - | Full on this node and all discovered peers |
-| GET/POST | `/net/master` | `v=0-255` | Set master on this node and all discovered peers |
-| GET/POST | `/net/scene/recall` | `n=0-7&fade=ms` | Recall scene on this node and all discovered peers |
-| GET | `/wifi/scan` | - | JSON SSID scan |
-| GET/POST | `/wifi/set` | `ssid=X&pass=Y` | Connect STA |
-| GET/POST | `/wifi/forget` | - | Clear STA credentials |
-| GET/POST | `/node/set` | `name=X&ap_ssid=Y&ap_pass=Z` | Update node identity |
-| GET | `/discover` | - | Return node identity and send a discovery beacon |
-| GET | `/peers` | - | Live discovered peer table |
-| GET | `/peer/cmd` | `ip=X&path=/blackout\|/full...` | Forward an allowed command to one known peer |
-| GET/POST | `/group/set` | `g=0-7&name=X&start=A&end=B&en=0\|1` | Configure one group |
-| GET/POST | `/group/apply` | `g=0-7&v=0-255` | Apply value to one group range |
-| GET/POST | `/cue/count` | `c=1-16` | Set active cue step count |
-| GET/POST | `/cue/set` | `i=0-15&scene=0-7&dwell=ms&fade=ms` | Configure one cue step |
-| GET/POST | `/cue/run` | `en=0\|1` | Start/stop cue runner |
-| GET/POST | `/cue/next` | - | Advance cue runner one step |
-| GET/POST | `/fx/set` | `mode=...&en=0\|1&bpm=20-240&depth=0-255` | Configure FX engine |
-| GET/POST | `/fx/tap` | - | BPM tap tempo input |
-| GET/POST | `/color/set` | `en=0\|1&r=0-255&g=0-255&b=0-255` | Configure color wash |
-| GET/POST | `/safety/set` | `burn=0\|1` | Toggle burn-safe mode |
-| GET | `/safety/status` | - | Burn-safe/effective safety parameters |
-| GET | `/status` | - | Live status JSON |
-| GET | `/page` | `i=0-15` | 32-channel page snapshot |
-| GET | `/monitor` | - | First 64 output channels |
-| GET | `/node/manifest` | - | Firmware node manifest |
-| GET | `/manifest.json` | - | Same firmware node manifest |
-| WS | `/ws` | - | Status push every ~400 ms |
+- **Operator routes** (method GET/POST, no header): the show controls di.iiii's
+  DMX Out and phones send as plain `no-cors` GETs. Any web page in the
+  operator's browser can also fire these. That is a known, accepted limit until
+  the owner decides on a login (see `docs/AUDIT_2026_10_15.md` 2-H2).
+- **Console routes** (method POST, header `X-Vizzz-Console: 1` required):
+  everything that changes the network, identity, patch or stored state. GET
+  answers `405` with `Allow: POST`; POST without the header answers `403`; a
+  CORS preflight answers `403` without `Access-Control-Allow-Origin`, so a
+  cross-site page cannot send them (OWASP CSRF Prevention Cheat Sheet,
+  "custom request headers"). The built-in console sends the header.
+- **Reads** (GET): `CORS yes` = `Access-Control-Allow-Origin: *`. No other
+  route, and no error answer, carries it.
+- Numbers are decimal digits inside the range shown; anything else is `400`
+  with `{"error","arg","min","max"}`. Commands answer `204` (or `202 queued`,
+  `503 busy`).
+
+```bash
+curl -X POST -H 'X-Vizzz-Console: 1' 'http://192.168.4.1/mode/set?m=2'      # console route
+curl -X POST -H 'X-Vizzz-Console: 1' --data-urlencode ssid=Net --data-urlencode pass=secret123 http://192.168.4.1/wifi/set
+curl 'http://192.168.4.1/set?ch=1&v=255'                                     # operator route
+```
+
+| Method | Header | CORS | Path | Arguments | Description |
+|---|---|---|---|---|---|
+| GET/POST | - | - | `/set` | `ch=1-512&v=0-255` | Set one web-layer channel (di.iiii DMX Out) |
+| GET/POST | - | - | `/blackout` | - | Web layer to 0, cue list and FX stopped (di.iiii DMX Out) |
+| GET/POST | - | - | `/full` | - | Set all web-layer channels to 255 |
+| GET/POST | - | - | `/master` | `v=0-255` | Set master dimmer (di.iiii DMX Out) |
+| GET/POST | - | - | `/scene/recall` | `n=0-7&fade=0-600000` | Recall scene with fade (ms) |
+| GET/POST | - | - | `/cue/run` | `en=0\|1` | Start/stop cue runner |
+| GET/POST | - | - | `/cue/next` | - | Advance cue runner one step |
+| GET/POST | - | - | `/fx/tap` | - | BPM tap tempo input |
+| POST | yes | - | `/panic` | - | Kill everything: master 0, blackout, FX and cues off, WEB_ONLY in RAM |
+| POST | yes | - | `/mode/set` | `m=0\|1\|2` | WEB / ARTNET / HTP |
+| POST | yes | - | `/mode/fallback` | `en=0\|1` | In ARTNET mode, fall back to web layer when network input is inactive |
+| POST | yes | - | `/netmode/set` | `m=0\|1\|2` | AP_STA / STA_ONLY / AP_ONLY, then reboot |
+| POST | yes | - | `/web/set` | `en=0\|1` | Web console on/off, then reboot |
+| POST | yes | - | `/artout/set` | `en=0\|1` | Enable Art-Net OUT |
+| POST | yes | - | `/artout/peer` | `ip=a.b.c.d (empty = broadcast)` | Use one peer as Art-Net OUT unicast target |
+| POST | yes | - | `/artnet/set` | `net=0-127&subnet=0-15&uni=0-15` | Configure Art-Net port-address (sACN = port-address + 1) |
+| POST | yes | - | `/safety/set` | `burn=0\|1` | Toggle burn-safe mode |
+| POST | yes | - | `/scene/save` | `n=0-7` | Save current web layer |
+| POST | yes | - | `/fixture/set` | `i=0-11&name&start=1-512&end=1-512&x&y=0-255&en&count=1-12` | Configure one fixture |
+| POST | yes | - | `/group/set` | `g=0-7&name=X&start=1-512&end=1-512&en=0\|1` | Configure one group |
+| POST | yes | - | `/group/apply` | `g=0-7&v=0-255` | Apply value to one group range |
+| POST | yes | - | `/cue/count` | `c=1-16` | Set active cue step count |
+| POST | yes | - | `/cue/set` | `i=0-15&scene=0-7&dwell=ms&fade=ms` | Configure one cue step |
+| POST | yes | - | `/fx/set` | `mode=none\|strobe\|...\|0-9&en=0\|1&bpm=20-240&depth=0-255` | Configure FX engine |
+| POST | yes | - | `/color/set` | `en=0\|1&r=0-255&g=0-255&b=0-255` | Configure color wash |
+| POST | yes | - | `/net/blackout` | - | Blackout this node and all discovered peers |
+| POST | yes | - | `/net/full` | - | Full on this node and all discovered peers |
+| POST | yes | - | `/net/master` | `v=0-255` | Set master on this node and all discovered peers |
+| POST | yes | - | `/net/scene/recall` | `n=0-7&fade=ms` | Recall scene on this node and all discovered peers |
+| POST | yes | - | `/peer/cmd` | `ip=X&path=/blackout\|/full\|/master?v=\|/scene/recall?n=` | Forward an allowed command to one known peer |
+| POST | yes | - | `/discover/announce` | - | Send one discovery beacon now (else every 30 s) |
+| POST | yes | - | `/wifi/set` | `ssid=1-32 B&pass=empty or 8-63 (form body)` | Connect STA |
+| POST | yes | - | `/wifi/forget` | - | Clear STA credentials |
+| POST | yes | - | `/node/set` | `name=X&ap_ssid=Y&ap_pass=8-63 (form body)` | Update node identity |
+| POST | yes | - | `/reboot` | - | Reboot |
+| POST | yes | - | `/factory-reset` | - | Erase NVS and reboot with defaults |
+| GET | - | yes | `/status` | - | Live status JSON (di.iiii reads it cross-origin) |
+| GET | - | yes | `/page` | `i=0-15` | 32-channel page snapshot |
+| GET | - | yes | `/monitor` | - | First 64 output channels |
+| GET | - | yes | `/safety/status` | - | Burn-safe/effective safety parameters |
+| GET | - | yes | `/discover` | - | Node identity (no side effect) |
+| GET | - | yes | `/peers` | - | Live discovered peer table |
+| GET | - | yes | `/groups` | - | Group table |
+| GET | - | yes | `/fixtures` | - | Fixture table |
+| GET | - | yes | `/cue/status` | - | Cue list state |
+| GET | - | yes | `/fx/status` | - | FX engine state |
+| GET | - | yes | `/node/manifest` | - | Firmware node manifest (routes generated from the route table) |
+| GET | - | yes | `/manifest.json` | - | Same firmware node manifest |
+| GET | - | - | `/wifi/scan` | - | JSON SSID scan (same origin only) |
+| GET | - | - | `/` `/control` `/patch` `/scenes` `/network` `/system` `/performance` `/vj` | - | Console pages |
+| WS | - | - | `/ws` | - | Status push every ~400 ms; refuses a foreign `Origin` |
 
 ## Node Manifest
 

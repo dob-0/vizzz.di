@@ -34,7 +34,10 @@ def http_call(host: str, case: RouteCase, method: str, timeout: float = 1.0) -> 
     url = f"http://{host}{case.path}"
     if qs:
         url = f"{url}?{qs}"
-    req = urllib.request.Request(url=url, method=method)
+    # Console routes need POST + X-Vizzz-Console: 1 (audit 2-H2); a GET to one
+    # is answered 405 and counts as a handled answer, not a crash.
+    req = urllib.request.Request(url=url, method=method, headers={"X-Vizzz-Console": "1"},
+                                 data=b"" if method == "POST" else None)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return True, int(resp.status)

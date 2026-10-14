@@ -73,8 +73,11 @@ def http_get(host, path, query=None):
     url = f"http://{host}{path}"
     if query:
         url += "?" + urllib.parse.urlencode(query)
-    print("+ GET " + url)
-    with urllib.request.urlopen(url, timeout=4) as response:
+    # Console routes are POST + X-Vizzz-Console: 1 (audit 2026-10-15 2-H2);
+    # operator routes (/set, /full, ...) accept the same request.
+    print("+ POST " + url)
+    req = urllib.request.Request(url, data=b"", method="POST", headers={"X-Vizzz-Console": "1"})
+    with urllib.request.urlopen(req, timeout=4) as response:
         body = response.read().decode("utf-8", errors="replace")
     if body:
         print(body)

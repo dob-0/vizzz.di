@@ -2494,48 +2494,74 @@ static String nodeManifestJSON() {
   jsonEsc(eName,    sizeof(eName),    id.name);
   jsonEsc(eSsid,    sizeof(eSsid),    id.apSsid);
   jsonEsc(eStaSsid, sizeof(eStaSsid), id.staSsid);
-  jsonEsc(eFw,      sizeof(eFw),      FW_TAG);
+  jsonEsc(eFw,      sizeof(eFw),      FW_BUILD);
 
   String apIp = ipStr(WiFi.softAPIP());
   String staIp = staCon ? ipStr(WiFi.localIP()) : "";
   String mac = WiFi.macAddress();
   String outTarget = ipStr(artOutTarget());
 
-  char buf[3400];
+  // The http route list comes from vizzz::kRoutes, the table setupWeb()
+  // registers from (audit 2026-10-15 2-M4), so it cannot drift from the
+  // server. "routes" keeps the v1 shape (paths); "route_table" adds methods,
+  // the console header and CORS per route.
+  String out;
+  out.reserve(7600);
+  char buf[1400];
   snprintf(buf, sizeof(buf),
     "{"
     "\"schema\":\"vizzz.di.node.manifest.v1\","
     "\"kind\":\"firmware-node\","
     "\"product\":\"%s\","
     "\"name\":\"%s\","
-    "\"firmware\":{\"tag\":\"%s\",\"framework\":\"Arduino/PlatformIO\"},"
+    "\"firmware\":{\"tag\":\"%s\",\"git\":\"%s\",\"framework\":\"Arduino/PlatformIO\"},"
     "\"identity\":{\"mac\":\"%s\",\"ap_ssid\":\"%s\",\"sta_ssid\":\"%s\"},"
     "\"network\":{\"mode\":\"%s\",\"ap_ip\":\"%s\",\"sta_connected\":%s,\"sta_ip\":\"%s\"},"
     "\"hardware\":{\"board\":\"ESP32 DevKit\",\"dmx_uart\":\"DMX_NUM_1\",\"dmx_tx_gpio\":%d,\"dmx_dir_gpio\":%d,\"max_channels\":%d,\"dmx_period_ms\":%lu},"
     "\"protocols\":["
-      "{\"id\":\"http\",\"role\":\"control\",\"routes\":[\"/\",\"/control\",\"/patch\",\"/scenes\",\"/network\",\"/system\",\"/performance\",\"/vj\",\"/status\",\"/page\",\"/monitor\",\"/blackout\",\"/full\",\"/master\",\"/mode/set\",\"/netmode/set\",\"/web/set\",\"/artnet/set\",\"/artout/set\",\"/artout/peer\",\"/scene/save\",\"/scene/recall\",\"/wifi/scan\",\"/wifi/set\",\"/wifi/forget\",\"/node/set\",\"/reboot\",\"/discover\",\"/peers\",\"/peer/cmd\",\"/net/blackout\",\"/net/full\",\"/net/master\",\"/net/scene/recall\",\"/groups\",\"/group/set\",\"/group/apply\",\"/cue/status\",\"/cue/count\",\"/cue/set\",\"/cue/run\",\"/cue/next\",\"/fx/status\",\"/fx/set\",\"/fx/tap\",\"/color/set\",\"/node/manifest\",\"/manifest.json\"]},"
+      "{\"id\":\"http\",\"role\":\"control\",\"console_header\":\"%s: 1\",\"routes\":[",
+    PRODUCT_NAME,
+    eName,
+    eFw, VIZZZ_GIT_SHA,
+    mac.c_str(), eSsid, eStaSsid,
+    netModeName(netMode), apIp.c_str(), staCon ? "true" : "false", staIp.c_str(),
+    DMX_TX, DMX_DIR, MAX_CH, (unsigned long)DMX_PERIOD_MS,
+    vizzz::CONSOLE_HEADER);
+  out += buf;
+  for (size_t i = 0; i < vizzz::kRouteCount; i++) {
+    if (i) out += ',';
+    out += '"'; out += vizzz::kRoutes[i].path; out += '"';
+  }
+  out += "],\"route_table\":[";
+  for (size_t i = 0; i < vizzz::kRouteCount; i++) {
+    const vizzz::RouteKind k = vizzz::kRoutes[i].kind;
+    snprintf(buf, sizeof(buf), "%s{\"path\":\"%s\",\"methods\":\"%s\",\"console_header\":%s,\"cors\":%s}",
+             i ? "," : "", vizzz::kRoutes[i].path, vizzz::routeMethods(k),
+             k == vizzz::RouteKind::Console ? "true" : "false",
+             vizzz::routeSendsAcao(k) ? "true" : "false");
+    out += buf;
+  }
+  const uint16_t pa = universe();
+  snprintf(buf, sizeof(buf),
+      "]},"
       "{\"id\":\"websocket\",\"role\":\"live-status\",\"endpoint\":\"/ws\",\"push_ms\":400},"
-      "{\"id\":\"artnet\",\"role\":\"input-output\",\"port\":%u,\"universe\":%u,\"output_target\":\"%s\",\"output_enabled\":%s},"
-      "{\"id\":\"sacn\",\"role\":\"input\",\"port\":%u,\"universe\":%u},"
+      "{\"id\":\"artnet\",\"role\":\"input-output\",\"port\":%u,\"universe\":%u,\"net\":%u,\"subnet\":%u,\"uni\":%u,\"output_target\":\"%s\",\"output_enabled\":%s},"
+      "{\"id\":\"sacn\",\"role\":\"input\",\"port\":%u,\"universe\":%u,\"universe_rule\":\"artnet port-address + 1\"},"
       "{\"id\":\"osc\",\"role\":\"input\",\"transport\":\"udp\",\"port\":%u},"
       "{\"id\":\"dmx512\",\"role\":\"physical-output\",\"channels\":%d}"
     "],"
     "\"state\":{\"output_mode\":\"%s\",\"master\":%u,\"artnet_active\":%s,\"sacn_active\":%s,\"web_enabled\":%s,\"fx_mode\":\"%s\",\"fx_enabled\":%s,\"color_enabled\":%s,\"burn_safe\":%s,\"safe_ceiling\":%u,\"safe_slew_step\":%u},"
     "\"sync\":{\"source\":\"firmware\",\"live_status\":\"/ws\",\"durable_config\":\"ESP32 Preferences NVS\",\"git_policy\":\"verify, commit, push origin/main\"}"
     "}",
-    PRODUCT_NAME,
-    eName,
-    eFw,
-    mac.c_str(), eSsid, eStaSsid,
-    netModeName(netMode), apIp.c_str(), staCon ? "true" : "false", staIp.c_str(),
-    DMX_TX, DMX_DIR, MAX_CH, (unsigned long)DMX_PERIOD_MS,
-    ARTNET_PORT, universe(), outTarget.c_str(), artOutEnabled ? "true" : "false",
+    ARTNET_PORT, pa, unsigned(pa >> 8) & 0x7f, unsigned(pa >> 4) & 0x0f, unsigned(pa) & 0x0f,
+    outTarget.c_str(), artOutEnabled ? "true" : "false",
     SACN_PORT, sacnUniverse(),
     OSC_PORT,
     MAX_CH,
     modeName(mode), masterDimmer, artnetActive() ? "true" : "false", sacnActive() ? "true" : "false", webEnabled ? "true" : "false", fxModeName(snapFxMode), snapFxEnabled ? "true" : "false", snapColorEnabled ? "true" : "false", burnSafeMode ? "true" : "false", effectiveSafeMaxLevel(), effectiveSafeSlewStep()
   );
-  return buf;
+  out += buf;
+  return out;
 }
 
 static String wifiScanJSON() {
