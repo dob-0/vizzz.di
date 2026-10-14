@@ -2251,6 +2251,12 @@ static const char* resetReasonName(esp_reset_reason_t r) {
     default:                return "unknown";
   }
 }
+// One snapshot of the health facts; /status, the /ws push and the manifest
+// all print it through vizzz::healthJsonFields.
+static vizzz::HealthFacts healthFacts() {
+  return vizzz::HealthFacts{ESP.getFreeHeap(), ESP.getMaxAllocHeap(), uint32_t(ws.count())};
+}
+
 static size_t fillStatusJSON(char* buf, size_t n) {
   if (!n) return 0;
 
@@ -2275,6 +2281,9 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     snapPeers = peerCount;
     xSemaphoreGive(gLock);
   }
+
+  char healthFields[96];
+  vizzz::healthJsonFields(healthFields, sizeof(healthFields), healthFacts());
 
   int written = snprintf(buf, n,
     "{"
@@ -2311,6 +2320,7 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     "\"usb_frames\":%lu,"
     "\"usb_baud\":%lu,"
     "\"rst\":\"%s\","
+    "%s,"
     "\"fw\":\"%s\""
     "}",
     apIp,
@@ -2342,6 +2352,7 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     (unsigned long)usbFrames,
     (unsigned long)USB_WIDGET_BAUD,
     resetReasonName(esp_reset_reason()),
+    healthFields,
     FW_BUILD
   );
   if (written < 0) {
@@ -2355,7 +2366,7 @@ static size_t fillStatusJSON(char* buf, size_t n) {
 // STATUS_JSON_MAX: worst case measured from the format at ~920 bytes (~420
 // literal + three 79-byte escaped names + IPs, MAC, numbers); 800 could truncate.
 // The USB fields add at most 62 (~982), so 1152 keeps the margin.
-static constexpr size_t STATUS_JSON_MAX = 1152;
+static constexpr size_t STATUS_JSON_MAX = 1280;
 
 
 
@@ -2597,7 +2608,7 @@ static String nodeManifestJSON() {
   // the console header and CORS per route.
   String out;
   out.reserve(7600);
-  char buf[1400];
+  char buf[1600];
   snprintf(buf, sizeof(buf),
     "{"
     "\"schema\":\"vizzz.di.node.manifest.v1\","
@@ -2632,6 +2643,8 @@ static String nodeManifestJSON() {
     out += buf;
   }
   const uint16_t pa = universe();
+  char healthFields[96];
+  vizzz::healthJsonFields(healthFields, sizeof(healthFields), healthFacts());
   snprintf(buf, sizeof(buf),
       "]},"
       "{\"id\":\"websocket\",\"role\":\"live-status\",\"endpoint\":\"/ws\",\"push_ms\":400},"
@@ -2641,7 +2654,7 @@ static String nodeManifestJSON() {
       "{\"id\":\"usb\",\"role\":\"input\",\"transport\":\"serial\",\"uart\":\"UART0\",\"protocol\":\"ENTTEC DMX USB PRO widget API\",\"baud\":%lu,\"labels\":[3,4,6,10],\"merge\":\"htp-with-artnet-sacn\",\"timeout_ms\":%lu,\"active\":%s,\"frames\":%lu},"
       "{\"id\":\"dmx512\",\"role\":\"physical-output\",\"channels\":%d}"
     "],"
-    "\"state\":{\"output_mode\":\"%s\",\"master\":%u,\"artnet_active\":%s,\"sacn_active\":%s,\"web_enabled\":%s,\"fx_mode\":\"%s\",\"fx_enabled\":%s,\"color_enabled\":%s,\"burn_safe\":%s,\"safe_ceiling\":%u,\"safe_slew_step\":%u},"
+    "\"state\":{\"output_mode\":\"%s\",\"master\":%u,\"artnet_active\":%s,\"sacn_active\":%s,\"web_enabled\":%s,\"fx_mode\":\"%s\",\"fx_enabled\":%s,\"color_enabled\":%s,\"burn_safe\":%s,\"safe_ceiling\":%u,\"safe_slew_step\":%u,%s},"
     "\"sync\":{\"source\":\"firmware\",\"live_status\":\"/ws\",\"durable_config\":\"ESP32 Preferences NVS\",\"git_policy\":\"verify, commit, push origin/main\"}"
     "}",
     ARTNET_PORT, pa, unsigned(pa >> 8) & 0x7f, unsigned(pa >> 4) & 0x0f, unsigned(pa) & 0x0f,
@@ -2650,7 +2663,7 @@ static String nodeManifestJSON() {
     OSC_PORT,
     (unsigned long)USB_WIDGET_BAUD, (unsigned long)USB_TIMEOUT_MS, usbActive() ? "true" : "false", (unsigned long)usbFrames,
     MAX_CH,
-    modeName(mode), masterDimmer, artnetActive() ? "true" : "false", sacnActive() ? "true" : "false", webEnabled ? "true" : "false", fxModeName(snapFxMode), snapFxEnabled ? "true" : "false", snapColorEnabled ? "true" : "false", burnSafeMode ? "true" : "false", effectiveSafeMaxLevel(), effectiveSafeSlewStep()
+    modeName(mode), masterDimmer, artnetActive() ? "true" : "false", sacnActive() ? "true" : "false", webEnabled ? "true" : "false", fxModeName(snapFxMode), snapFxEnabled ? "true" : "false", snapColorEnabled ? "true" : "false", burnSafeMode ? "true" : "false", effectiveSafeMaxLevel(), effectiveSafeSlewStep(), healthFields
   );
   out += buf;
   return out;

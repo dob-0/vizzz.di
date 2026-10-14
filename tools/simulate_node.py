@@ -179,6 +179,7 @@ class Node:
             "safe_ceiling": self.ceiling(), "safe_slew_step": self.slew_step(),
             # USB widget input exists only on hardware (no serial in the simulator).
             "usb_active": False, "usb_frames": 0, "usb_baud": USB_WIDGET_BAUD,
+            "heap_free": 180000, "heap_max_block": 110000, "ws_clients": 0,
         }
 
     def manifest(self):

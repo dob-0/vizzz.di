@@ -892,4 +892,27 @@ inline bool wsOriginAllowed(const char* origin, const char* host) {
   return strcmp(origin + 7, host) == 0;
 }
 
+// Node health facts (plan step V0). /status and the manifest both print these
+// three keys from one HealthFacts, via healthJsonFields(), so they cannot
+// drift. heap_max_block is the largest single allocation that still succeeds
+// (fragmentation), ws_clients the live /ws sockets.
+struct HealthFacts {
+  uint32_t heapFree;
+  uint32_t heapMaxBlock;
+  uint32_t wsClients;
+};
+
+constexpr const char* kHealthKeys[] = {"heap_free", "heap_max_block", "ws_clients"};
+constexpr size_t kHealthKeyCount = sizeof(kHealthKeys) / sizeof(kHealthKeys[0]);
+
+// Writes `"heap_free":N,"heap_max_block":N,"ws_clients":N` (no braces, no
+// trailing comma) so the caller can splice it into an object. Returns the
+// snprintf result: >= n means it was truncated.
+inline int healthJsonFields(char* dst, size_t n, const HealthFacts& h) {
+  return snprintf(dst, n, "\"%s\":%lu,\"%s\":%lu,\"%s\":%lu",
+                  kHealthKeys[0], (unsigned long)h.heapFree,
+                  kHealthKeys[1], (unsigned long)h.heapMaxBlock,
+                  kHealthKeys[2], (unsigned long)h.wsClients);
+}
+
 }  // namespace vizzz
