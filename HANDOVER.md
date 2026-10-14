@@ -108,3 +108,83 @@ desk U1 moves the light over Art-Net and over sACN.
 - Lesson, made durable: protocol code now lives in the tested core and is cross-checked against di's own
   packet code by `tools/check_di_compat.sh` (AGENTS.md "Adding Unit Tests"), so a di/firmware mismatch
   like 2-H3 shows up without a node.
+
+# Handover — HTTP API / console pass of audit 2026-10-15 (branch fix/audit-c)
+
+Worktree `/home/dob/work/vizzz.di-fix-c`, base `6245e2a` (A + B merged). Scope: part 2 H2, M3–M9 and the
+API Lows. Nothing flashed, no serial, the live node not contacted. Each finding in
+`docs/AUDIT_2026_10_15.md` carries its Fixed/Open line.
+
+## Commits
+
+| commit | findings | what |
+|---|---|---|
+| `9372087` | 2-H2, 2-L3 (part), 2-L5, 2-L7 | `vizzz::kRoutes` + `route()` gate: Console = POST + `X-Vizzz-Console: 1`; console JS sends it; /discover read-only + POST /discover/announce; /ws Origin check |
+| `efeff26` | 2-M5, 2-L6, 2-L3 | `parseUintArg/parseIntArg` + `ArgReader`, 400 JSON; start ≤ end; SSID/pass lengths |
+| `aea72d3` | 2-M3 | `escAttrJs` in onclick; `tools/check_console_escape.js` |
+| `1781443` | 2-M7 | ACAO only on GetShared reads, from the table |
+| `af68558` | 2-M4 | manifest routes + route_table from the table, git SHA, net/sub/uni; `tools/check_routes.py`; README table; onboard/crash tools send POST + header; check_di_compat.sh relative-path fix |
+| `0cdb7b7` | 2-M9 (HTTP rest) | simulator reads the same table and gate; `tools/check_http_api.sh` |
+
+## Done (13) / open (5)
+
+Fixed: 2-H2 (console routes), 2-M3, 2-M4, 2-M5, 2-M7, 2-M9 rest, 2-L3, 2-L5, 2-L6, 2-L7; verified as A's:
+2-M6 (48ae2e9), 2-L4 (d17912c).
+Open: 2-H2 rest and 2-M7 rest — **owner decides** on a real login/token (operator routes stay plain GET for
+di; /status keeps `sta_ssid`/`mac` cross-origin); 2-M8 — **owner decides** web-layer clear vs /panic;
+2-L10, 2-L11 — di.iiii side.
+
+## Measured
+
+- `pio run -e esp32dev`: SUCCESS. RAM 55 476 B (16.9 %) vs 55 412 B at `6245e2a` (+64 B); Flash 931 301 B vs
+  932 441 B (−1 140 B: one gated `server.on` per route instead of GET+POST pairs).
+- `pio test -e native`: **27 test cases: 27 succeeded** (was 21): route kinds, gate decisions, WS origin,
+  strict uint/int parsing, ACAO rule.
+- `tools/check_di_compat.sh ../di.iiii`: PASS, now including `check_routes.py`: 57 routes in table = 57
+  registered = 57 in README; di's `/status /set /master /blackout` all plain-GET reachable.
+- `tools/check_http_api.sh` against `tools/simulate_node.py`: 24/24. `node tools/check_console_escape.js`: PASS.
+
+Not proven: anything on the ESP32 (ESPAsyncWebServer 3.6.0's handling of `HTTP_ANY`, OPTIONS, and form
+bodies is read from its source, not observed).
+
+## Flash-and-verify step (owed; after merge, on aylmo)
+
+```
+cd ~/work/vizzz.di
+PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio test -e native      # 27/27
+tools/check_di_compat.sh ../di.iiii                                             # PASS
+sg dialout -c "PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio run -e esp32dev -t upload"
+tools/check_http_api.sh http://192.168.88.66        # expect "24 passed, 0 failed"
+```
+
+What the script runs (harmless: channel 64 → 0, master and Art OUT re-set to their current values):
+
+```
+N=http://192.168.88.66
+curl -s -o /dev/null -w '%{http_code}\n' $N/reboot                                   # 405 (GET on POST-only)
+curl -s -D - -o /dev/null $N/reboot | grep -i '^allow'                               # Allow: POST
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $N/reboot                           # 403 (no header)
+curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS -H 'Origin: http://evil.example' $N/reboot   # 403, no ACAO
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'X-Vizzz-Console: 1' "$N/artout/set?en=0"   # 204 (use the current ao)
+curl -s -o /dev/null -w '%{http_code}\n' "$N/set?ch=64&v=0"                          # 204 (di's plain GET)
+curl -s -o /dev/null -w '%{http_code}\n' "$N/set?ch=abc&v=255"                       # 400
+curl -s -o /dev/null -w '%{http_code}\n' "$N/set?ch=900&v=0"                         # 400
+curl -s -D - -o /dev/null $N/status | grep -i access-control-allow-origin            # present: *
+curl -s -D - -o /dev/null -X POST $N/reboot | grep -ci access-control-allow-origin   # 0 (absent)
+```
+
+Then the owner's look: the console (Network page: Wi-Fi scan → pick → Join; Save node; Reboot) still
+works from the phone and laptop, and di.iiii's DMX Out still moves channels, master and blackout.
+If the console's buttons do nothing after the flash, the first suspect is the browser cache serving the
+old page (it sent GET): reload once.
+
+## Review (AAR)
+
+- Meant: fix part 2's HTTP findings by established method, tests growing, build green, no hardware.
+- Happened: as meant, 6 commits, ~62 tool calls. Rework: 3 rounds, all in my own patch scripts (nested
+  triple quotes; a pattern with leading spaces; README pipes split by the checker), none in firmware code.
+- Found on the way: `tools/check_di_compat.sh ../di.iiii` (the documented relative form) failed before this
+  pass — `di_side.js` `require()`d a path relative to itself. Fixed in af68558.
+- Lesson, made durable: the route list exists once (`vizzz::kRoutes`) and `tools/check_routes.py` fails the
+  di compat check on drift, so 2-M4's "manifest out of date" cannot come back silently (AGENTS.md
+  "Adding a New HTTP Route" rewritten around it).

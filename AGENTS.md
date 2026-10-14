@@ -94,23 +94,33 @@ Never hold gLock across a `dmx_write()` or any blocking call.
 
 ## Adding a New HTTP Route
 
-1. Find `void setupWeb()` in `src/main.cpp`
-2. Add before the 404 handler (always the last entry)
-3. Follow the mutex pattern above for any route touching `webVals`
-4. Return JSON or plain text; use `snprintf` into a stack buffer (avoid `String`)
-5. No route should block longer than ~20 ms
+Routes are a table, not a list of `server.on()` calls (audit 2026-10-15 2-H2/2-M4):
 
-Example skeleton:
+1. Add `{"/my/route", RouteKind::<Kind>}` to `vizzz::kRoutes` in `include/vizzz_core.h`. Kind:
+   `Console` (POST + `X-Vizzz-Console: 1`) for anything that changes network, identity, patch or
+   stored state — the default; `Operator` (GET/POST, no header) only for a show control di.iiii
+   or a phone must fire as a plain GET; `GetShared` for a JSON read other origins may read
+   (adds ACAO); `GetLocal` for a same-origin read.
+2. In `setupWeb()` register with `route("/my/route", handler)` — never `server.on()`.
+   The gate (405/403/preflight) runs before the handler; the manifest lists it by itself.
+3. Numbers: `ArgReader a(r); a.need("x", lo, hi, xV); a.opt(...); if (!a.ok) return;` —
+   never `toInt()`. Validate everything before taking `gLock`.
+4. Add the README HTTP API row (method, header, CORS). `python3 tools/check_routes.py --di ../di.iiii`
+   must PASS (it also runs inside `tools/check_di_compat.sh`).
+5. The console calls it with `hit(url[, URLSearchParams body])` (POST + header). Secrets go in the body.
+6. Follow the mutex pattern for anything touching `webVals`; no route blocks longer than ~20 ms.
+7. Mirror it in `tools/simulate_node.py` `_handle()`; `tools/check_http_api.sh <base>` must PASS.
 
 ```cpp
-server.on("/my/route", HTTP_GET, [](AsyncWebServerRequest* request) {
-    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
-        request->send(503, "text/plain", "busy");
-        return;
-    }
+route("/my/route", [](AsyncWebServerRequest* r) {
+    ArgReader a(r);
+    uint32_t v = 0;
+    a.need("v", 0, 255, v);
+    if (!a.ok) return;                       // 400 already sent
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     // work with webVals here
     xSemaphoreGive(gLock);
-    request->send(200, "text/plain", "ok");
+    r->send(204);
 });
 ```
 
@@ -171,6 +181,10 @@ need no hardware:
   the parsers and hands the node's ArtPollReply to di's `ArtNet.nodeList()` (127.0.0.1 only).
 - `python3 tools/simulate_node.py --udp` + `python3 tools/net_probe.py verify --node <ip>` — the same 13
   checks the real node gets after a flash (see HANDOVER.md of the 2026-10-15 protocol pass).
+- HTTP: `python3 tools/check_routes.py --di ../di.iiii` (route table = main.cpp = README = di's GETs),
+  `node tools/check_console_escape.js` (console onclick escaping), and
+  `tools/check_http_api.sh http://127.0.0.1:8088` against `tools/simulate_node.py` (24 checks; the same
+  script runs against a flashed node).
 
 ---
 
