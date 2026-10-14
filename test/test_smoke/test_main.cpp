@@ -342,6 +342,68 @@ void test_osc_float_arguments() {
   TEST_ASSERT_FALSE(vizzz::oscIsBundle((const uint8_t*)"/ch/1\0\0\0,i\0\0\0\0\0\1", 16));
 }
 
+// 2-H2: the dangerous routes are POST + header; di's routes stay plain GET.
+void test_route_table_kinds() {
+  using vizzz::RouteKind;
+  const char* consoleOnly[] = {"/reboot", "/factory-reset", "/wifi/set", "/wifi/forget",
+    "/netmode/set", "/node/set", "/web/set", "/artnet/set", "/artout/set", "/artout/peer",
+    "/mode/set", "/mode/fallback", "/safety/set", "/net/blackout", "/net/full",
+    "/net/master", "/net/scene/recall", "/peer/cmd", "/scene/save", "/fixture/set",
+    "/cue/set", "/group/set", "/color/set", "/fx/set", "/panic"};
+  for (const char* p : consoleOnly) {
+    int i = vizzz::findRoute(p);
+    TEST_ASSERT_TRUE_MESSAGE(i >= 0, p);
+    TEST_ASSERT_TRUE_MESSAGE(vizzz::kRoutes[i].kind == RouteKind::Console, p);
+  }
+  const char* diGet[] = {"/set", "/master", "/blackout", "/full"};
+  for (const char* p : diGet)
+    TEST_ASSERT_TRUE_MESSAGE(vizzz::kRoutes[vizzz::findRoute(p)].kind == RouteKind::Operator, p);
+  const char* diRead[] = {"/status", "/page", "/manifest.json", "/node/manifest"};
+  for (const char* p : diRead)
+    TEST_ASSERT_TRUE_MESSAGE(vizzz::kRoutes[vizzz::findRoute(p)].kind == RouteKind::GetShared, p);
+  TEST_ASSERT_EQUAL_INT(-1, vizzz::findRoute("/nope"));
+  // No path twice.
+  for (size_t a = 0; a < vizzz::kRouteCount; a++)
+    for (size_t b = a + 1; b < vizzz::kRouteCount; b++)
+      TEST_ASSERT_TRUE_MESSAGE(strcmp(vizzz::kRoutes[a].path, vizzz::kRoutes[b].path) != 0,
+                               vizzz::kRoutes[a].path);
+}
+
+void test_route_gate_decisions() {
+  using vizzz::Gate; using vizzz::HttpMethod; using vizzz::RouteKind;
+  // Console: GET 405, POST without header 403, with header allowed, preflight 403.
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::Console, HttpMethod::Get, true) == Gate::NotAllowed);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::Console, HttpMethod::Post, false) == Gate::NeedHeader);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::Console, HttpMethod::Post, true) == Gate::Allow);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::Console, HttpMethod::Options, true) == Gate::PreflightDenied);
+  // Operator: GET and POST, no header needed; anything else 405.
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::Operator, HttpMethod::Get, false) == Gate::Allow);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::Operator, HttpMethod::Post, false) == Gate::Allow);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::Operator, HttpMethod::Other, false) == Gate::NotAllowed);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::Operator, HttpMethod::Options, false) == Gate::PreflightDenied);
+  // Reads: GET only; shared reads answer a preflight.
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::GetShared, HttpMethod::Get, false) == Gate::Allow);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::GetShared, HttpMethod::Post, true) == Gate::NotAllowed);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::GetShared, HttpMethod::Options, false) == Gate::Preflight);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(RouteKind::GetLocal, HttpMethod::Options, false) == Gate::PreflightDenied);
+  TEST_ASSERT_EQUAL_STRING("POST", vizzz::routeMethods(RouteKind::Console));
+  TEST_ASSERT_EQUAL_STRING("GET, POST", vizzz::routeMethods(RouteKind::Operator));
+  TEST_ASSERT_TRUE(vizzz::isConsoleHeaderValue("1"));
+  TEST_ASSERT_FALSE(vizzz::isConsoleHeaderValue(""));
+  TEST_ASSERT_FALSE(vizzz::isConsoleHeaderValue("11"));
+  TEST_ASSERT_FALSE(vizzz::isConsoleHeaderValue(nullptr));
+}
+
+// 2-L7: WebSocket only from the node's own origin (or no Origin at all).
+void test_ws_origin_rule() {
+  TEST_ASSERT_TRUE(vizzz::wsOriginAllowed(nullptr, "192.168.4.1"));
+  TEST_ASSERT_TRUE(vizzz::wsOriginAllowed("http://192.168.4.1", "192.168.4.1"));
+  TEST_ASSERT_TRUE(vizzz::wsOriginAllowed("http://vizzz.local:80", "vizzz.local:80"));
+  TEST_ASSERT_FALSE(vizzz::wsOriginAllowed("http://evil.example", "192.168.4.1"));
+  TEST_ASSERT_FALSE(vizzz::wsOriginAllowed("https://192.168.4.1", "192.168.4.1"));
+  TEST_ASSERT_FALSE(vizzz::wsOriginAllowed("http://192.168.4.1.evil", "192.168.4.1"));
+}
+
 static int runAll() {
   UNITY_BEGIN();
   RUN_TEST(test_pack_universe_uses_15bit_layout);
@@ -365,6 +427,9 @@ static int runAll() {
   RUN_TEST(test_sacn_parse_layers);
   RUN_TEST(test_sacn_preview_terminated_priority_sequence);
   RUN_TEST(test_osc_float_arguments);
+  RUN_TEST(test_route_table_kinds);
+  RUN_TEST(test_route_gate_decisions);
+  RUN_TEST(test_ws_origin_rule);
   return UNITY_END();
 }
 

@@ -1695,7 +1695,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
         </div>
         <div class="card">
           <h2>Peers</h2>
-          <div class="row" style="margin-bottom:8px"><button onclick="loadPeers()">Refresh</button><span class="footerNote" id="peerCount" style="margin-left:8px">—</span></div>
+          <div class="row" style="margin-bottom:8px"><button onclick="hit('/discover/announce');setTimeout(loadPeers,1500)">Refresh</button><span class="footerNote" id="peerCount" style="margin-left:8px">—</span></div>
           <div id="peerList"><span class="footerNote">Join a WiFi network to discover other vizzz.di nodes.</span></div>
         </div>
       </div>
@@ -1900,8 +1900,11 @@ let undergroundMode=true;
 function escHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function escJsSq(s){return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,'\\r');}
 function qs(url){return fetch(url,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);}
-function hit(url){return fetch(url,{cache:'no-store'});}
-function hitWait(url){return fetch(url,{cache:'no-store'});}
+// Commands go out as POST with X-Vizzz-Console: 1 (audit 2-H2): console routes refuse
+// anything else, operator routes accept it too. body = URLSearchParams keeps secrets out of the URL.
+const CONSOLE_HDR={'X-Vizzz-Console':'1'};
+function hit(url,body){return fetch(url,{method:'POST',cache:'no-store',headers:CONSOLE_HDR,body:body||undefined});}
+function hitWait(url,body){return hit(url,body);}
 function setActiveRoute(){document.querySelectorAll('.section').forEach(x=>x.classList.toggle('active',x.dataset.route===route));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.route===route));}
 function makeScenes(){
   $('vjScenes').innerHTML=[...Array(8)].map((_,i)=>`<button class="sceneSlotBtn" data-scene-slot="${i}" onclick="scenePick(${i})">${i+1}</button>`).join('');
@@ -2003,8 +2006,8 @@ function toggleArtOut(){artOutEnabled=!artOutEnabled; hit('/artout/set?en='+(art
 function toggleWeb(){const next=webEnabled?0:1; const msg=next?'Re-enable the web console and reboot?':'Turn the web console OFF and reboot?\n\nAfter rebooting you get 90 seconds to reach this page again before it goes quiet. DMX, Art-Net and OSC keep running.'; if(confirm(msg)) hit('/web/set?en='+next);}
 function rebootNow(){if(confirm('Reboot device now?')) hit('/reboot');}
 function refreshStatusDump(){if(state) $('statusDump').textContent=JSON.stringify(state,null,2);}
-function saveNode(){const p=new URLSearchParams(); const n=$('nodeName').value.trim(),s=$('apSsid').value.trim(),pw=$('apPass').value; if(n) p.append('name',n); if(s) p.append('ap_ssid',s); if(pw) p.append('ap_pass',pw); if(!p.toString()) return alert('Nothing to save'); hit('/node/set?'+p).then(()=>setTimeout(()=>hit('/reboot'),250));}
-function wifiSet(){const s=$('staSsid').value.trim(); if(!s) return alert('Enter SSID'); $('scanState').textContent='Connecting…'; hit('/wifi/set?ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent($('staPass').value));}
+function saveNode(){const p=new URLSearchParams(); const n=$('nodeName').value.trim(),s=$('apSsid').value.trim(),pw=$('apPass').value; if(n) p.append('name',n); if(s) p.append('ap_ssid',s); if(pw) p.append('ap_pass',pw); if(!p.toString()) return alert('Nothing to save'); hit('/node/set',p).then(()=>setTimeout(()=>hit('/reboot'),250));}
+function wifiSet(){const s=$('staSsid').value.trim(); if(!s) return alert('Enter SSID'); $('scanState').textContent='Connecting…'; hit('/wifi/set',new URLSearchParams({ssid:s,pass:$('staPass').value}));}
 function wifiForget(){hit('/wifi/forget'); $('staSsid').value=''; $('staPass').value=''; $('scanState').textContent='';}
 async function wifiScan(){if(scanTimer){clearInterval(scanTimer); scanTimer=null;} $('scanState').textContent='Scanning…'; $('networks').innerHTML=''; let fails=0; const poll=async()=>{const r=await qs('/wifi/scan'); if(!r){if(++fails<4) return false; $('scanState').textContent='Scan failed'; showNetworks([]); return true;} fails=0; if(r.scanning) return false; $('scanState').textContent=r.error?('Scan '+r.error):''; showNetworks(r.networks||[]); return true;}; if(await poll()) return; scanTimer=setInterval(async()=>{if(await poll()){clearInterval(scanTimer); scanTimer=null;}},1200);}
 function showNetworks(nets){$('networks').innerHTML=nets.length?nets.map(n=>`<button class="net" onclick="$('staSsid').value='${escJsSq(n.ssid)}'">${escHtml(n.ssid||'(hidden)')} ${n.secure?'LOCK':''} ${n.rssi}dBm</button>`).join(''):'<span class="footerNote">No 2.4GHz networks found</span>';}
@@ -2013,7 +2016,7 @@ async function loadManifest(){const r=await qs('/node/manifest'); if(r) $('manif
 function openManifest(){window.open('/node/manifest','_blank');}
 function peerCmd(ip,path){hit('/peer/cmd?ip='+encodeURIComponent(ip)+'&path='+encodeURIComponent(path));}
 async function loadPeers(){const r=await qs('/peers');if(!r){$('peerCount').textContent='error';return;}const c=r.count||0;$('peerCount').textContent=c?c+(c===1?' peer found':' peers found'):'none found';$('peerList').innerHTML=c?r.peers.map(p=>`<div style="padding:8px;border:1px solid var(--di-cyan-border);margin-bottom:6px"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px"><div><b>${escHtml(p.name)}</b> <span class="footerNote">${escHtml(p.ip)}</span><br><span class="footerNote">${escHtml(p.mdns)||''} &bull; <span style="font-family:monospace;font-size:.65rem">${escHtml(p.mac)||''}</span> &bull; ${p.age_s}s ago</span></div><button onclick="window.open('http://${escJsSq(p.ip)}','_blank')" style="min-height:28px;padding:3px 10px;font-size:.7rem;flex:0 0 auto">Open UI</button></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px"><button onclick="peerCmd('${escJsSq(p.ip)}','/blackout')" style="min-height:32px;font-size:.72rem" class="bad">Blackout</button><button onclick="peerCmd('${escJsSq(p.ip)}','/full')" style="min-height:32px;font-size:.72rem" class="good">Full</button><button onclick="targetPeer('${escJsSq(p.ip)}')" style="min-height:32px;font-size:.72rem">Link AO</button></div></div>`).join(''):'<span class="footerNote">No vizzz.di nodes found. Devices must share a WiFi network. Retry after 30s.</span>';}
-function targetPeer(ip){if(!confirm('Route Art-Net OUT directly to '+ip+'? (enables unicast, overrides broadcast)'))return;fetch('/artout/peer?ip='+encodeURIComponent(ip),{cache:'no-store'}).then(()=>fetch('/artout/set?en=1',{cache:'no-store'}));artOutEnabled=true;$('aoBtn').textContent='Art OUT ON';$('aoTarget').textContent=ip;}
+function targetPeer(ip){if(!confirm('Route Art-Net OUT directly to '+ip+'? (enables unicast, overrides broadcast)'))return;hit('/artout/peer?ip='+encodeURIComponent(ip)).then(()=>hit('/artout/set?en=1'));artOutEnabled=true;$('aoBtn').textContent='Art OUT ON';$('aoTarget').textContent=ip;}
 function setMode(m){$('modeSel').value=String(m);hit('/mode/set?m='+m);}
 function vjPanic(){hit('/panic');updateMasterDisplays(255);setTimeout(refreshVj,300);}
 function setBpmLabel(v){$('bpmLabel').textContent=v+' bpm';}
@@ -2579,10 +2582,79 @@ static String wifiScanJSON() {
   return s + "]}";
 }
 
+// ── Route gate (audit 2026-10-15 2-H2) ───────────────────────────────────────
+// Every HTTP route is registered through route(), which looks the path up in
+// vizzz::kRoutes (include/vizzz_core.h) and applies its kind's method and
+// header rule before the handler runs. A path missing from the table is not
+// served (and logged), so the table, the manifest and the server cannot drift.
+static bool routeRegistered[vizzz::kRouteCount] = {};
+
+static vizzz::HttpMethod httpMethodOf(AsyncWebServerRequest* r) {
+  switch (r->method()) {
+    case HTTP_GET:     return vizzz::HttpMethod::Get;
+    case HTTP_POST:    return vizzz::HttpMethod::Post;
+    case HTTP_OPTIONS: return vizzz::HttpMethod::Options;
+    default:           return vizzz::HttpMethod::Other;
+  }
+}
+
+static void sendGateRefusal(AsyncWebServerRequest* r, vizzz::RouteKind kind, vizzz::Gate g) {
+  AsyncWebServerResponse* res = nullptr;
+  char body[96];
+  switch (g) {
+    case vizzz::Gate::Preflight:
+      res = r->beginResponse(204);
+      res->addHeader("Access-Control-Allow-Origin", "*");
+      res->addHeader("Access-Control-Allow-Methods", "GET");
+      res->addHeader("Access-Control-Max-Age", "600");
+      break;
+    case vizzz::Gate::PreflightDenied:
+      res = r->beginResponse(403, "application/json", "{\"error\":\"no cross-origin access\"}");
+      break;
+    case vizzz::Gate::NotAllowed:
+      snprintf(body, sizeof(body), "{\"error\":\"method not allowed\",\"allow\":\"%s\"}",
+               vizzz::routeMethods(kind));
+      res = r->beginResponse(405, "application/json", body);
+      res->addHeader("Allow", vizzz::routeMethods(kind));
+      break;
+    case vizzz::Gate::NeedHeader:
+      res = r->beginResponse(403, "application/json",
+                             "{\"error\":\"console route: send POST with X-Vizzz-Console: 1\"}");
+      break;
+    default:
+      return;
+  }
+  r->send(res);
+}
+
+static void route(const char* path, ArRequestHandlerFunction fn) {
+  int i = vizzz::findRoute(path);
+  if (i < 0) {
+    Serial.printf("[web] route %s is not in vizzz::kRoutes, not served\n", path);
+    return;
+  }
+  routeRegistered[i] = true;
+  const vizzz::RouteKind kind = vizzz::kRoutes[i].kind;
+  server.on(path, HTTP_ANY, [kind, fn](AsyncWebServerRequest* r){
+    bool hdr = r->hasHeader(vizzz::CONSOLE_HEADER) &&
+               vizzz::isConsoleHeaderValue(r->header(vizzz::CONSOLE_HEADER).c_str());
+    vizzz::Gate g = vizzz::gateRequest(kind, httpMethodOf(r), hdr);
+    if (g != vizzz::Gate::Allow) { sendGateRefusal(r, kind, g); return; }
+    fn(r);
+  });
+}
+
 // ── Web routes ────────────────────────────────────────────────────────────────
 static void setupWeb() {
   // WebSocket
   ws.onEvent([](AsyncWebSocket*, AsyncWebSocketClient*, AwsEventType, void*, uint8_t*, size_t){});
+  // 2-L7: the status stream goes to the node's own console (or a tool that
+  // sends no Origin), not to any page open in the operator's browser.
+  ws.handleHandshake([](AsyncWebServerRequest* r){
+    String origin = r->hasHeader("Origin") ? r->header("Origin") : String();
+    String host = r->host();
+    return vizzz::wsOriginAllowed(origin.c_str(), host.c_str());
+  });
   server.addHandler(&ws);
 
   auto sendApp = [](AsyncWebServerRequest* r){
@@ -2591,22 +2663,22 @@ static void setupWeb() {
     res->addHeader("Cache-Control", "no-store");
     r->send(res);
   };
-  server.on("/",            HTTP_GET, sendApp);
-  server.on("/control",     HTTP_GET, sendApp);
-  server.on("/patch",       HTTP_GET, sendApp);
-  server.on("/scenes",      HTTP_GET, sendApp);
-  server.on("/network",     HTTP_GET, sendApp);
-  server.on("/system",      HTTP_GET, sendApp);
-  server.on("/performance", HTTP_GET, sendApp);
-  server.on("/vj",          HTTP_GET, sendApp);
+  route("/", sendApp);
+  route("/control", sendApp);
+  route("/patch", sendApp);
+  route("/scenes", sendApp);
+  route("/network", sendApp);
+  route("/system", sendApp);
+  route("/performance", sendApp);
+  route("/vj", sendApp);
 
-  server.on("/status",  HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, statusJSON()); });
-  server.on("/monitor", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, monitorJSON()); });
-  server.on("/safety/status", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, safetyJSON()); });
-  server.on("/node/manifest", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, nodeManifestJSON()); });
-  server.on("/manifest.json", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, nodeManifestJSON()); });
+  route("/status", [](AsyncWebServerRequest* r){ sendJSON(r, statusJSON()); });
+  route("/monitor", [](AsyncWebServerRequest* r){ sendJSON(r, monitorJSON()); });
+  route("/safety/status", [](AsyncWebServerRequest* r){ sendJSON(r, safetyJSON()); });
+  route("/node/manifest", [](AsyncWebServerRequest* r){ sendJSON(r, nodeManifestJSON()); });
+  route("/manifest.json", [](AsyncWebServerRequest* r){ sendJSON(r, nodeManifestJSON()); });
 
-  server.on("/page", HTTP_GET, [](AsyncWebServerRequest* r){
+  route("/page", [](AsyncWebServerRequest* r){
     uint16_t p = r->hasArg("i")
       ? uint16_t(constrain(r->arg("i").toInt(), 0, PAGE_COUNT - 1)) : 0;
     sendJSON(r, pageJSON(p));
@@ -2624,8 +2696,7 @@ static void setupWeb() {
     xSemaphoreGive(gLock);
     r->send(204);
   };
-  server.on("/set", HTTP_GET, routeSet);
-  server.on("/set", HTTP_POST, routeSet);
+  route("/set", routeSet);
 
   auto routeBlackout = [](AsyncWebServerRequest* r){
     // A blackout must never be dropped. If the mutex is busy, defer to loop()
@@ -2640,8 +2711,7 @@ static void setupWeb() {
     xSemaphoreGive(gLock);
     r->send(204);
   };
-  server.on("/blackout", HTTP_GET, routeBlackout);
-  server.on("/blackout", HTTP_POST, routeBlackout);
+  route("/blackout", routeBlackout);
 
   // One atomic panic. The old UI fired /master?v=255 and /blackout as two
   // unordered fetches, so if the blackout lost the race for the mutex the
@@ -2650,8 +2720,7 @@ static void setupWeb() {
     pendingPanic = true;
     r->send(204);
   };
-  server.on("/panic", HTTP_GET, routePanic);
-  server.on("/panic", HTTP_POST, routePanic);
+  route("/panic", routePanic);
 
   auto routeFull = [](AsyncWebServerRequest* r){
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
@@ -2663,8 +2732,7 @@ static void setupWeb() {
     xSemaphoreGive(gLock);
     r->send(204);
   };
-  server.on("/full", HTTP_GET, routeFull);
-  server.on("/full", HTTP_POST, routeFull);
+  route("/full", routeFull);
 
   auto routeMaster = [](AsyncWebServerRequest* r){
     if (r->hasArg("v")) {
@@ -2677,8 +2745,7 @@ static void setupWeb() {
     }
     r->send(204);
   };
-  server.on("/master", HTTP_GET, routeMaster);
-  server.on("/master", HTTP_POST, routeMaster);
+  route("/master", routeMaster);
 
   auto routeArtNetSet = [](AsyncWebServerRequest* r){
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
@@ -2695,8 +2762,7 @@ static void setupWeb() {
     pendingSockRefresh = true;
     r->send(204);
   };
-  server.on("/artnet/set", HTTP_GET, routeArtNetSet);
-  server.on("/artnet/set", HTTP_POST, routeArtNetSet);
+  route("/artnet/set", routeArtNetSet);
 
   auto routeArtOutSet = [](AsyncWebServerRequest* r){
     if (r->hasArg("en")) {
@@ -2709,8 +2775,7 @@ static void setupWeb() {
     }
     saveConfig(); r->send(204);
   };
-  server.on("/artout/set", HTTP_GET, routeArtOutSet);
-  server.on("/artout/set", HTTP_POST, routeArtOutSet);
+  route("/artout/set", routeArtOutSet);
 
   auto routeModeSet = [](AsyncWebServerRequest* r){
     if (!r->hasArg("m")) { r->send(400, "text/plain", "missing arg"); return; }
@@ -2722,8 +2787,7 @@ static void setupWeb() {
     xSemaphoreGive(gLock);
     saveConfig(); r->send(204);
   };
-  server.on("/mode/set", HTTP_GET, routeModeSet);
-  server.on("/mode/set", HTTP_POST, routeModeSet);
+  route("/mode/set", routeModeSet);
 
   auto routeModeFallback = [](AsyncWebServerRequest* r){
     if (!r->hasArg("en")) { r->send(400, "text/plain", "missing arg"); return; }
@@ -2736,8 +2800,7 @@ static void setupWeb() {
     saveConfig();
     r->send(204);
   };
-  server.on("/mode/fallback", HTTP_GET, routeModeFallback);
-  server.on("/mode/fallback", HTTP_POST, routeModeFallback);
+  route("/mode/fallback", routeModeFallback);
 
   auto routeNetModeSet = [](AsyncWebServerRequest* r){
     if (!r->hasArg("m")) { r->send(400, "text/plain", "missing arg"); return; }
@@ -2751,8 +2814,7 @@ static void setupWeb() {
     r->send(200, "text/plain", "ok,rebooting");
     pendingReboot = true;
   };
-  server.on("/netmode/set", HTTP_GET, routeNetModeSet);
-  server.on("/netmode/set", HTTP_POST, routeNetModeSet);
+  route("/netmode/set", routeNetModeSet);
 
   auto routeWebSet = [](AsyncWebServerRequest* r){
     if (!r->hasArg("en")) { r->send(400, "text/plain", "missing arg"); return; }
@@ -2766,8 +2828,7 @@ static void setupWeb() {
     r->send(200, "text/plain", "ok,rebooting");
     pendingReboot = true;
   };
-  server.on("/web/set", HTTP_GET, routeWebSet);
-  server.on("/web/set", HTTP_POST, routeWebSet);
+  route("/web/set", routeWebSet);
 
   auto routeSafetySet = [](AsyncWebServerRequest* r){
     if (!r->hasArg("burn")) { r->send(400, "text/plain", "missing burn"); return; }
@@ -2780,8 +2841,7 @@ static void setupWeb() {
     saveConfig();
     r->send(204);
   };
-  server.on("/safety/set", HTTP_GET, routeSafetySet);
-  server.on("/safety/set", HTTP_POST, routeSafetySet);
+  route("/safety/set", routeSafetySet);
 
   auto routeSceneSave = [](AsyncWebServerRequest* r){
     if (!r->hasArg("n")) { r->send(400, "text/plain", "missing arg"); return; }
@@ -2796,8 +2856,7 @@ static void setupWeb() {
     saveScene(n, snap);
     r->send(204);
   };
-  server.on("/scene/save", HTTP_GET, routeSceneSave);
-  server.on("/scene/save", HTTP_POST, routeSceneSave);
+  route("/scene/save", routeSceneSave);
 
   auto routeSceneRecall = [](AsyncWebServerRequest* r){
     if (!r->hasArg("n")) { r->send(400, "text/plain", "missing arg"); return; }
@@ -2813,10 +2872,9 @@ static void setupWeb() {
     xSemaphoreGive(gLock);
     r->send(204);
   };
-  server.on("/scene/recall", HTTP_GET, routeSceneRecall);
-  server.on("/scene/recall", HTTP_POST, routeSceneRecall);
+  route("/scene/recall", routeSceneRecall);
 
-  server.on("/wifi/scan",   HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, wifiScanJSON()); });
+  route("/wifi/scan", [](AsyncWebServerRequest* r){ sendJSON(r, wifiScanJSON()); });
 
   auto routeWifiSet = [](AsyncWebServerRequest* r){
     if (!r->hasArg("ssid")) { r->send(400, "text/plain", "missing ssid"); return; }
@@ -2832,8 +2890,7 @@ static void setupWeb() {
     pendingWifiReconnect = true;
     r->send(204);
   };
-  server.on("/wifi/set", HTTP_GET, routeWifiSet);
-  server.on("/wifi/set", HTTP_POST, routeWifiSet);
+  route("/wifi/set", routeWifiSet);
 
   auto routeWifiForget = [](AsyncWebServerRequest* r){
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
@@ -2846,8 +2903,7 @@ static void setupWeb() {
     pendingWifiForget = true;
     r->send(204);
   };
-  server.on("/wifi/forget", HTTP_GET, routeWifiForget);
-  server.on("/wifi/forget", HTTP_POST, routeWifiForget);
+  route("/wifi/forget", routeWifiForget);
 
   auto routeNodeSet = [](AsyncWebServerRequest* r){
     // Validate before changing anything (1-H1): a WPA2 pass-phrase is 8-63
@@ -2879,23 +2935,21 @@ static void setupWeb() {
     pendingMdnsRestart = true;  // MDNS.end()/begin() and mdnsName belong to loop()
     r->send(204);
   };
-  server.on("/node/set", HTTP_GET, routeNodeSet);
-  server.on("/node/set", HTTP_POST, routeNodeSet);
+  route("/node/set", routeNodeSet);
 
   auto routeReboot = [](AsyncWebServerRequest* r){
     r->send(200, "text/plain", "Rebooting…");
     pendingReboot = true;
   };
-  server.on("/reboot", HTTP_GET, routeReboot);
-  server.on("/reboot", HTTP_POST, routeReboot);
+  route("/reboot", routeReboot);
 
   // Factory reset: erase NVS and reboot. Restores MAC-derived SSID, default password.
-  server.on("/factory-reset", HTTP_POST, [](AsyncWebServerRequest* r){
+  route("/factory-reset", [](AsyncWebServerRequest* r){
     r->send(200, "text/plain", "Factory reset — rebooting with defaults…");
     pendingFactoryReset = true;
   });
 
-  server.on("/discover", HTTP_GET, [](AsyncWebServerRequest* r){
+  route("/discover", [](AsyncWebServerRequest* r){
     char buf[256];
     IdentitySnap id;
     if (!snapIdentity(id)) { r->send(503, "text/plain", "busy"); return; }
@@ -2906,13 +2960,19 @@ static void setupWeb() {
     snprintf(buf, sizeof(buf),
       "{\"name\":\"%s\",\"ip\":\"%s\",\"ap_ip\":\"%s\",\"ap_ssid\":\"%s\",\"mdns\":\"%s.local\",\"mac\":\"%s\",\"product\":\"vizzz.di\"}",
       eName, ipStr(WiFi.localIP()).c_str(), apIp, eApSsid, id.mdns, mac.c_str());
-    r->send(200, "application/json", buf);
-    pendingBeacon = true;  // discoverUdp belongs to loop(); never send from this task
+    sendJSON(r, buf);  // a read: no side effect (2-L5); the beacon is POST /discover/announce
   });
 
-  server.on("/peers", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, peersJSON()); });
+  // Ask every node on the LAN to answer now instead of within 30 s. Sends one
+  // UDP beacon from loop() (discoverUdp belongs to loop(); never this task).
+  route("/discover/announce", [](AsyncWebServerRequest* r){
+    pendingBeacon = true;
+    r->send(204);
+  });
 
-  server.on("/artout/peer", HTTP_GET, [](AsyncWebServerRequest* r){
+  route("/peers", [](AsyncWebServerRequest* r){ sendJSON(r, peersJSON()); });
+
+  route("/artout/peer", [](AsyncWebServerRequest* r){
     // Written here, read by loop() at DMX rate: stored as one atomic word, so
     // there is no String buffer to free under the reader (1-C2). Empty or
     // missing ip clears the peer (broadcast); anything but a dotted quad is 400.
@@ -2927,9 +2987,9 @@ static void setupWeb() {
     r->send(204);
   });
 
-  server.on("/groups", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, groupsJSON()); });
+  route("/groups", [](AsyncWebServerRequest* r){ sendJSON(r, groupsJSON()); });
 
-  server.on("/fixtures", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, fixturesJSON()); });
+  route("/fixtures", [](AsyncWebServerRequest* r){ sendJSON(r, fixturesJSON()); });
 
   auto routeFixtureSet = [](AsyncWebServerRequest* r){
     if (!r->hasArg("i")) { r->send(400, "text/plain", "missing i"); return; }
@@ -2947,8 +3007,7 @@ static void setupWeb() {
     saveFixtures();
     r->send(204);
   };
-  server.on("/fixture/set", HTTP_GET, routeFixtureSet);
-  server.on("/fixture/set", HTTP_POST, routeFixtureSet);
+  route("/fixture/set", routeFixtureSet);
 
   auto routeGroupSet = [](AsyncWebServerRequest* r){
     if (!r->hasArg("g")) { r->send(400, "text/plain", "missing g"); return; }
@@ -2965,8 +3024,7 @@ static void setupWeb() {
     saveVj();
     r->send(204);
   };
-  server.on("/group/set", HTTP_GET, routeGroupSet);
-  server.on("/group/set", HTTP_POST, routeGroupSet);
+  route("/group/set", routeGroupSet);
 
   auto routeGroupApply = [](AsyncWebServerRequest* r){
     if (!r->hasArg("g") || !r->hasArg("v")) { r->send(400, "text/plain", "missing arg"); return; }
@@ -2984,10 +3042,9 @@ static void setupWeb() {
     xSemaphoreGive(gLock);
     r->send(204);
   };
-  server.on("/group/apply", HTTP_GET, routeGroupApply);
-  server.on("/group/apply", HTTP_POST, routeGroupApply);
+  route("/group/apply", routeGroupApply);
 
-  server.on("/cue/status", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, cueJSON()); });
+  route("/cue/status", [](AsyncWebServerRequest* r){ sendJSON(r, cueJSON()); });
 
   auto routeCueCount = [](AsyncWebServerRequest* r){
     if (!r->hasArg("c")) { r->send(400, "text/plain", "missing c"); return; }
@@ -2998,8 +3055,7 @@ static void setupWeb() {
     saveVj();
     r->send(204);
   };
-  server.on("/cue/count", HTTP_GET, routeCueCount);
-  server.on("/cue/count", HTTP_POST, routeCueCount);
+  route("/cue/count", routeCueCount);
 
   auto routeCueSet = [](AsyncWebServerRequest* r){
     if (!r->hasArg("i")) { r->send(400, "text/plain", "missing i"); return; }
@@ -3016,8 +3072,7 @@ static void setupWeb() {
     saveVj();
     r->send(204);
   };
-  server.on("/cue/set", HTTP_GET, routeCueSet);
-  server.on("/cue/set", HTTP_POST, routeCueSet);
+  route("/cue/set", routeCueSet);
 
   auto routeCueRun = [](AsyncWebServerRequest* r){
     if (!r->hasArg("en")) { r->send(400, "text/plain", "missing en"); return; }
@@ -3033,8 +3088,7 @@ static void setupWeb() {
     xSemaphoreGive(gLock);
     r->send(204);
   };
-  server.on("/cue/run", HTTP_GET, routeCueRun);
-  server.on("/cue/run", HTTP_POST, routeCueRun);
+  route("/cue/run", routeCueRun);
 
   auto routeCueNext = [](AsyncWebServerRequest* r){
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
@@ -3045,10 +3099,9 @@ static void setupWeb() {
     triggerCueStep(next);
     r->send(204);
   };
-  server.on("/cue/next", HTTP_GET, routeCueNext);
-  server.on("/cue/next", HTTP_POST, routeCueNext);
+  route("/cue/next", routeCueNext);
 
-  server.on("/fx/status", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, fxJSON()); });
+  route("/fx/status", [](AsyncWebServerRequest* r){ sendJSON(r, fxJSON()); });
 
   auto routeFxSet = [](AsyncWebServerRequest* r){
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
@@ -3072,8 +3125,7 @@ static void setupWeb() {
     xSemaphoreGive(gLock);
     r->send(204);
   };
-  server.on("/fx/set", HTTP_GET, routeFxSet);
-  server.on("/fx/set", HTTP_POST, routeFxSet);
+  route("/fx/set", routeFxSet);
 
   auto routeFxTap = [](AsyncWebServerRequest* r){
     uint32_t now = millis();
@@ -3093,8 +3145,7 @@ static void setupWeb() {
     xSemaphoreGive(gLock);
     r->send(204);
   };
-  server.on("/fx/tap", HTTP_GET, routeFxTap);
-  server.on("/fx/tap", HTTP_POST, routeFxTap);
+  route("/fx/tap", routeFxTap);
 
   auto routeColorSet = [](AsyncWebServerRequest* r){
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
@@ -3106,11 +3157,10 @@ static void setupWeb() {
     xSemaphoreGive(gLock);
     r->send(204);
   };
-  server.on("/color/set", HTTP_GET, routeColorSet);
-  server.on("/color/set", HTTP_POST, routeColorSet);
+  route("/color/set", routeColorSet);
 
   // ── Peer proxy (forward a command to one specific known peer) ────────────────
-  server.on("/peer/cmd", HTTP_GET, [](AsyncWebServerRequest* r){
+  route("/peer/cmd", [](AsyncWebServerRequest* r){
     if (!r->hasArg("ip") || !r->hasArg("path")) { r->send(400, "text/plain", "missing arg"); return; }
     String ip   = r->arg("ip");
     String path = r->arg("path");
@@ -3143,8 +3193,7 @@ static void setupWeb() {
     if (!enqueueBcast("/blackout")) { r->send(503, "text/plain", "local blackout done; fleet queue full"); return; }
     r->send(local ? 204 : 202);
   };
-  server.on("/net/blackout", HTTP_GET, routeNetBlackout);
-  server.on("/net/blackout", HTTP_POST, routeNetBlackout);
+  route("/net/blackout", routeNetBlackout);
 
   auto routeNetFull = [](AsyncWebServerRequest* r){
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
@@ -3157,8 +3206,7 @@ static void setupWeb() {
     if (!enqueueBcast("/full")) { r->send(503, "text/plain", "queue full"); return; }
     r->send(204);
   };
-  server.on("/net/full", HTTP_GET, routeNetFull);
-  server.on("/net/full", HTTP_POST, routeNetFull);
+  route("/net/full", routeNetFull);
 
   auto routeNetMaster = [](AsyncWebServerRequest* r){
     if (r->hasArg("v")) {
@@ -3174,8 +3222,7 @@ static void setupWeb() {
     if (!enqueueBcast(path)) { r->send(503, "text/plain", "queue full"); return; }
     r->send(204);
   };
-  server.on("/net/master", HTTP_GET, routeNetMaster);
-  server.on("/net/master", HTTP_POST, routeNetMaster);
+  route("/net/master", routeNetMaster);
 
   auto routeNetSceneRecall = [](AsyncWebServerRequest* r){
     if (!r->hasArg("n")) { r->send(400, "text/plain", "missing n"); return; }
@@ -3194,8 +3241,11 @@ static void setupWeb() {
     if (!enqueueBcast(path)) { r->send(503, "text/plain", "queue full"); return; }
     r->send(204);
   };
-  server.on("/net/scene/recall", HTTP_GET, routeNetSceneRecall);
-  server.on("/net/scene/recall", HTTP_POST, routeNetSceneRecall);
+  route("/net/scene/recall", routeNetSceneRecall);
+
+  for (size_t i = 0; i < vizzz::kRouteCount; i++)
+    if (!routeRegistered[i])
+      Serial.printf("[web] route table entry %s has no handler\n", vizzz::kRoutes[i].path);
 
   server.onNotFound([](AsyncWebServerRequest* r){ r->send(404, "text/plain", "Not found"); });
   server.begin();

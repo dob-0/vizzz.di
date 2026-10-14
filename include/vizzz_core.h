@@ -526,4 +526,122 @@ inline bool oscIsBundle(const uint8_t* p, size_t n) {
   return n >= 16 && memcmp(p, tag, 8) == 0;
 }
 
+// ── HTTP route table (audit 2026-10-15 2-H2, 2-M4, 2-M7) ─────────────────────
+// ONE list of every HTTP route. setupWeb() registers only through it and the
+// manifest is generated from it, so neither can drift from the other
+// (tools/check_routes.py diffs it against main.cpp and README.md).
+//
+// Kinds (method rules after OWASP CSRF Prevention Cheat Sheet, "custom request
+// headers" and "use of SameSite"; RFC 9110 §9.2.1 safe methods):
+//   GetLocal  GET only, no Access-Control-Allow-Origin: console pages and
+//             /wifi/scan (nearby network names stay on the node's own origin).
+//   GetShared GET only, ACAO "*": JSON reads other origins may read (di reads
+//             /status cross-origin).
+//   Operator  GET and POST, no header, no ACAO: what di.iiii and phones send
+//             as no-cors simple requests (/set, /master, /blackout, ...).
+//             A cross-site page CAN fire these. Kept on purpose: they are
+//             the show controls di needs; a real login is the owner's call.
+//   Console   POST only and the header X-Vizzz-Console: 1. A cross-site page
+//             cannot add a custom header without a CORS preflight, and the
+//             node answers every preflight on these routes with 403 and no
+//             ACAO, so the browser never sends the request.
+enum class RouteKind : uint8_t { GetLocal, GetShared, Operator, Console };
+
+struct RouteSpec {
+  const char* path;
+  RouteKind kind;
+};
+
+constexpr const char* CONSOLE_HEADER = "X-Vizzz-Console";
+
+static constexpr RouteSpec kRoutes[] = {
+  {"/", RouteKind::GetLocal}, {"/control", RouteKind::GetLocal},
+  {"/patch", RouteKind::GetLocal}, {"/scenes", RouteKind::GetLocal},
+  {"/network", RouteKind::GetLocal}, {"/system", RouteKind::GetLocal},
+  {"/performance", RouteKind::GetLocal}, {"/vj", RouteKind::GetLocal},
+  {"/wifi/scan", RouteKind::GetLocal},
+
+  {"/status", RouteKind::GetShared}, {"/monitor", RouteKind::GetShared},
+  {"/safety/status", RouteKind::GetShared}, {"/node/manifest", RouteKind::GetShared},
+  {"/manifest.json", RouteKind::GetShared}, {"/page", RouteKind::GetShared},
+  {"/discover", RouteKind::GetShared}, {"/peers", RouteKind::GetShared},
+  {"/groups", RouteKind::GetShared}, {"/fixtures", RouteKind::GetShared},
+  {"/cue/status", RouteKind::GetShared}, {"/fx/status", RouteKind::GetShared},
+
+  {"/set", RouteKind::Operator}, {"/master", RouteKind::Operator},
+  {"/blackout", RouteKind::Operator}, {"/full", RouteKind::Operator},
+  {"/scene/recall", RouteKind::Operator}, {"/cue/run", RouteKind::Operator},
+  {"/cue/next", RouteKind::Operator}, {"/fx/tap", RouteKind::Operator},
+
+  {"/panic", RouteKind::Console}, {"/reboot", RouteKind::Console},
+  {"/factory-reset", RouteKind::Console}, {"/wifi/set", RouteKind::Console},
+  {"/wifi/forget", RouteKind::Console}, {"/netmode/set", RouteKind::Console},
+  {"/node/set", RouteKind::Console}, {"/web/set", RouteKind::Console},
+  {"/artnet/set", RouteKind::Console}, {"/artout/set", RouteKind::Console},
+  {"/artout/peer", RouteKind::Console}, {"/mode/set", RouteKind::Console},
+  {"/mode/fallback", RouteKind::Console}, {"/safety/set", RouteKind::Console},
+  {"/scene/save", RouteKind::Console}, {"/fixture/set", RouteKind::Console},
+  {"/group/set", RouteKind::Console}, {"/group/apply", RouteKind::Console},
+  {"/cue/count", RouteKind::Console}, {"/cue/set", RouteKind::Console},
+  {"/fx/set", RouteKind::Console}, {"/color/set", RouteKind::Console},
+  {"/peer/cmd", RouteKind::Console}, {"/discover/announce", RouteKind::Console},
+  {"/net/blackout", RouteKind::Console}, {"/net/full", RouteKind::Console},
+  {"/net/master", RouteKind::Console}, {"/net/scene/recall", RouteKind::Console},
+};
+constexpr size_t kRouteCount = sizeof(kRoutes) / sizeof(kRoutes[0]);
+
+inline int findRoute(const char* path) {
+  if (!path) return -1;
+  for (size_t i = 0; i < kRouteCount; i++)
+    if (strcmp(kRoutes[i].path, path) == 0) return int(i);
+  return -1;
+}
+
+inline const char* routeMethods(RouteKind k) {
+  switch (k) {
+    case RouteKind::Operator: return "GET, POST";
+    case RouteKind::Console:  return "POST";
+    default:                  return "GET";
+  }
+}
+
+inline bool routeSendsAcao(RouteKind k) { return k == RouteKind::GetShared; }
+
+enum class HttpMethod : uint8_t { Get, Post, Options, Other };
+enum class Gate : uint8_t {
+  Allow,            // run the handler
+  Preflight,        // 204 + ACAO (GetShared only)
+  PreflightDenied,  // 403, no ACAO: the browser drops the real request
+  NotAllowed,       // 405 + Allow: routeMethods(kind)
+  NeedHeader,       // 403: POST without X-Vizzz-Console: 1
+};
+
+inline Gate gateRequest(RouteKind k, HttpMethod m, bool consoleHeader) {
+  if (m == HttpMethod::Options)
+    return k == RouteKind::GetShared ? Gate::Preflight : Gate::PreflightDenied;
+  switch (k) {
+    case RouteKind::GetLocal:
+    case RouteKind::GetShared:
+      return m == HttpMethod::Get ? Gate::Allow : Gate::NotAllowed;
+    case RouteKind::Operator:
+      return (m == HttpMethod::Get || m == HttpMethod::Post) ? Gate::Allow : Gate::NotAllowed;
+    case RouteKind::Console:
+      if (m != HttpMethod::Post) return Gate::NotAllowed;
+      return consoleHeader ? Gate::Allow : Gate::NeedHeader;
+  }
+  return Gate::NotAllowed;
+}
+
+// The header must be exactly "1": an empty or other value is not the console.
+inline bool isConsoleHeaderValue(const char* v) { return v && v[0] == '1' && v[1] == 0; }
+
+// WebSocket Origin rule (2-L7): no Origin (curl, tools) or Origin equal to
+// "http://" + Host (the console itself). Any other page is refused.
+inline bool wsOriginAllowed(const char* origin, const char* host) {
+  if (!origin || !*origin) return true;
+  if (!host || !*host) return false;
+  if (strncmp(origin, "http://", 7) != 0) return false;
+  return strcmp(origin + 7, host) == 0;
+}
+
 }  // namespace vizzz
