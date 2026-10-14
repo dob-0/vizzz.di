@@ -85,6 +85,24 @@ real `APP_HTML` from `src/main.cpp` against an in-memory model of the firmware:
 python3 tools/simulate_node.py --port 8088   # then open http://127.0.0.1:8088
 ```
 
+## Desk UI in flash (build step V1)
+
+di.iiii's desk UI files (`docs/DI_DESK_UI_PLAN.md`) are pinned, never edited here. `desk_ui.lock` names the di.iiii
+commit, the files, and the sha256 of each raw file and of its `gzip -9` output (mtime 0, so reruns are byte-identical).
+`include/desk_ui_gz.h` is generated from it and committed; nothing serves it yet (that is V2).
+
+```bash
+python3 tools/fetch_desk_ui.py                      # fetch at the locked commit, verify sha256, write the header
+python3 tools/fetch_desk_ui.py --from ../di.iiii    # same, from a local checkout (its files must match the lock)
+python3 tools/fetch_desk_ui.py --check              # fail when the committed header differs from a fresh one
+python3 tools/fetch_desk_ui.py --update --commit <sha> [--branch <name>]   # bump the pin (a deliberate PR)
+python3 tools/flash_gate.py esp32dev                # used/free of the app slot; exit 1 under 128 KB free
+```
+
+`pio run -e esp32dev` runs the flash gate after linking (`MIN_FREE_BYTES` at the top of `tools/flash_gate.py`;
+slot = smallest `app` partition of `board_build.partitions`, default two OTA slots of 1,310,720 B).
+The native tests check the header's sizes and etags against the lock.
+
 ## Device Onboarding
 
 For multiple ESP nodes, handle one physical board at a time and track it by MAC.
