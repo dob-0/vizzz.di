@@ -928,14 +928,17 @@ static void initVjDefaults() {
   initFixtureDefaults();
 }
 
-static void triggerCueStep(uint8_t idx) {
+// Loads cue `idx` and starts its fade. Returns false (state untouched) when
+// the lock is busy, so the caller retries the SAME cue instead of skipping
+// one (1-L6). The step is never shorter than CUE_MIN_STEP_MS (1-M1).
+static bool triggerCueStep(uint8_t idx) {
   uint8_t scene = 0;
   uint32_t fade = 0;
   uint32_t dwell = 0;
-  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) return;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) return false;
   if (idx >= cueCount) {
     xSemaphoreGive(gLock);
-    return;
+    return true;  // nothing to run; not a retryable failure
   }
   scene = cueList[idx].scene;
   fade = cueList[idx].fadeMs;
@@ -945,27 +948,35 @@ static void triggerCueStep(uint8_t idx) {
   uint8_t target[MAX_CH];
   loadScene(scene, target);
 
-  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) return;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) return false;
   startFade_locked(target, fade);
+  cueIndex     = idx;
   cueStartedMs = millis();
-  cueStepMs    = fade + dwell;
+  cueStepMs    = vizzz::cueStepMs(fade, dwell);
   cueNextMs    = cueStartedMs + cueStepMs;  // display only; may wrap
   xSemaphoreGive(gLock);
+  return true;
 }
 
 static void tickCueEngine(uint32_t now) {
+  // After a failed step (busy lock) wait CUE_MIN_STEP_MS before retrying, so
+  // a contended lock cannot turn into an NVS read per loop() pass.
+  static uint32_t failedAtMs = 0;
+  static bool retryPending = false;
+  if (retryPending && !vizzz::cueStepDue(now, failedAtMs, vizzz::CUE_MIN_STEP_MS)) return;
   uint8_t nextIdx = 0;
   if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) != pdTRUE) return;
   // Delta comparison, not `now < cueNextMs`. The absolute form free-runs for
   // ~300 ms every 49.7 days when millis() wraps, firing a scene change per loop.
-  if (!cueRunning || cueCount == 0 || (uint32_t)(now - cueStartedMs) < cueStepMs) {
+  if (!cueRunning || cueCount == 0 ||
+      !vizzz::cueStepDue(now, cueStartedMs, vizzz::cueStepMs(0, cueStepMs))) {
     xSemaphoreGive(gLock);
     return;
   }
-  cueIndex = (cueIndex + 1) % cueCount;
-  nextIdx = cueIndex;
+  nextIdx = uint8_t((cueIndex + 1) % cueCount);
   xSemaphoreGive(gLock);
-  triggerCueStep(nextIdx);
+  retryPending = !triggerCueStep(nextIdx);  // cueIndex advances only on success
+  failedAtMs = now;
 }
 
 // One blackout for every route (/blackout, /net/blackout, the deferred one in
@@ -2878,8 +2889,12 @@ static void setupWeb() {
     uint8_t i = uint8_t(constrain(r->arg("i").toInt(), 0, MAX_CUES - 1));
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     if (r->hasArg("scene")) cueList[i].scene = uint8_t(constrain(r->arg("scene").toInt(), 0, SCENE_COUNT - 1));
-    if (r->hasArg("dwell")) cueList[i].dwellMs = uint32_t(max(0L, r->arg("dwell").toInt()));
-    if (r->hasArg("fade"))  cueList[i].fadeMs  = uint32_t(max(0L, r->arg("fade").toInt()));
+    // Clamped at set time to what loadVj() re-clamps on boot (1-L5), and the
+    // step to at least CUE_MIN_STEP_MS (1-M1): 0/0 re-fired a scene per loop().
+    if (r->hasArg("dwell")) cueList[i].dwellMs = vizzz::clampCueTimeMs(r->arg("dwell").toInt(), FADE_MAX_MS);
+    if (r->hasArg("fade"))  cueList[i].fadeMs  = vizzz::clampCueTimeMs(r->arg("fade").toInt(),  FADE_MAX_MS);
+    if (cueList[i].fadeMs + cueList[i].dwellMs < vizzz::CUE_MIN_STEP_MS)
+      cueList[i].dwellMs = vizzz::CUE_MIN_STEP_MS - cueList[i].fadeMs;
     xSemaphoreGive(gLock);
     saveVj();
     r->send(204);
