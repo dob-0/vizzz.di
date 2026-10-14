@@ -1053,6 +1053,106 @@ static bool oscReadFloat(const uint8_t* pkt, int n, int& off, float& out) {
   return true;
 }
 
+// One OSC message (address, type tags, first argument).
+static void handleOscMessage(const uint8_t* pkt, int n) {
+  if (n < 8) return;
+
+  int off = 0;
+  char addr[48], tags[16];
+  if (!oscReadPaddedString(pkt, n, off, addr, sizeof(addr))) return;
+  if (!oscReadPaddedString(pkt, n, off, tags, sizeof(tags))) return;
+  if (tags[0] != ',') return;
+  int32_t v = 0, lv = 0;  // v: index/flag value; lv: level value
+  if (tags[1] == 'i') {
+    if (!oscReadInt(pkt, n, off, v)) return;
+    lv = v;
+  } else if (tags[1] == 'f') {
+    float fv = 0.0f;
+    if (!oscReadFloat(pkt, n, off, fv)) return;
+    v = vizzz::oscFloatToInt(fv);     // audit 1-M7: no truncation, no UB on NaN/Inf
+    lv = vizzz::oscFloatToLevel(fv);  // 0.0-1.0 is a normalised fader
+  } else {
+    return;
+  }
+
+  if (strncmp(addr, "/ch/", 4) == 0) {
+    int ch = atoi(addr + 4);
+    if (ch >= 1 && ch <= MAX_CH) {
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+        webVals[ch - 1] = uint8_t(constrain(lv, 0, 255));
+        xSemaphoreGive(gLock);
+      }
+    }
+  } else if (strncmp(addr, "/group/", 7) == 0) {
+    int g = atoi(addr + 7);
+    if (g >= 0 && g < MAX_GROUPS) {
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+        if (!groups[g].enabled) {
+          xSemaphoreGive(gLock);
+          return;
+        }
+        uint16_t s = constrain(groups[g].start, 1, MAX_CH);
+        uint16_t e = constrain(groups[g].end, s, MAX_CH);
+        for (uint16_t ch = s; ch <= e; ch++) webVals[ch - 1] = uint8_t(constrain(lv, 0, 255));
+        xSemaphoreGive(gLock);
+      }
+    }
+  } else if (strcmp(addr, "/master") == 0) {
+    masterDimmer = uint8_t(constrain(lv, 0, 255));
+  } else if (strcmp(addr, "/scene/recall") == 0) {
+    uint8_t idx = uint8_t(constrain(v, 0, SCENE_COUNT - 1));
+    uint8_t target[MAX_CH];
+    loadScene(idx, target);
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
+      startFade_locked(target, 500);
+      xSemaphoreGive(gLock);
+    }
+  } else if (strcmp(addr, "/cue/run") == 0) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
+      cueRunning = (v != 0) && cueCount > 0;
+      if (cueRunning) {
+        cueIndex = 0;
+        xSemaphoreGive(gLock);
+        triggerCueStep(0);
+        return;
+      }
+      xSemaphoreGive(gLock);
+    }
+  } else if (strcmp(addr, "/fx/mode") == 0) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+      fxMode = FxMode(constrain(v, 0, 9));
+      fxEnabled = (fxMode != FX_NONE);
+      xSemaphoreGive(gLock);
+    }
+  } else if (strcmp(addr, "/fx/bpm") == 0) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+      fxBpm = uint16_t(constrain(v, 20, 240));
+      xSemaphoreGive(gLock);
+    }
+  } else if (strcmp(addr, "/color/r") == 0) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+      colorR = uint8_t(constrain(lv, 0, 255));
+      colorEnabled = true;
+      applyColorWash_locked();
+      xSemaphoreGive(gLock);
+    }
+  } else if (strcmp(addr, "/color/g") == 0) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+      colorG = uint8_t(constrain(lv, 0, 255));
+      colorEnabled = true;
+      applyColorWash_locked();
+      xSemaphoreGive(gLock);
+    }
+  } else if (strcmp(addr, "/color/b") == 0) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+      colorB = uint8_t(constrain(lv, 0, 255));
+      colorEnabled = true;
+      applyColorWash_locked();
+      xSemaphoreGive(gLock);
+    }
+  }
+}
+
 static void pollOsc() {
   uint8_t pkt[256];
   for (uint8_t processed = 0; processed < OSC_PKT_BUDGET; processed++) {
@@ -1061,99 +1161,21 @@ static void pollOsc() {
     int n = oscUdp.read(pkt, min(int(sizeof(pkt)), sz));
     oscUdp.flush();  // OSC bundles routinely exceed sizeof(pkt); drain the rest
     if (n < 8) continue;
-
-    int off = 0;
-    char addr[48], tags[16];
-    if (!oscReadPaddedString(pkt, n, off, addr, sizeof(addr))) continue;
-    if (!oscReadPaddedString(pkt, n, off, tags, sizeof(tags))) continue;
-    if (tags[0] != ',') continue;
-    int32_t v = 0;
-    if (tags[1] == 'i') {
-      if (!oscReadInt(pkt, n, off, v)) continue;
-    } else if (tags[1] == 'f') {
-      float fv = 0.0f;
-      if (!oscReadFloat(pkt, n, off, fv)) continue;
-      v = int32_t(fv);
-    } else {
+    if (vizzz::oscIsBundle(pkt, size_t(n))) {
+      // OSC 1.0 bundle: "#bundle", time tag, then (int32 size, element)*.
+      // Elements run at once (time tags are not scheduled); one level only.
+      int off = 16;
+      while (off + 4 <= n) {
+        int32_t esz = (int32_t(pkt[off]) << 24) | (int32_t(pkt[off + 1]) << 16) |
+                      (int32_t(pkt[off + 2]) << 8) | int32_t(pkt[off + 3]);
+        off += 4;
+        if (esz <= 0 || (esz & 3) || off + esz > n) break;
+        if (!vizzz::oscIsBundle(pkt + off, size_t(esz))) handleOscMessage(pkt + off, esz);
+        off += esz;
+      }
       continue;
     }
-
-    if (strncmp(addr, "/ch/", 4) == 0) {
-      int ch = atoi(addr + 4);
-      if (ch >= 1 && ch <= MAX_CH) {
-        if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
-          webVals[ch - 1] = uint8_t(constrain(v, 0, 255));
-          xSemaphoreGive(gLock);
-        }
-      }
-    } else if (strncmp(addr, "/group/", 7) == 0) {
-      int g = atoi(addr + 7);
-      if (g >= 0 && g < MAX_GROUPS) {
-        if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
-          if (!groups[g].enabled) {
-            xSemaphoreGive(gLock);
-            continue;
-          }
-          uint16_t s = constrain(groups[g].start, 1, MAX_CH);
-          uint16_t e = constrain(groups[g].end, s, MAX_CH);
-          for (uint16_t ch = s; ch <= e; ch++) webVals[ch - 1] = uint8_t(constrain(v, 0, 255));
-          xSemaphoreGive(gLock);
-        }
-      }
-    } else if (strcmp(addr, "/master") == 0) {
-      masterDimmer = uint8_t(constrain(v, 0, 255));
-    } else if (strcmp(addr, "/scene/recall") == 0) {
-      uint8_t idx = uint8_t(constrain(v, 0, SCENE_COUNT - 1));
-      uint8_t target[MAX_CH];
-      loadScene(idx, target);
-      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
-        startFade_locked(target, 500);
-        xSemaphoreGive(gLock);
-      }
-    } else if (strcmp(addr, "/cue/run") == 0) {
-      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
-        cueRunning = (v != 0) && cueCount > 0;
-        if (cueRunning) {
-          cueIndex = 0;
-          xSemaphoreGive(gLock);
-          triggerCueStep(0);
-          continue;
-        }
-        xSemaphoreGive(gLock);
-      }
-    } else if (strcmp(addr, "/fx/mode") == 0) {
-      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
-        fxMode = FxMode(constrain(v, 0, 9));
-        fxEnabled = (fxMode != FX_NONE);
-        xSemaphoreGive(gLock);
-      }
-    } else if (strcmp(addr, "/fx/bpm") == 0) {
-      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
-        fxBpm = uint16_t(constrain(v, 20, 240));
-        xSemaphoreGive(gLock);
-      }
-    } else if (strcmp(addr, "/color/r") == 0) {
-      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
-        colorR = uint8_t(constrain(v, 0, 255));
-        colorEnabled = true;
-        applyColorWash_locked();
-        xSemaphoreGive(gLock);
-      }
-    } else if (strcmp(addr, "/color/g") == 0) {
-      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
-        colorG = uint8_t(constrain(v, 0, 255));
-        colorEnabled = true;
-        applyColorWash_locked();
-        xSemaphoreGive(gLock);
-      }
-    } else if (strcmp(addr, "/color/b") == 0) {
-      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
-        colorB = uint8_t(constrain(v, 0, 255));
-        colorEnabled = true;
-        applyColorWash_locked();
-        xSemaphoreGive(gLock);
-      }
-    }
+    handleOscMessage(pkt, n);
   }
 }
 
