@@ -1,35 +1,37 @@
-# Lead hand-over — 2026-10-15 03:3x (info@ session stopped at 91 % of its 5 h window, owner's order)
+# Lead hand-over — 2026-10-15 03:5x (account b, gevorg_aram1@; took over from info@ at 03:3x, ledger N691.4–.6)
 
-**State of the node BA6FCC (192.168.88.66, USB /dev/ttyUSB0, dob has an ACL on the port until replug):**
-runs `int/2026-10-15` a03222b = audit fix-all (PR #1) + console in di's look (PR #2) + USB ENTTEC Pro widget (PR #3).
-Proven from aylmo on this build: `tools/net_probe.py verify` 13/13, `tools/check_http_api.sh` 24/24,
-`tools/usb_probe.js` 8/8 + `params` 4/4 (di's own enttec.js). Serial log is at **250000 baud** now.
-Not proven: a real light on the DMX cable (none attached); 1 h soak (watchdog, ledger N686 HTTP-after-flood timeout).
+**Node BA6FCC (192.168.88.66, USB /dev/ttyUSB0, dob ACL until replug):** runs `int/2026-10-15` **8168931** = a03222b + V0
+(`heap_free`, `heap_max_block`, `ws_clients` in /status, the /ws push and /node/manifest). Native 38/38; esp32 RAM 57,748 B (17.6 %),
+Flash 933,261 B (71.2 %). **V0 baseline measured** (`tools/heap_probe.mjs --node http://192.168.88.66 --clients 3`): largest free block
+110,580 B idle (2 ws clients were already open), 98,292 B with 5 ws clients, fully recovered after; 0 of 45 polls failed. Numbers and
+the Q3 decision in `docs/DI_DESK_UI_PLAN.md` §7: **MAX_FIXTURES 32, taken at V6 after V3** (streaming writer), never before.
+Still not proven: a real light on the DMX cable; the 1 h soak (N686).
 
-**PRs (github dob-0/vizzz.di):** #1 fix/audit-2026-10-15 → audit/2026-08-24; #2 feat/console-di-look → #1;
-#3 feat/usb-enttec-pro → #1; #4 plan/di-desk-ui → int/2026-10-15 (docs/DI_DESK_UI_PLAN.md, the "full change").
-Owner's answers to the plan's questions: Q1 yes but carry over what the node console has and di lacks (D0 inventory
-first, "look to not mess"); Q2 flex: alone = the node serves the desk UI itself, with di = di drives it; Q3 fixture
-limit by measurement (32 only if it cannot break anything); Q4 yes (looks/layers/LFOs/sets/cues owed).
+**PRs on dob-0/vizzz.di:** #1 #2 #3 #4 (plan) #5 (V0) all MERGED into `int/2026-10-15` (pushed).
+**di.iiii PR #939** (D0 inventory + D1 honest render/caps, draft to dev): reviewed, code reads correct, suites verified locally in a temp
+worktree (test.js 133 ok, test-http 123 ok, test-wiring 22 ok, 0 fail). My PR comment and the ready flag were BLOCKED by the permission
+classifier (external write) — owner: look at the desk on dev after merge, or merge #939 yourself; note that on a plain-http non-localhost
+address the MIDI tab and Audio controls now hide (the browser refuses them there anyway).
 
-**Cloud runs on the dob login (env Default), fired 22:44Z, watch both `cloud/` and `claude/` prefixes:**
-- trig_017au3LyBw7vb33WV2ZH6kGm — di.iiii D0+D1 → `cloud/desk-honest-render-caps-2026-10-15`, draft PR to dev.
-- trig_01WnJwKMipa7ms9h3idLxQjG — vizzz.di V0 → `cloud/status-heap-keys-2026-10-15`, draft PR to int/2026-10-15.
+**Cloud routines on account b (fire 2026-10-14T23:46Z = 03:46 local, env di.full, Sonnet; watch `cloud/` and `claude/` prefixes):**
+- trig_01PpNJhoAnxtUDcRW9UNNxdU — di.iiii **D2** desk API contract → `cloud/desk-api-contract-2026-10-15`, draft PR to dev (builds on #939).
+- trig_01W3P7VxN1RJQkAkJTwqQuCz — vizzz.di **V1** build script (desk_ui.lock, fetch_desk_ui.py, desk_ui_gz.h, flash_gate.py) →
+  `cloud/desk-ui-build-2026-10-15`, draft PR to int/2026-10-15. The sandbox cannot run pio: the lead builds on aylmo before merging.
+The two earlier routines (trig_017au3…, trig_01WnJw…) belong to the info@ login and are not visible from account b.
 
-**Next (in order):** review both PRs; merge V0 into int/2026-10-15; build + flash; read heap_free / heap_max_block from
-/status at idle and with 3 phones on /vj → decide MAX_FIXTURES (12 vs 32) by the number; then plan steps D2–D5, V1–V7
-(docs/DI_DESK_UI_PLAN.md §4). Owner decisions still open: login/token on operator routes; DMX Out blackout = web-layer
-clear or /panic; the "di in a high-level language" conversation (ledger N689).
+**Next (in order, plan §4):** review D2 + V1 → merge V1 into int, `pio run -e esp32dev` with the gate, flash → dispatch **V2** (static
+serving, needs V1) and **V3** (bridge core; Opus designs, Sonnet builds; needs D2's contract) → V4 → D3 + V5 (then re-run heap_probe with
+1/3/5 clients on the stream, `heap_max_block` must stay > 64 KB) → D4 → D5 + V6 (fixtures 32) → V7 on the real node.
+Owner decisions still open: login/token on operator routes; DMX Out blackout = web-layer clear or /panic; N689 conversation.
 
 ```bash
-cd ~/work/vizzz.di && git checkout int/2026-10-15
-PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio test -e native      # 36 green
+cd ~/work/vizzz.di && git checkout int/2026-10-15 && git pull
+PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio test -e native      # 38 green
 PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio run -e esp32dev -t upload
-PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio device monitor -b 250000
+node tools/heap_probe.mjs --node http://192.168.88.66 --clients 3 --seconds 30   # heap idle / loaded / after
 python3 tools/net_probe.py verify --node 192.168.88.66 --ch 64; tools/check_http_api.sh http://192.168.88.66
-node tools/usb_probe.js --di ~/work/di.iiii --port /dev/ttyUSB0 --node http://192.168.88.66 --ch 64 --v 180 --seconds 5
 ```
-Ledger rows: N668 N669 N671 N677 N680 N686 N689 N690 N691. Memory: reference_vizzz_node_ba6fcc.md.
+Ledger rows: N668 N669 N671 N677 N680 N686 N689 N690 N691 (.4 .5 .6). Memory: reference_vizzz_node_ba6fcc.md.
 
 ---
 
