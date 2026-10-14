@@ -1,3 +1,38 @@
+# Lead hand-over — 2026-10-15 03:3x (info@ session stopped at 91 % of its 5 h window, owner's order)
+
+**State of the node BA6FCC (192.168.88.66, USB /dev/ttyUSB0, dob has an ACL on the port until replug):**
+runs `int/2026-10-15` a03222b = audit fix-all (PR #1) + console in di's look (PR #2) + USB ENTTEC Pro widget (PR #3).
+Proven from aylmo on this build: `tools/net_probe.py verify` 13/13, `tools/check_http_api.sh` 24/24,
+`tools/usb_probe.js` 8/8 + `params` 4/4 (di's own enttec.js). Serial log is at **250000 baud** now.
+Not proven: a real light on the DMX cable (none attached); 1 h soak (watchdog, ledger N686 HTTP-after-flood timeout).
+
+**PRs (github dob-0/vizzz.di):** #1 fix/audit-2026-10-15 → audit/2026-08-24; #2 feat/console-di-look → #1;
+#3 feat/usb-enttec-pro → #1; #4 plan/di-desk-ui → int/2026-10-15 (docs/DI_DESK_UI_PLAN.md, the "full change").
+Owner's answers to the plan's questions: Q1 yes but carry over what the node console has and di lacks (D0 inventory
+first, "look to not mess"); Q2 flex: alone = the node serves the desk UI itself, with di = di drives it; Q3 fixture
+limit by measurement (32 only if it cannot break anything); Q4 yes (looks/layers/LFOs/sets/cues owed).
+
+**Cloud runs on the dob login (env Default), fired 22:44Z, watch both `cloud/` and `claude/` prefixes:**
+- trig_017au3LyBw7vb33WV2ZH6kGm — di.iiii D0+D1 → `cloud/desk-honest-render-caps-2026-10-15`, draft PR to dev.
+- trig_01WnJwKMipa7ms9h3idLxQjG — vizzz.di V0 → `cloud/status-heap-keys-2026-10-15`, draft PR to int/2026-10-15.
+
+**Next (in order):** review both PRs; merge V0 into int/2026-10-15; build + flash; read heap_free / heap_max_block from
+/status at idle and with 3 phones on /vj → decide MAX_FIXTURES (12 vs 32) by the number; then plan steps D2–D5, V1–V7
+(docs/DI_DESK_UI_PLAN.md §4). Owner decisions still open: login/token on operator routes; DMX Out blackout = web-layer
+clear or /panic; the "di in a high-level language" conversation (ledger N689).
+
+```bash
+cd ~/work/vizzz.di && git checkout int/2026-10-15
+PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio test -e native      # 36 green
+PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio run -e esp32dev -t upload
+PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio device monitor -b 250000
+python3 tools/net_probe.py verify --node 192.168.88.66 --ch 64; tools/check_http_api.sh http://192.168.88.66
+node tools/usb_probe.js --di ~/work/di.iiii --port /dev/ttyUSB0 --node http://192.168.88.66 --ch 64 --v 180 --seconds 5
+```
+Ledger rows: N668 N669 N671 N677 N680 N686 N689 N690 N691. Memory: reference_vizzz_node_ba6fcc.md.
+
+---
+
 # Handover — fix/audit-a (runtime findings of docs/AUDIT_2026_10_15.md), 2026-10-15
 
 Worktree `/home/dob/work/vizzz.di-fix-a`, branch `fix/audit-a`, base `6e26c94`. Nothing flashed,
