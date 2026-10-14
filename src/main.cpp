@@ -13,6 +13,8 @@
 
 #include <math.h>
 #include <atomic>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
 
 #include "esp_dmx.h"
 #include "vizzz_core.h"
@@ -2048,6 +2050,28 @@ static void sendJSON(AsyncWebServerRequest* req, const String& body) {
   req->send(res);
 }
 
+// Firmware build for /status (1-L4): git short SHA (+dirty) from the
+// PlatformIO pre-script tools/pio_fw_version.py, plus the build time.
+#ifndef VIZZZ_GIT_SHA
+#define VIZZZ_GIT_SHA "nogit"
+#endif
+static constexpr const char* FW_BUILD = VIZZZ_GIT_SHA " " __DATE__ " " __TIME__;
+
+static const char* resetReasonName(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "poweron";
+    case ESP_RST_EXT:       return "ext";
+    case ESP_RST_SW:        return "sw";
+    case ESP_RST_PANIC:     return "panic";
+    case ESP_RST_INT_WDT:   return "int_wdt";
+    case ESP_RST_TASK_WDT:  return "task_wdt";
+    case ESP_RST_WDT:       return "wdt";
+    case ESP_RST_DEEPSLEEP: return "deepsleep";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    case ESP_RST_SDIO:      return "sdio";
+    default:                return "unknown";
+  }
+}
 static size_t fillStatusJSON(char* buf, size_t n) {
   if (!n) return 0;
 
@@ -2103,7 +2127,9 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     "\"artnet_fallback_to_web\":%s,"
     "\"safe_ceiling\":%u,"
     "\"safe_slew_step\":%u,"
-    "\"ap_fb\":%s"
+    "\"ap_fb\":%s,"
+    "\"rst\":\"%s\","
+    "\"fw\":\"%s\""
     "}",
     apIp,
     staIp,
@@ -2129,7 +2155,9 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     artnetFallbackToWeb ? "true" : "false",
     effectiveSafeMaxLevel(),
     effectiveSafeSlewStep(),
-    apFallbackActive ? "true" : "false"
+    apFallbackActive ? "true" : "false",
+    resetReasonName(esp_reset_reason()),
+    FW_BUILD
   );
   if (written < 0) {
     buf[0] = '\0';
@@ -2139,9 +2167,11 @@ static size_t fillStatusJSON(char* buf, size_t n) {
   return size_t(written);
 }
 
-// STATUS_JSON_MAX: worst case measured from the format at ~860 bytes (380
+// STATUS_JSON_MAX: worst case measured from the format at ~920 bytes (~420
 // literal + three 79-byte escaped names + IPs, MAC, numbers); 800 could truncate.
 static constexpr size_t STATUS_JSON_MAX = 1024;
+
+
 
 static String statusJSON() {
   char buf[STATUS_JSON_MAX];
@@ -3134,6 +3164,14 @@ void setup() {
   lastArtnetMs = 0;
   lastSacnMs = 0;
 
+  // Task watchdog on the DMX path (1-M8). The Arduino loop task is not
+  // subscribed by default (core 2.0.17 esp32-hal-misc.c enableLoopWDT());
+  // once it is, the core feeds it after every loop() return, and a loop()
+  // stuck for CONFIG_ESP_TASK_WDT_TIMEOUT_S (5 s, panic on) reboots the node
+  // instead of freezing DMX on its last frame. /status "rst" shows why the
+  // last boot happened (esp_reset_reason(), ESP-IDF "Watchdogs" reference).
+  enableLoopWDT();
+
   // The web task is already running: read the shared strings via a snapshot.
   IdentitySnap id;
   snapIdentity(id, pdMS_TO_TICKS(100));
@@ -3237,6 +3275,7 @@ void loop() {
     fx.begin("fixtures", false);
     fx.clear();
     fx.end();
+    esp_task_wdt_reset();  // four NVS namespace erases in one pass
     Preferences vj;
     vj.begin("vj", false);
     vj.clear();
@@ -3245,8 +3284,11 @@ void loop() {
     ESP.restart();
   }
 
+  // Bounded waits (1-M8): a stuck lock holder must not hang loop() forever;
+  // the flag stays set and the next pass retries, and the task watchdog
+  // reboots a loop() that stops returning.
   if (pendingPanic) {
-    if (xSemaphoreTake(gLock, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(500)) == pdTRUE) {
       pendingPanic = false;
       pendingBlackout = false;
       mode         = MODE_WEB;      // stop network input driving the rig
@@ -3261,7 +3303,7 @@ void loop() {
   }
 
   if (pendingBlackout) {
-    if (xSemaphoreTake(gLock, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(500)) == pdTRUE) {
       pendingBlackout = false;
       applyBlackout_locked();
       xSemaphoreGive(gLock);
