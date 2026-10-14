@@ -8,9 +8,17 @@ the firmware computes it, so /monitor and /page show believable numbers.
 
     python3 tools/simulate_node.py --port 8088
 
-This is a UI and API harness, not an emulator. It does not run the C++.
+    python3 tools/simulate_node.py --udp      # also Art-Net 6454, sACN 5568, OSC 9000
+
+This is a UI and API harness, not an emulator. It does not run the C++. With
+--udp it mirrors the firmware's network inputs (include/vizzz_core.h): ArtPoll
+-> 239-byte ArtPollReply, two-source Art-Net HTP merge (10 s, third ignored),
+the Art OUT tag rule, sACN on Port-Address + 1 with preview / terminated /
+priority / sequence handling, and OSC int/float/bundle input. One deviation:
+the ArtPollReply goes to the poll's source address and port (the firmware
+always uses port 6454, which is the same thing for di and tools/net_probe.py).
 """
-import argparse, base64, hashlib, json, os, re, struct, threading, time
+import argparse, base64, hashlib, json, math, os, re, socket, struct, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -77,6 +85,12 @@ class Node:
         self.boot = time.time()
 
     # ---- output pipeline, mirroring the firmware ----
+    def uni15(self):
+        return (self.art["net"] << 8) | (self.art["subnet"] << 4) | self.art["uni"]
+
+    def net_active(self):
+        return NET.art_active() or NET.sacn_active()
+
     def ceiling(self):
         return BURN_SAFE_MAX_LEVEL if self.burn_safe else SAFE_MAX_LEVEL
 
@@ -99,12 +113,13 @@ class Node:
                 self.out[i] = cur
 
     def _merged(self):
+        net = self.net_layer if self.net_active() else None
         if self.mode == 0:
             base = list(self.web)
         elif self.mode == 1:
-            base = list(self.net_layer) if not self.artnet_fallback else list(self.web)
+            base = list(net) if net else (list(self.web) if self.artnet_fallback else list(self.out))
         else:
-            base = [max(a, b) for a, b in zip(self.web, self.net_layer)]
+            base = [max(a, b) for a, b in zip(self.web, net)] if net else list(self.web)
         if self.fx["en"]:
             phase = (time.time() * self.fx["bpm"] / 60.0) % 1.0
             depth = self.fx["depth"] / 255.0
@@ -152,7 +167,7 @@ class Node:
             "uni15": (self.art["net"] << 8) | (self.art["subnet"] << 4) | self.art["uni"],
             "mode": self.mode,
             "mode_name": ["WEB_ONLY", "ARTNET_ONLY", "MERGE_HTP"][self.mode],
-            "artnet_active": False, "sacn_active": False,
+            "artnet_active": NET.art_active(), "sacn_active": NET.sacn_active(),
             "ao": self.art_out, "web": self.web_enabled, "dim": self.master,
             "ao_target": self.art_out_target or "broadcast",
             "ap_clients": 1, "sta_rssi": -54, "mac": self.mac,
@@ -168,12 +183,199 @@ class Node:
             "hardware": {"board": "ESP32 DevKit (simulated)", "dmx_uart": "DMX_NUM_1",
                          "dmx_tx_gpio": 25, "dmx_dir_gpio": 21,
                          "max_channels": MAX_CH, "dmx_period_ms": 23},
-            "protocols": ["artnet-in", "artnet-out", "sacn-in", "osc-in", "http", "ws"],
+            "protocols": [
+                {"id": "artnet", "role": "input-output", "port": 6454,
+                 "universe": self.uni15(), "output_enabled": self.art_out},
+                {"id": "sacn", "role": "input", "port": 5568,
+                 "universe": self.uni15() + 1},          # E1.31 §6.2.7: never 0
+                {"id": "osc", "role": "input", "transport": "udp", "port": 9000},
+                {"id": "dmx512", "role": "physical-output", "channels": MAX_CH}],
             "simulated": True,
         }
 
 
 NODE = Node()
+# ── Network inputs, same rules as include/vizzz_core.h ──────────────────────
+ART_ID = b"Art-Net\0"
+ACN_PID = bytes([0x41, 0x53, 0x43, 0x2D, 0x45, 0x31, 0x2E, 0x31, 0x37, 0, 0, 0])
+VIZZZ_PHYSICAL_TAG = 0x76
+
+
+def seq_stale(last, now):
+    """E1.31-2018 §6.7.2 window, used for Art-Net too (0 = sequencing off)."""
+    diff = (now - last) & 0xFF
+    diff = diff - 256 if diff > 127 else diff
+    return -20 < diff <= 0
+
+
+def build_poll_reply(ip, mac, net, sub, uni, short, long_, report, count, merging, sacn_src):
+    """Art-Net 4 ArtPollReply, 239 bytes, same fields as vizzz::artnet::buildPollReply."""
+    o = bytearray(239)
+    o[0:8] = ART_ID
+    o[8:10] = struct.pack("<H", 0x2100)
+    o[10:14] = bytes(ip)
+    o[14:16] = struct.pack("<H", 6454)
+    o[16], o[17] = 0, 1
+    o[18], o[19] = net & 0x7F, sub & 0x0F
+    o[20], o[21], o[23] = 0x00, 0xFF, 0xE0
+    o[24], o[25] = 0xF0, 0x7F
+    o[26:26 + 17] = short.encode("latin1", "replace")[:17].ljust(17, b"\0")
+    o[44:44 + 63] = long_.encode("latin1", "replace")[:63].ljust(63, b"\0")
+    rep = ("#0001 [%04d] %s" % (count % 10000, report)).encode("latin1", "replace")[:63]
+    o[108:108 + len(rep)] = rep
+    o[172], o[173], o[174], o[178] = 0, 1, 0x80, 0x08
+    o[182] = 0x80 | (0x08 if merging else 0) | (0x01 if sacn_src else 0)
+    o[186] = o[190] = uni & 0x0F
+    o[201:207] = bytes(mac)
+    o[207:211] = bytes(ip)
+    o[211], o[212], o[213], o[217], o[227] = 1, 0x0F, 0x80, 0x40, 43
+    return bytes(o)
+
+
+class NetInputs:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.art = {}           # ip -> [last_s, seq, data]   (two slots)
+        self.sacn = {}          # cid -> [last_s, seq, prio, data]
+        self.last_art = 0.0
+        self.replies = 0
+
+    def art_active(self):
+        return time.time() - self.last_art < 3.0
+
+    def sacn_active(self):
+        with self.lock:
+            return bool(self.sacn)
+
+    def expire(self):
+        now = time.time()
+        with self.lock:
+            self.art = {k: v for k, v in self.art.items() if now - v[0] <= 10.0}
+            if not any(now - v[0] < 3.0 for v in self.art.values()):
+                self.art = {}
+            self.sacn = {k: v for k, v in self.sacn.items() if now - v[0] <= 2.5}
+            art = [max(c) for c in zip(*[v[2] for v in self.art.values()])] if self.art else None
+            top = max((v[2] for v in self.sacn.values()), default=None)
+            sa = ([max(c) for c in zip(*[v[3] for v in self.sacn.values() if v[2] == top])]
+                  if top is not None else None)
+        layers = [l for l in (art, sa) if l]
+        NODE.net_layer = [max(c) for c in zip(*layers)] if layers else [0] * MAX_CH
+
+    def on_artnet(self, pkt, addr, sock):
+        if len(pkt) < 14 or pkt[:8] != ART_ID:
+            return
+        op = struct.unpack_from("<H", pkt, 8)[0]
+        if op == 0x2000:
+            self.replies += 1
+            here = sock.getsockname()[0]
+            ip = [int(x) for x in (here if here != "0.0.0.0" else "127.0.0.1").split(".")]
+            mac = [int(x, 16) for x in NODE.mac.split(":")]
+            reply = build_poll_reply(ip, mac, NODE.art["net"], NODE.art["subnet"], NODE.art["uni"],
+                                     NODE.name, "vizzz.di " + NODE.name, "simulator", self.replies,
+                                     len(self.art) > 1, self.sacn_active() and not self.art_active())
+            sock.sendto(reply, addr)
+            return
+        if op != 0x5000 or len(pkt) < 18 or ((pkt[10] << 8) | pkt[11]) < 14:
+            return
+        length = (pkt[16] << 8) | pkt[17]
+        if length == 0 or length > 512 or 18 + length > len(pkt):
+            return
+        if (pkt[14] | ((pkt[15] & 0x7F) << 8)) != NODE.uni15():
+            return
+        if NODE.art_out and pkt[13] == VIZZZ_PHYSICAL_TAG:
+            return                                       # two-node latch rule (1-C1)
+        seq, now, ip = pkt[12], time.time(), addr[0]
+        with self.lock:
+            slot = self.art.get(ip)
+            if slot is None and len(self.art) >= 2:
+                return                                   # third source ignored
+            if slot and seq_stale(slot[1], seq) and seq and slot[1] and now - slot[0] < 1.0:
+                return
+            self.art[ip] = [now, seq, list(pkt[18:18 + length]) + [0] * (512 - length)]
+            self.last_art = now
+
+    def on_sacn(self, pkt):
+        if len(pkt) < 126 or pkt[0:2] != b"\x00\x10" or pkt[4:16] != ACN_PID:
+            return
+        if pkt[18:22] != b"\0\0\0\x04" or pkt[40:44] != b"\0\0\0\x02" or pkt[117] != 2:
+            return
+        if pkt[118] != 0xA1 or pkt[119:123] != b"\0\0\0\x01":
+            return
+        count = (pkt[123] << 8) | pkt[124]
+        uni = (pkt[113] << 8) | pkt[114]
+        if count < 1 or count > 513 or 125 + count > len(pkt) or uni != NODE.uni15() + 1:
+            return
+        opts, prio, seq, cid = pkt[112], min(pkt[108], 200), pkt[111], bytes(pkt[22:38])
+        if opts & 0x80:
+            return                                       # preview, §6.2.6
+        now = time.time()
+        with self.lock:
+            src = self.sacn.get(cid)
+            if src and seq_stale(src[1], seq):
+                return
+            if opts & 0x40:
+                self.sacn.pop(cid, None)                 # terminated, §6.2.6
+                return
+            if pkt[125] != 0:
+                return
+            if src is None and len(self.sacn) >= 2:
+                low = min(self.sacn, key=lambda k: self.sacn[k][2])
+                if prio <= self.sacn[low][2]:
+                    return
+                del self.sacn[low]
+            data = list(pkt[126:125 + count])
+            self.sacn[cid] = [now, seq, prio, data + [0] * (512 - len(data))]
+
+    def on_osc(self, pkt):
+        if pkt.startswith(b"#bundle\0") and len(pkt) >= 16:
+            off = 16
+            while off + 4 <= len(pkt):
+                size = struct.unpack_from(">i", pkt, off)[0]
+                off += 4
+                if size <= 0 or size % 4 or off + size > len(pkt):
+                    break
+                if not pkt[off:].startswith(b"#bundle"):
+                    self.on_osc(pkt[off:off + size])
+                off += size
+            return
+        try:
+            end = pkt.index(b"\0")
+            addr = pkt[:end].decode()
+            toff = (end + 4) & ~3
+            tend = pkt.index(b"\0", toff)
+            tags = pkt[toff:tend].decode()
+            aoff = (tend + 4) & ~3
+            if tags[:2] == ",i":
+                v = lv = struct.unpack_from(">i", pkt, aoff)[0]
+            elif tags[:2] == ",f":
+                f = struct.unpack_from(">f", pkt, aoff)[0]
+                lv = (0 if not math.isfinite(f) or f <= 0 else round(f * 255) if f <= 1
+                      else min(255, round(f)))
+            else:
+                return
+        except (ValueError, UnicodeDecodeError, struct.error):
+            return
+        with NODE.lock:
+            if addr.startswith("/ch/") and addr[4:].isdigit() and 1 <= int(addr[4:]) <= MAX_CH:
+                NODE.web[int(addr[4:]) - 1] = max(0, min(255, lv))
+            elif addr == "/master":
+                NODE.master = max(0, min(255, lv))
+
+
+NET = NetInputs()
+
+
+def udp_loop(host, port, handler, multicast_uni=None):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((host, port))
+    if multicast_uni is not None and host in ("0.0.0.0", ""):
+        group = socket.inet_aton("239.255.%d.%d" % (multicast_uni >> 8, multicast_uni & 0xFF))
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, group + socket.inet_aton("0.0.0.0"))
+    while True:
+        pkt, addr = s.recvfrom(2048)
+        handler(pkt, addr, s)
+
 
 
 def ival(q, k, d=0):
@@ -375,6 +577,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def ticker():
     while True:
+        NET.expire()
         NODE.tick()
         time.sleep(0.023)
 
@@ -383,7 +586,16 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8088)
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--udp", action="store_true", help="also listen for Art-Net, sACN and OSC")
+    ap.add_argument("--artnet-port", type=int, default=6454)
+    ap.add_argument("--sacn-port", type=int, default=5568)
+    ap.add_argument("--osc-port", type=int, default=9000)
     a = ap.parse_args()
+    if a.udp:
+        for port, h, mc in ((a.artnet_port, lambda p, ad, s: NET.on_artnet(p, ad, s), None),
+                            (a.sacn_port, lambda p, ad, s: NET.on_sacn(p), NODE.uni15() + 1),
+                            (a.osc_port, lambda p, ad, s: NET.on_osc(p), None)):
+            threading.Thread(target=udp_loop, args=(a.host, port, h, mc), daemon=True).start()
     APP_HTML = extract_app_html()
     threading.Thread(target=ticker, daemon=True).start()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)

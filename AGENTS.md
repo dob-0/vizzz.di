@@ -165,6 +165,13 @@ Rules:
 
 If you add a new pure helper (math, protocol packing, etc.), put it in `vizzz_core.h` and add a test case.
 
+Network parsers (Art-Net 4, E1.31, OSC) live in `vizzz_core.h` too (audit 2026-10-15 2-M10). Two more checks
+need no hardware:
+- `tools/check_di_compat.sh [path/to/di.iiii]` feeds packets built by di's `serverXR/src/lighting` code through
+  the parsers and hands the node's ArtPollReply to di's `ArtNet.nodeList()` (127.0.0.1 only).
+- `python3 tools/simulate_node.py --udp` + `python3 tools/net_probe.py verify --node <ip>` — the same 13
+  checks the real node gets after a flash (see HANDOVER.md of the 2026-10-15 protocol pass).
+
 ---
 
 ## Build & Upload Commands
