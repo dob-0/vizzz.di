@@ -457,6 +457,157 @@ void test_acao_only_on_shared_reads() {
   TEST_ASSERT_FALSE(vizzz::routeSendsAcao(vizzz::kRoutes[vizzz::findRoute("/reboot")].kind));
 }
 
+// ── ENTTEC DMX USB PRO widget protocol (ENTTEC "DMX USB PRO API") ──────────
+struct WidgetSink {
+  int count = 0;
+  uint8_t label[8] = {0};
+  uint16_t len[8] = {0};
+  uint8_t vals[512];
+  uint16_t applied = 0;
+  void operator()(uint8_t l, const uint8_t* d, uint16_t n) {
+    if (count < 8) { label[count] = l; len[count] = n; }
+    count++;
+    if (l == vizzz::widget::kLabelSendDmx) applied = vizzz::widget::applyDmx(d, n, vals);
+  }
+};
+
+static size_t widgetDmxFrame(uint8_t* out, uint16_t channels, uint8_t fill) {
+  static uint8_t data[513];
+  data[0] = 0;  // DMX start code
+  for (uint16_t i = 1; i <= channels; i++) data[i] = uint8_t(fill + i);
+  return vizzz::widget::buildFrame(out, 605, vizzz::widget::kLabelSendDmx, data, uint16_t(channels + 1));
+}
+
+void test_widget_full_frame_513_bytes_sets_channels_1_to_512() {
+  static vizzz::widget::Parser p; vizzz::widget::parserReset(p);
+  WidgetSink sink; memset(sink.vals, 0, sizeof(sink.vals));
+  uint8_t f[605];
+  size_t n = widgetDmxFrame(f, 512, 0);
+  TEST_ASSERT_EQUAL_UINT32(518, n);
+  TEST_ASSERT_EQUAL_HEX8(0x7E, f[0]);
+  TEST_ASSERT_EQUAL_HEX8(0x01, f[2]);  // 513 = 0x0201, LSB first
+  TEST_ASSERT_EQUAL_HEX8(0x02, f[3]);
+  TEST_ASSERT_EQUAL_HEX8(0xE7, f[517]);
+  vizzz::widget::feed(p, f, n, sink);
+  TEST_ASSERT_EQUAL_INT(1, sink.count);
+  TEST_ASSERT_EQUAL_UINT16(513, sink.len[0]);
+  TEST_ASSERT_EQUAL_UINT16(512, sink.applied);
+  TEST_ASSERT_EQUAL_UINT8(1, sink.vals[0]);      // channel 1
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(512), sink.vals[511]);  // channel 512
+  TEST_ASSERT_EQUAL_UINT32(1, p.frames);
+  TEST_ASSERT_EQUAL_UINT32(0, p.errors);
+}
+
+void test_widget_frame_split_across_reads() {
+  static vizzz::widget::Parser p; vizzz::widget::parserReset(p);
+  WidgetSink sink; memset(sink.vals, 0, sizeof(sink.vals));
+  uint8_t f[605];
+  size_t n = widgetDmxFrame(f, 512, 7);
+  const size_t cuts[] = {1, 3, 4, 100, 517};
+  size_t at = 0;
+  for (size_t c : cuts) { vizzz::widget::feed(p, f + at, c - at, sink); TEST_ASSERT_EQUAL_INT(0, sink.count); at = c; }
+  vizzz::widget::feed(p, f + at, n - at, sink);
+  TEST_ASSERT_EQUAL_INT(1, sink.count);
+  TEST_ASSERT_EQUAL_UINT8(8, sink.vals[0]);
+}
+
+void test_widget_garbage_and_cut_frame_do_not_cost_later_frames() {
+  static vizzz::widget::Parser p; vizzz::widget::parserReset(p);
+  WidgetSink sink; memset(sink.vals, 0, sizeof(sink.vals));
+  // Boot-log text, a stray start byte, then a frame.
+  const char* text = "vizzz boot ~ 0x7E\r\n";
+  vizzz::widget::feed(p, (const uint8_t*)text, strlen(text), sink);
+  const uint8_t junk[] = {0x00, 0x7E, 0x05, 0xFF};
+  vizzz::widget::feed(p, junk, sizeof(junk), sink);
+  uint8_t f[605];
+  size_t n = widgetDmxFrame(f, 24, 0);
+  vizzz::widget::feed(p, f, n, sink);
+  // A frame cut off half way (host restarted), then two whole frames.
+  vizzz::widget::feed(p, f, 12, sink);
+  vizzz::widget::feed(p, f, n, sink);
+  vizzz::widget::feed(p, f, n, sink);
+  TEST_ASSERT_EQUAL_INT(3, sink.count);
+  TEST_ASSERT_TRUE(p.errors >= 2);
+  TEST_ASSERT_EQUAL_UINT16(24, sink.applied);
+}
+
+void test_widget_oversize_length_rejected() {
+  static vizzz::widget::Parser p; vizzz::widget::parserReset(p);
+  WidgetSink sink; memset(sink.vals, 0, sizeof(sink.vals));
+  const uint8_t big[] = {0x7E, 0x06, 0x59, 0x02};  // 601 > 600
+  vizzz::widget::feed(p, big, sizeof(big), sink);
+  TEST_ASSERT_EQUAL_UINT32(1, p.errors);
+  TEST_ASSERT_EQUAL_UINT16(0, p.rawLen);
+  uint8_t f[605];
+  size_t n = widgetDmxFrame(f, 24, 0);
+  vizzz::widget::feed(p, f, n, sink);
+  TEST_ASSERT_EQUAL_INT(1, sink.count);
+  uint8_t out[700];
+  static uint8_t data[601];
+  TEST_ASSERT_EQUAL_UINT32(0, vizzz::widget::buildFrame(out, sizeof(out), 6, data, 601));
+}
+
+void test_widget_short_frame_leaves_rest_untouched() {
+  uint8_t vals[512];
+  memset(vals, 0x55, sizeof(vals));
+  uint8_t data[25] = {0};
+  for (int i = 1; i <= 24; i++) data[i] = 200;
+  TEST_ASSERT_EQUAL_UINT16(24, vizzz::widget::applyDmx(data, 25, vals));
+  TEST_ASSERT_EQUAL_UINT8(200, vals[23]);
+  TEST_ASSERT_EQUAL_UINT8(0x55, vals[24]);
+  TEST_ASSERT_EQUAL_UINT8(0x55, vals[511]);
+  data[0] = 0xCC;  // a non-dimmer start code (e.g. text/test packet) is not applied
+  TEST_ASSERT_EQUAL_UINT16(0, vizzz::widget::applyDmx(data, 25, vals));
+  TEST_ASSERT_EQUAL_UINT16(0, vizzz::widget::applyDmx(data, 1, vals));
+}
+
+void test_widget_params_reply_layout() {
+  vizzz::widget::Params prm{0x0102, 176, 12, 43};
+  uint8_t out[700];
+  const uint8_t req[] = {0, 0};  // what di's identify() sends
+  size_t n = vizzz::widget::buildParamsReply(out, sizeof(out), prm, vizzz::widget::paramsRequestSize(req, 2));
+  TEST_ASSERT_EQUAL_UINT32(10, n);
+  const uint8_t want[] = {0x7E, 3, 5, 0, 0x02, 0x01, 16, 1, 40, 0xE7};
+  TEST_ASSERT_EQUAL_HEX8_ARRAY(want, out, 10);
+  // User-config bytes come back zero, at most 508.
+  n = vizzz::widget::buildParamsReply(out, sizeof(out), prm, 1000);
+  TEST_ASSERT_EQUAL_UINT32(5 + 5 + 508, n);
+  TEST_ASSERT_EQUAL_HEX8(0xE7, out[n - 1]);
+  TEST_ASSERT_EQUAL_UINT8(9, vizzz::widget::usToUnits(10, 9, 127));    // clamped up to the API floor
+  TEST_ASSERT_EQUAL_UINT16(3, vizzz::widget::paramsRequestSize((const uint8_t[]){3, 0}, 2));
+}
+
+void test_widget_serial_reply_bcd() {
+  uint8_t out[16];
+  size_t n = vizzz::widget::buildSerialReply(out, sizeof(out), 12345678);
+  TEST_ASSERT_EQUAL_UINT32(9, n);
+  const uint8_t want[] = {0x7E, 10, 4, 0, 0x78, 0x56, 0x34, 0x12, 0xE7};
+  TEST_ASSERT_EQUAL_HEX8_ARRAY(want, out, 9);
+  // A reply fed back through the parser is one well-formed frame.
+  static vizzz::widget::Parser p; vizzz::widget::parserReset(p);
+  WidgetSink sink;
+  vizzz::widget::feed(p, out, n, sink);
+  TEST_ASSERT_EQUAL_INT(1, sink.count);
+  TEST_ASSERT_EQUAL_UINT8(10, sink.label[0]);
+}
+
+void test_widget_stalled_frame_resync_replays() {
+  // A cut frame that never completes is dropped by resync() (the firmware calls
+  // it after a gap); a whole frame that arrived inside it is recovered.
+  static vizzz::widget::Parser p; vizzz::widget::parserReset(p);
+  WidgetSink sink; memset(sink.vals, 0, sizeof(sink.vals));
+  uint8_t f[605];
+  size_t n = widgetDmxFrame(f, 512, 0);
+  vizzz::widget::feed(p, f, 200, sink);          // cut 512-ch frame
+  const uint8_t q[] = {0x7E, 3, 2, 0, 0, 0, 0xE7};  // label 3 request inside its data
+  vizzz::widget::feed(p, q, sizeof(q), sink);
+  TEST_ASSERT_EQUAL_INT(0, sink.count);
+  vizzz::widget::resync(p, sink);
+  TEST_ASSERT_EQUAL_INT(1, sink.count);
+  TEST_ASSERT_EQUAL_UINT8(3, sink.label[0]);
+  (void)n;
+}
+
 static int runAll() {
   UNITY_BEGIN();
   RUN_TEST(test_pack_universe_uses_15bit_layout);
@@ -486,6 +637,14 @@ static int runAll() {
   RUN_TEST(test_parse_uint_arg_strict);
   RUN_TEST(test_parse_int_arg_strict);
   RUN_TEST(test_acao_only_on_shared_reads);
+  RUN_TEST(test_widget_full_frame_513_bytes_sets_channels_1_to_512);
+  RUN_TEST(test_widget_frame_split_across_reads);
+  RUN_TEST(test_widget_garbage_and_cut_frame_do_not_cost_later_frames);
+  RUN_TEST(test_widget_oversize_length_rejected);
+  RUN_TEST(test_widget_short_frame_leaves_rest_untouched);
+  RUN_TEST(test_widget_params_reply_layout);
+  RUN_TEST(test_widget_serial_reply_bcd);
+  RUN_TEST(test_widget_stalled_frame_resync_replays);
   return UNITY_END();
 }
 
