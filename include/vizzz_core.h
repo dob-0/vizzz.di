@@ -691,6 +691,33 @@ inline size_t buildSerialReply(uint8_t* out, size_t cap, uint32_t serialDecimal)
 
 }  // namespace widget
 
+// ── Output merge (computeOutput_locked) ─────────────────────────────────────
+// Network-class sources (Art-Net, sACN, USB widget) merge HTP among themselves;
+// the mode then decides what reaches the output. Mode numbers match main.cpp's
+// enum Mode: 0 WEB_ONLY, 1 ARTNET_ONLY, 2 MERGE_HTP.
+namespace merge {
+constexpr uint8_t kWebOnly = 0, kArtnetOnly = 1, kHtp = 2;
+
+inline uint8_t networkIn(bool aOn, uint8_t a, bool sOn, uint8_t sv, bool uOn, uint8_t u) {
+  uint8_t v = 0;
+  if (aOn && a > v) v = a;
+  if (sOn && sv > v) v = sv;
+  if (uOn && u > v) v = u;
+  return v;
+}
+
+// held = the channel's current output (ARTNET_ONLY holds it while every network
+// source is idle, unless fallbackToWeb).
+inline uint8_t forMode(uint8_t mode, bool netActive, uint8_t netIn, uint8_t web, uint8_t held,
+                       bool fallbackToWeb) {
+  switch (mode) {
+    case kWebOnly:    return web;
+    case kArtnetOnly: return netActive ? netIn : (fallbackToWeb ? web : held);
+    default:          return netActive ? (web > netIn ? web : netIn) : web;
+  }
+}
+}  // namespace merge
+
 // ── OSC 1.0 argument conversion ───────────────────────────────────────────────
 // Level addresses take ints 0..255, or floats: 0.0..1.0 is normalised (TouchOSC's
 // default fader range) and larger values are taken as levels. NaN/Inf and

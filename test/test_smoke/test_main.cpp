@@ -608,6 +608,24 @@ void test_widget_stalled_frame_resync_replays() {
   (void)n;
 }
 
+// README "USB" modes table: USB is a third network-class source, HTP with Art-Net/sACN.
+void test_merge_usb_obeys_modes_like_artnet() {
+  using namespace vizzz::merge;
+  // HTP among network sources; an idle source contributes nothing.
+  TEST_ASSERT_EQUAL_UINT8(180, networkIn(true, 100, false, 250, true, 180));
+  TEST_ASSERT_EQUAL_UINT8(250, networkIn(true, 100, true, 250, true, 180));
+  TEST_ASSERT_EQUAL_UINT8(0, networkIn(false, 100, false, 250, false, 180));
+  // USB alone (netActive true, netIn 180), web 50, held output 77.
+  TEST_ASSERT_EQUAL_UINT8(50,  forMode(kWebOnly, true, 180, 50, 77, false));     // WEB_ONLY ignores USB
+  TEST_ASSERT_EQUAL_UINT8(180, forMode(kArtnetOnly, true, 180, 50, 77, false));  // ARTNET_ONLY: USB alone
+  TEST_ASSERT_EQUAL_UINT8(180, forMode(kHtp, true, 180, 50, 77, false));         // MERGE_HTP: max
+  TEST_ASSERT_EQUAL_UINT8(200, forMode(kHtp, true, 180, 200, 77, false));
+  // USB gone (2.5 s): ARTNET_ONLY holds or falls back; HTP returns to web.
+  TEST_ASSERT_EQUAL_UINT8(77, forMode(kArtnetOnly, false, 0, 50, 77, false));
+  TEST_ASSERT_EQUAL_UINT8(50, forMode(kArtnetOnly, false, 0, 50, 77, true));
+  TEST_ASSERT_EQUAL_UINT8(50, forMode(kHtp, false, 0, 50, 77, false));
+}
+
 static int runAll() {
   UNITY_BEGIN();
   RUN_TEST(test_pack_universe_uses_15bit_layout);
@@ -645,6 +663,7 @@ static int runAll() {
   RUN_TEST(test_widget_params_reply_layout);
   RUN_TEST(test_widget_serial_reply_bcd);
   RUN_TEST(test_widget_stalled_frame_resync_replays);
+  RUN_TEST(test_merge_usb_obeys_modes_like_artnet);
   return UNITY_END();
 }
 
