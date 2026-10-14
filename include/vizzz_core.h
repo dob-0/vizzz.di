@@ -27,6 +27,16 @@ inline uint8_t slewToward(uint8_t current, uint8_t target, uint8_t step) {
   return down < current ? uint8_t(current - step) : target;
 }
 
+// ── DMX channel ranges ────────────────────────────────────────────────────────
+// 1-based inclusive range repaired into 1..maxCh with end >= start (the
+// re-clamp loadVj() applies to groups; used for stored fixtures).
+inline void clampChannelRange(uint16_t& start, uint16_t& end, uint16_t maxCh) {
+  if (start < 1) start = 1;
+  if (start > maxCh) start = maxCh;
+  if (end < start) end = start;
+  if (end > maxCh) end = maxCh;
+}
+
 // ── Wi-Fi credentials ─────────────────────────────────────────────────────────
 // IEEE 802.11i-2004 Annex H.4.1 (carried into IEEE 802.11-2020 Annex J.4.1): a
 // WPA/WPA2-Personal pass-phrase is 8..63 ASCII characters, each in 32..126.

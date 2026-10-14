@@ -107,6 +107,24 @@ void test_sta_retry_backoff() {
   TEST_ASSERT_EQUAL_UINT32(300000, vizzz::staRetryDelayMs(255));
 }
 
+void test_clamp_channel_range() {
+  uint16_t a = 0, b = 0;
+  vizzz::clampChannelRange(a, b, 512);
+  TEST_ASSERT_EQUAL_UINT16(1, a); TEST_ASSERT_EQUAL_UINT16(1, b);
+  a = 600; b = 700;
+  vizzz::clampChannelRange(a, b, 512);
+  TEST_ASSERT_EQUAL_UINT16(512, a); TEST_ASSERT_EQUAL_UINT16(512, b);
+  a = 10; b = 5;
+  vizzz::clampChannelRange(a, b, 512);
+  TEST_ASSERT_EQUAL_UINT16(10, a); TEST_ASSERT_EQUAL_UINT16(10, b);
+  a = 1; b = 0xFFFF;
+  vizzz::clampChannelRange(a, b, 512);
+  TEST_ASSERT_EQUAL_UINT16(1, a); TEST_ASSERT_EQUAL_UINT16(512, b);
+  a = 17; b = 24;
+  vizzz::clampChannelRange(a, b, 512);
+  TEST_ASSERT_EQUAL_UINT16(17, a); TEST_ASSERT_EQUAL_UINT16(24, b);
+}
+
 static int runAll() {
   UNITY_BEGIN();
   RUN_TEST(test_pack_universe_uses_15bit_layout);
@@ -119,6 +137,7 @@ static int runAll() {
   RUN_TEST(test_cue_timing);
   RUN_TEST(test_elapsed_at_least_wraps);
   RUN_TEST(test_sta_retry_backoff);
+  RUN_TEST(test_clamp_channel_range);
   return UNITY_END();
 }
 

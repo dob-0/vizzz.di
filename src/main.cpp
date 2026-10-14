@@ -301,7 +301,14 @@ static void loadFixtures() {
   prefs.end();
   if (got == sizeof(fixtures)) {
     fixtureCount = constrain(count, uint8_t(1), MAX_FIXTURES);
-    for (uint8_t i = 0; i < MAX_FIXTURES; i++) fixtures[i].enabled = (i < fixtureCount) ? fixtures[i].enabled : false;
+    for (uint8_t i = 0; i < MAX_FIXTURES; i++) {
+      fixtures[i].enabled = (i < fixtureCount) ? fixtures[i].enabled : false;
+      // Repair what was read, as loadVj() does (1-L8): a corrupted blob of the
+      // right size must not make fixturesJSON over-read a name with %s or put
+      // an out-of-range channel into the output path.
+      fixtures[i].name[sizeof(fixtures[i].name) - 1] = '\0';
+      vizzz::clampChannelRange(fixtures[i].start, fixtures[i].end, MAX_CH);
+    }
   } else {
     initFixtureDefaults();
   }
@@ -764,6 +771,7 @@ static void pollDiscovery() {
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) != pdTRUE) continue;
 
     bool found = false;
+    bool added = false;
     for (uint8_t i = 0; i < peerCount; i++) {
       // Match by MAC first (IP can change on DHCP rebind), fall back to IP.
       bool match = (pMac[0] != '\0') ? (strcasecmp(peers[i].mac, pMac) == 0)
@@ -785,8 +793,11 @@ static void pollDiscovery() {
       strlcpy(peers[peerCount].mac,  pMac,  sizeof(peers[peerCount].mac));
       peers[peerCount].lastSeenMs = now;
       peerCount++;
+      added = true;
     }
-    bool isNewPeer = !found;
+    // "New" only when a peer was actually added: with the table full, any
+    // unknown MAC used to count as new and got a reply every second (1-L7).
+    bool isNewPeer = added;
     xSemaphoreGive(gLock);
 
     // Reply only to a peer we did not already know, and no more than once a
