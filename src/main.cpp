@@ -12,6 +12,7 @@
 #include <Preferences.h>
 
 #include <math.h>
+#include <atomic>
 
 #include "esp_dmx.h"
 #include "vizzz_core.h"
@@ -89,7 +90,10 @@ static uint8_t artNet = 0, artSubnet = 0, artUni = 0;
 static Mode    mode         = MODE_HTP;
 static NetMode netMode      = NET_AP_STA;
 static bool    artOutEnabled = false;   // broadcast webVals as Art-Net to slaves
-static String  artOutPeerIp = "";       // if non-empty, unicast to this IP instead of broadcast
+// Art OUT unicast target as a raw IPAddress word (0 = none → broadcast). Written
+// by the web task, read by loop() at DMX rate: one aligned 32-bit atomic, so no
+// String buffer can be freed under the reader (audit 2026-10-15 1-C2).
+static std::atomic<uint32_t> artOutPeerAddr{0};
 static bool    webEnabled    = true;    // when false, web server and websocket stay disabled
 static bool    burnSafeMode  = false;   // temporary reduced-output profile for stress tests
 static bool    artnetFallbackToWeb = true; // use web layer when Art-Net/sACN signal is inactive
@@ -127,13 +131,37 @@ static String makeNodeNameFromMac() {
   return String(PRODUCT_NAME) + "-" + macSuffix6();
 }
 
+// ── Shared identity strings (audit 2026-10-15 1-C2) ───────────────────────────
+// nodeName, apSsid, apPass, staSSID and staPass are Arduino Strings written by
+// the AsyncTCP task (/node/set, /wifi/set, /wifi/forget) and read by loop().
+// String::operator= reallocates and frees the old buffer, so an unlocked
+// reader on the other task copies from freed heap. Rule: every write holds
+// gLock; every reader outside setup() copies them into this fixed snapshot
+// under gLock (FreeRTOS mutex, held only for the strlcpy) and uses the copy.
+struct IdentitySnap {
+  char name[MAX_NAME_LEN + 1];
+  char apSsid[MAX_NAME_LEN + 1];
+  char apPass[MAX_PASS_LEN + 1];
+  char staSsid[33];             // 802.11 SSID <= 32 octets
+  char staPass[MAX_PASS_LEN + 2];
+  char mdns[MAX_NAME_LEN + 1];
+};
+static bool snapIdentity(IdentitySnap& s, TickType_t wait = pdMS_TO_TICKS(20));
+
+// Callers must NOT hold gLock: the strings are copied under it, then written
+// to NVS outside it (AGENTS.md: never hold gLock across a blocking call).
 static void saveConfig() {
+  IdentitySnap id;
+  if (!snapIdentity(id, pdMS_TO_TICKS(50))) {
+    Serial.println("saveConfig: lock busy, identity not saved");
+    return;
+  }
   prefs.begin("cfg", false);
-  prefs.putString("name",     nodeName);
-  prefs.putString("ap_ssid",  apSsid);
-  prefs.putString("ap_pass",  apPass);
-  prefs.putString("sta_ssid", staSSID);
-  prefs.putString("sta_pass", staPass);
+  prefs.putString("name",     id.name);
+  prefs.putString("ap_ssid",  id.apSsid);
+  prefs.putString("ap_pass",  id.apPass);
+  prefs.putString("sta_ssid", id.staSsid);
+  prefs.putString("sta_pass", id.staPass);
   prefs.putUChar("anet_net",  artNet);
   prefs.putUChar("anet_sub",  artSubnet);
   prefs.putUChar("anet_uni",  artUni);
@@ -329,6 +357,8 @@ static volatile bool     pendingWifiForget    = false;
 static volatile bool     pendingFactoryReset  = false;
 static volatile bool     pendingPanic         = false;
 static volatile bool     pendingBlackout      = false;
+static volatile bool     pendingMdnsRestart   = false;  // set by /node/set, run in loop()
+static volatile bool     pendingBeacon        = false;  // set by /discover, run in loop()
 static bool              webStopped           = false;
 
 // ── Broadcast queue (web callbacks write, peer task drains) ───────────────────
@@ -353,9 +383,9 @@ static String ipStr(IPAddress ip) {
   return buf;
 }
 
-static void jsonEsc(char* dst, size_t n, const String& src) {
+static void jsonEsc(char* dst, size_t n, const char* src) {
   size_t d = 0;
-  for (size_t i = 0; i < src.length() && d + 3 < n; i++) {
+  for (size_t i = 0; src && src[i] != '\0' && d + 3 < n; i++) {
     uint8_t c = uint8_t(src[i]);
     switch (c) {
       case '"':  dst[d++] = '\\'; dst[d++] = '"';  break;
@@ -374,6 +404,22 @@ static void jsonEsc(char* dst, size_t n, const String& src) {
     }
   }
   dst[d] = '\0';
+}
+static void jsonEsc(char* dst, size_t n, const String& src) { jsonEsc(dst, n, src.c_str()); }
+
+static char mdnsName[MAX_NAME_LEN + 1] = "vizzz-di";  // written under gLock
+
+static bool snapIdentity(IdentitySnap& s, TickType_t wait) {
+  memset(&s, 0, sizeof(s));
+  if (xSemaphoreTake(gLock, wait) != pdTRUE) return false;
+  strlcpy(s.name,    nodeName.c_str(), sizeof(s.name));
+  strlcpy(s.apSsid,  apSsid.c_str(),   sizeof(s.apSsid));
+  strlcpy(s.apPass,  apPass.c_str(),   sizeof(s.apPass));
+  strlcpy(s.staSsid, staSSID.c_str(),  sizeof(s.staSsid));
+  strlcpy(s.staPass, staPass.c_str(),  sizeof(s.staPass));
+  strlcpy(s.mdns,    mdnsName,         sizeof(s.mdns));
+  xSemaphoreGive(gLock);
+  return true;
 }
 
 static uint8_t effectiveSafeMaxLevel() {
@@ -518,7 +564,6 @@ static bool enqueueBcast(const char* path, const char* targetIp = nullptr) {
 }
 
 // Forward declarations needed by startWiFi()
-static String mdnsName;
 static void buildMdnsName();
 
 // ── WiFi ──────────────────────────────────────────────────────────────────────
@@ -533,10 +578,8 @@ static bool isOwnIp(const IPAddress& ip) {
 
 // Returns the Art-Net target: peer unicast if set, else STA subnet broadcast, else AP broadcast
 static IPAddress artOutTarget() {
-  if (!artOutPeerIp.isEmpty()) {
-    IPAddress peer;
-    if (peer.fromString(artOutPeerIp)) return peer;
-  }
+  uint32_t peer = artOutPeerAddr.load(std::memory_order_relaxed);
+  if (peer != 0) return IPAddress(peer);
   if (WiFi.status() == WL_CONNECTED) {
     uint32_t ip   = (uint32_t)WiFi.localIP();
     uint32_t mask = (uint32_t)WiFi.subnetMask();
@@ -547,7 +590,9 @@ static IPAddress artOutTarget() {
 
 static void startSoftAP() {
   WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
-  WiFi.softAP(apSsid.c_str(), apPass.c_str());
+  IdentitySnap id;
+  snapIdentity(id, pdMS_TO_TICKS(100));
+  WiFi.softAP(id.apSsid, id.apPass);
 }
 
 static void ensureStaInterface() {
@@ -576,7 +621,9 @@ static void startWiFi() {
       // Only overwrite if it looks like a vizzz.di_ SSID (not user-customised).
       // A user-customised SSID won't start with the default prefix.
       if (apSsid.isEmpty() || apSsid.startsWith(AP_SSID_PREFIX)) {
+        xSemaphoreTake(gLock, portMAX_DELAY);  // setup(): no other holder yet
         apSsid = expected;
+        xSemaphoreGive(gLock);
         needSaveConfig = true;
       }
     }
@@ -585,14 +632,20 @@ static void startWiFi() {
   // Register DHCP hostname BEFORE connecting so the router's table is correct.
   // Without this both devices appear as generic "espressif" in the DHCP lease list.
   buildMdnsName();
-  WiFi.setHostname(mdnsName.c_str());
+  {
+    IdentitySnap id;
+    snapIdentity(id, pdMS_TO_TICKS(100));
+    WiFi.setHostname(id.mdns);
+  }
 
   if (netMode != NET_STA_ONLY) {
     startSoftAP();
   }
 
-  if (netMode != NET_AP_ONLY && staSSID.length()) {
-    WiFi.begin(staSSID.c_str(), staPass.c_str());
+  IdentitySnap cred;
+  snapIdentity(cred, pdMS_TO_TICKS(100));
+  if (netMode != NET_AP_ONLY && cred.staSsid[0]) {
+    WiFi.begin(cred.staSsid, cred.staPass);
     uint32_t t = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - t < 10000) delay(100);
 
@@ -609,21 +662,23 @@ static void startWiFi() {
 }
 
 // ── mDNS ──────────────────────────────────────────────────────────────────────
+// Only loop()/setup() call this (the web task sets pendingMdnsRestart).
 static void buildMdnsName() {
-  mdnsName = nodeName;
-  for (size_t i = 0; i < mdnsName.length(); i++) {
-    char c = mdnsName[i];
-    if (!isalnum((unsigned char)c) && c != '-') mdnsName[i] = '-';
-  }
-  while (mdnsName.startsWith("-")) mdnsName = mdnsName.substring(1);
-  while (mdnsName.endsWith("-"))   mdnsName = mdnsName.substring(0, mdnsName.length() - 1);
-  if (mdnsName.isEmpty()) mdnsName = "vizzz-di";
+  IdentitySnap id;
+  if (!snapIdentity(id, pdMS_TO_TICKS(100))) return;
+  char label[sizeof(mdnsName)];
+  vizzz::sanitizeHostLabel(id.name, label, sizeof(label), "vizzz-di");
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(100)) != pdTRUE) return;
+  strlcpy(mdnsName, label, sizeof(mdnsName));
+  xSemaphoreGive(gLock);
 }
 
 static void startMdns() {
   buildMdnsName();
+  IdentitySnap id;
+  snapIdentity(id, pdMS_TO_TICKS(100));
   MDNS.end();
-  if (MDNS.begin(mdnsName.c_str())) {
+  if (MDNS.begin(id.mdns[0] ? id.mdns : "vizzz-di")) {
     MDNS.addService("http", "tcp", 80);
   }
 }
@@ -634,12 +689,14 @@ static void sendBeacon() {
   uint32_t mask = (uint32_t)WiFi.subnetMask();
   IPAddress bcast((ip & mask) | ~mask);
   char buf[240];
-  char eName[64];   jsonEsc(eName,   sizeof(eName),   nodeName);
-  char eApSsid[64]; jsonEsc(eApSsid, sizeof(eApSsid), apSsid);
+  IdentitySnap id;
+  if (!snapIdentity(id)) return;  // next beacon in 30 s
+  char eName[64];   jsonEsc(eName,   sizeof(eName),   id.name);
+  char eApSsid[64]; jsonEsc(eApSsid, sizeof(eApSsid), id.apSsid);
   String mac = WiFi.macAddress();
   snprintf(buf, sizeof(buf),
     "{\"name\":\"%s\",\"ip\":\"%s\",\"ap_ssid\":\"%s\",\"mdns\":\"%s.local\",\"mac\":\"%s\",\"product\":\"vizzz.di\"}",
-    eName, ipStr(WiFi.localIP()).c_str(), eApSsid, mdnsName.c_str(), mac.c_str());
+    eName, ipStr(WiFi.localIP()).c_str(), eApSsid, id.mdns, mac.c_str());
   discoverUdp.beginPacket(bcast, DISCOVERY_PORT);
   discoverUdp.write((const uint8_t*)buf, strlen(buf));
   discoverUdp.endPacket();
@@ -1954,10 +2011,12 @@ static size_t fillStatusJSON(char* buf, size_t n) {
   staIp[0] = '\0';
   if (staCon) ipToCStr(staIp, sizeof(staIp), WiFi.localIP());
   ipToCStr(outTarget, sizeof(outTarget), artOutTarget());
-  jsonEsc(eName,    sizeof(eName),    nodeName);
-  jsonEsc(eSsid,    sizeof(eSsid),    apSsid);
-  jsonEsc(eStaSsid, sizeof(eStaSsid), staSSID);
-  jsonEsc(eMdns,    sizeof(eMdns),    mdnsName);
+  IdentitySnap id;
+  snapIdentity(id);  // on a busy lock the strings read empty for one push
+  jsonEsc(eName,    sizeof(eName),    id.name);
+  jsonEsc(eSsid,    sizeof(eSsid),    id.apSsid);
+  jsonEsc(eStaSsid, sizeof(eStaSsid), id.staSsid);
+  jsonEsc(eMdns,    sizeof(eMdns),    id.mdns);
   uint8_t apClients = WiFi.softAPgetStationNum();
   int32_t staRssi = staCon ? WiFi.RSSI() : 0;
   uint8_t snapPeers = 0;
@@ -2250,9 +2309,11 @@ static String nodeManifestJSON() {
     xSemaphoreGive(gLock);
   }
   char eName[80], eSsid[80], eStaSsid[80], eFw[80];
-  jsonEsc(eName,    sizeof(eName),    nodeName);
-  jsonEsc(eSsid,    sizeof(eSsid),    apSsid);
-  jsonEsc(eStaSsid, sizeof(eStaSsid), staSSID);
+  IdentitySnap id;
+  snapIdentity(id);
+  jsonEsc(eName,    sizeof(eName),    id.name);
+  jsonEsc(eSsid,    sizeof(eSsid),    id.apSsid);
+  jsonEsc(eStaSsid, sizeof(eStaSsid), id.staSsid);
   jsonEsc(eFw,      sizeof(eFw),      FW_TAG);
 
   String apIp = ipStr(WiFi.softAPIP());
@@ -2633,7 +2694,7 @@ static void setupWeb() {
     if (r->hasArg("ap_pass")) { apPass   = r->arg("ap_pass"); if (apPass.length() > MAX_PASS_LEN) apPass.remove(MAX_PASS_LEN); }
     xSemaphoreGive(gLock);
     saveConfig();
-    startMdns();
+    pendingMdnsRestart = true;  // MDNS.end()/begin() and mdnsName belong to loop()
     r->send(204);
   };
   server.on("/node/set", HTTP_GET, routeNodeSet);
@@ -2654,28 +2715,33 @@ static void setupWeb() {
 
   server.on("/discover", HTTP_GET, [](AsyncWebServerRequest* r){
     char buf[256];
-    char eName[64];   jsonEsc(eName,   sizeof(eName),   nodeName);
-    char eApSsid[64]; jsonEsc(eApSsid, sizeof(eApSsid), apSsid);
+    IdentitySnap id;
+    if (!snapIdentity(id)) { r->send(503, "text/plain", "busy"); return; }
+    char eName[64];   jsonEsc(eName,   sizeof(eName),   id.name);
+    char eApSsid[64]; jsonEsc(eApSsid, sizeof(eApSsid), id.apSsid);
     char apIp[16];    ipToCStr(apIp, sizeof(apIp), WiFi.softAPIP());
     String mac = WiFi.macAddress();
     snprintf(buf, sizeof(buf),
       "{\"name\":\"%s\",\"ip\":\"%s\",\"ap_ip\":\"%s\",\"ap_ssid\":\"%s\",\"mdns\":\"%s.local\",\"mac\":\"%s\",\"product\":\"vizzz.di\"}",
-      eName, ipStr(WiFi.localIP()).c_str(), apIp, eApSsid, mdnsName.c_str(), mac.c_str());
+      eName, ipStr(WiFi.localIP()).c_str(), apIp, eApSsid, id.mdns, mac.c_str());
     r->send(200, "application/json", buf);
-    sendBeacon();
+    pendingBeacon = true;  // discoverUdp belongs to loop(); never send from this task
   });
 
   server.on("/peers", HTTP_GET, [](AsyncWebServerRequest* r){ sendJSON(r, peersJSON()); });
 
   server.on("/artout/peer", HTTP_GET, [](AsyncWebServerRequest* r){
-    // Written on the AsyncTCP task, read by loop() at DMX rate. Without the
-    // lock a String realloc frees the buffer out from under artOutTarget().
-    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
-      r->send(503, "text/plain", "busy");
+    // Written here, read by loop() at DMX rate: stored as one atomic word, so
+    // there is no String buffer to free under the reader (1-C2). Empty or
+    // missing ip clears the peer (broadcast); anything but a dotted quad is 400.
+    uint8_t b[4] = {0, 0, 0, 0};
+    String ip = r->hasArg("ip") ? r->arg("ip") : String();
+    ip.trim();
+    if (ip.length() && !vizzz::parseIpv4(ip.c_str(), b)) {
+      r->send(400, "text/plain", "ip must be a dotted quad");
       return;
     }
-    artOutPeerIp = r->hasArg("ip") ? r->arg("ip") : "";
-    xSemaphoreGive(gLock);
+    artOutPeerAddr.store(uint32_t(IPAddress(b[0], b[1], b[2], b[3])), std::memory_order_relaxed);
     r->send(204);
   });
 
@@ -2992,12 +3058,15 @@ void setup() {
   lastArtnetMs = 0;
   lastSacnMs = 0;
 
+  // The web task is already running: read the shared strings via a snapshot.
+  IdentitySnap id;
+  snapIdentity(id, pdMS_TO_TICKS(100));
   Serial.printf("\n=== vizzz.di ===\n");
-  Serial.printf("AP SSID  : %s\n", apSsid.c_str());
+  Serial.printf("AP SSID  : %s\n", id.apSsid);
   Serial.printf("AP IP    : %s\n", ipStr(WiFi.softAPIP()).c_str());
-  Serial.printf("mDNS     : http://%s.local\n", mdnsName.c_str());
-  if (staSSID.length()) {
-    Serial.printf("STA SSID : %s\n", staSSID.c_str());
+  Serial.printf("mDNS     : http://%s.local\n", id.mdns);
+  if (id.staSsid[0]) {
+    Serial.printf("STA SSID : %s\n", id.staSsid);
     if (WiFi.status() == WL_CONNECTED)
       Serial.printf("STA IP   : %s\n", ipStr(WiFi.localIP()).c_str());
   }
@@ -3009,7 +3078,7 @@ void setup() {
   Serial.printf("Art-Out  : %s\n", artOutEnabled ? "enabled" : "disabled");
   Serial.printf("Web      : %s\n", webEnabled ? "enabled" : "disabled");
   Serial.printf("OSC IN   : udp/%u\n", OSC_PORT);
-  if (apPass == "changeme123") {
+  if (strcmp(id.apPass, "changeme123") == 0) {
     Serial.printf("WARNING  : placeholder AP password in use.\n");
     Serial.printf("           cp src/secrets.example.h src/secrets.h, set your\n");
     Serial.printf("           own AP_PASS_DEFAULT, then reflash.\n");
@@ -3077,7 +3146,19 @@ void loop() {
     WiFi.scanDelete();
     wifiScanActive = false;
     ensureStaInterface();
-    WiFi.begin(staSSID.c_str(), staPass.c_str());
+    IdentitySnap cred;
+    if (snapIdentity(cred)) WiFi.begin(cred.staSsid, cred.staPass);
+    else pendingWifiReconnect = true;  // lock busy: retry next pass
+  }
+
+  if (pendingMdnsRestart) {
+    pendingMdnsRestart = false;
+    startMdns();
+  }
+
+  if (pendingBeacon) {
+    pendingBeacon = false;
+    sendBeacon();
   }
 
   pollArtNet();
