@@ -36,7 +36,9 @@ static constexpr uint32_t   DMX_PERIOD_MS     = 23;
 static constexpr TickType_t DMX_SEND_WAIT     = pdMS_TO_TICKS(30);
 static constexpr uint32_t   ARTNET_TIMEOUT_MS = 3000;
 static constexpr uint16_t   ARTNET_PORT       = 6454;
-static constexpr uint32_t   SACN_TIMEOUT_MS   = 3000;
+static constexpr uint32_t   SACN_TIMEOUT_MS   = vizzz::sacn::kLossTimeoutMs;  // E1.31-2018 §6.7.1: 2.5 s
+static constexpr uint32_t   ART_MERGE_TIMEOUT_MS = vizzz::artnet::kMergeTimeoutMs;  // Art-Net 4 "Data Merging": 10 s
+static constexpr uint32_t   ART_OUT_KEEPALIVE_MS = 1000;  // resend an unchanged frame; inside the 3 s loss timeout
 static constexpr uint16_t   SACN_PORT         = 5568;
 static constexpr uint8_t    SAFE_MAX_LEVEL    = 245;
 static constexpr uint8_t    SAFE_SLEW_STEP    = 18;
@@ -103,6 +105,12 @@ static uint32_t wifiScanStartMs = 0;
 
 static uint16_t universe() {
   return vizzz::packUniverse(artNet, artSubnet, artUni);
+}
+
+// sACN universe = Art-Net Port-Address + 1, never the reserved 0 (E1.31-2018
+// §6.2.7). Desk universe 1 is then Art-Net 0 and sACN 1, as di sends them.
+static uint16_t sacnUniverse() {
+  return vizzz::sacn::universeForPortAddress(universe());
 }
 
 static bool isGeneratedApSsid(const String& ssid) {
@@ -743,8 +751,9 @@ static void refreshSacnSocket() {
 
   // Join universe multicast group when STA is connected.
   if (WiFi.status() == WL_CONNECTED) {
-    uint16_t u = universe();
-    IPAddress group(239, 255, uint8_t(u >> 8), uint8_t(u & 0xFF));
+    uint8_t g[4];
+    vizzz::sacn::multicastGroup(sacnUniverse(), g);
+    IPAddress group(g[0], g[1], g[2], g[3]);
     (void)sacnUdp.beginMulticast(group, SACN_PORT);
   }
 }
@@ -1222,92 +1231,133 @@ static void sendDMX() {
 // ── Art-Net output (master → slaves broadcast) ────────────────────────────────
 static void sendArtNetOut() {
   if (!artOutEnabled) return;
-  static uint8_t  seq = 1;
-  static const uint8_t hdr[12] = {
-    'A','r','t','-','N','e','t',0,   // ID
-    0x00, 0x50,                       // OpDmx (little-endian)
-    0x00, 0x0e                        // Protocol v14
-  };
-  uint8_t pkt[18 + MAX_CH];
-  memcpy(pkt, hdr, 12);
-  pkt[12] = seq++;
-  pkt[13] = 0;
-  pkt[14] = uint8_t((artSubnet << 4) | artUni);
-  pkt[15] = artNet;
-  pkt[16] = 0x02;   // length hi (512)
-  pkt[17] = 0x00;   // length lo
-  memcpy(pkt + 18, dmxFrame + 1, MAX_CH);
+  static uint8_t  seq = 0;
+  static uint8_t  lastSent[MAX_CH];
+  static uint32_t lastSentMs = 0;
+  uint32_t now = millis();
+  // Send on change, and resend an unchanged frame once a second so receivers
+  // keep it inside their 3 s loss timeout (audit 1-L11: no 43 Hz of repeats).
+  if (lastSentMs && memcmp(lastSent, dmxFrame + 1, MAX_CH) == 0 &&
+      (uint32_t)(now - lastSentMs) < ART_OUT_KEEPALIVE_MS) return;
+  seq = vizzz::artnet::nextSequence(seq);   // 1..255, never 0 ("sequencing off")
+  uint8_t pkt[vizzz::artnet::kDmxHeaderLen + MAX_CH];
+  // Physical carries the vizzz tag so another node with Art OUT on drops it (1-C1).
+  vizzz::artnet::buildDmxHeader(pkt, universe(), seq, vizzz::artnet::kVizzzPhysicalTag, MAX_CH);
+  memcpy(pkt + vizzz::artnet::kDmxHeaderLen, dmxFrame + 1, MAX_CH);
+  memcpy(lastSent, dmxFrame + 1, MAX_CH);
+  lastSentMs = now;
   artOutUdp.beginPacket(artOutTarget(), ARTNET_PORT);
   artOutUdp.write(pkt, sizeof(pkt));
   artOutUdp.endPacket();
 }
 
 // ── Art-Net IN ────────────────────────────────────────────────────────────────
+// Loop-task state for the two network inputs (Art-Net 4 merge, E1.31 sources).
+static vizzz::artnet::Merger artMerge;
+static vizzz::sacn::Receiver sacnRx;
+static volatile uint8_t artSourceCount = 0;
+static uint16_t artPollReplyCount = 0;
+
+// Art-Net 4, ArtPollReply: answer every ArtPoll, unicast to the poller on 6454,
+// from the Art-Net socket so the source port is 6454 too. The reply names the
+// interface the poll arrived on (AP or STA subnet).
+static void sendArtPollReply(const IPAddress& to) {
+  vizzz::artnet::PollReplyInfo in{};
+  bool staUp = WiFi.status() == WL_CONNECTED;
+  IPAddress ap = WiFi.softAPIP();
+  bool viaAp = !staUp || (to[0] == ap[0] && to[1] == ap[1] && to[2] == ap[2]);
+  IPAddress me = viaAp ? ap : WiFi.localIP();
+  for (int i = 0; i < 4; i++) in.ip[i] = me[i];
+  if (viaAp) WiFi.softAPmacAddress(in.mac); else WiFi.macAddress(in.mac);
+
+  char shortName[18], longName[64], report[48];
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) != pdTRUE) return;  // nodeName is shared with the web task
+  strlcpy(shortName, nodeName.c_str(), sizeof(shortName));
+  snprintf(longName, sizeof(longName), "%s %s", PRODUCT_NAME, nodeName.c_str());
+  xSemaphoreGive(gLock);
+
+  bool aOn = artnetActive(), sOn = sacnActive();
+  snprintf(report, sizeof(report), "art %s/%u sacn %s u%u", aOn ? "on" : "idle",
+           unsigned(artSourceCount), sOn ? "on" : "idle", unsigned(sacnUniverse()));
+  in.net = artNet; in.subnet = artSubnet; in.uni = artUni;
+  in.shortName = shortName; in.longName = longName; in.report = report;
+  in.replyCount = artPollReplyCount = uint16_t((artPollReplyCount + 1) % 10000);
+  in.outputActive = true;                  // the DMX task transmits every frame
+  in.merging = artSourceCount > 1;
+  in.sacnSource = sOn && !aOn;
+  in.dhcp = !viaAp;
+  in.refreshHz = uint8_t(1000 / DMX_PERIOD_MS);
+
+  uint8_t out[vizzz::artnet::kPollReplyLen];
+  size_t len = vizzz::artnet::buildPollReply(out, in);
+  artInUdp.beginPacket(to, ARTNET_PORT);
+  artInUdp.write(out, len);
+  artInUdp.endPacket();
+}
+
 static void pollArtNet() {
-  uint8_t pkt[18 + MAX_CH];
-  static const uint8_t artNetId[8] = {'A','r','t','-','N','e','t',0};
+  uint8_t pkt[vizzz::artnet::kDmxHeaderLen + MAX_CH];
+  uint32_t now = millis();
+  bool changed = false;
 
   for (uint8_t processed = 0; processed < ARTNET_PKT_BUDGET; processed++) {
     int size = artInUdp.parsePacket();
     if (size <= 0) break;
     int n = artInUdp.read(pkt, min(int(sizeof(pkt)), size));
     artInUdp.flush();
-    if (n < 18) continue;
-    if (isOwnIp(artInUdp.remoteIP())) continue;  // never merge our own Art-Net OUT back in
-    if (memcmp(pkt, artNetId, sizeof(artNetId)) != 0) continue;
-    if (!(pkt[8] == 0x00 && pkt[9] == 0x50)) continue; // OpDmx, little-endian
+    if (n < int(vizzz::artnet::kPollMinLen)) continue;  // ArtPoll is 14 bytes; check opcode before ArtDmx's 18
+    IPAddress from = artInUdp.remoteIP();
+    if (isOwnIp(from)) continue;  // never merge our own Art-Net OUT back in
 
-    uint16_t uni = uint16_t(pkt[14]) | (uint16_t(pkt[15] & 0x7F) << 8);
-    if (uni != universe()) continue;
+    uint16_t op = vizzz::artnet::opcode(pkt, size_t(n));
+    if (op == vizzz::artnet::kOpPoll) {
+      sendArtPollReply(from);
+      continue;
+    }
+    vizzz::artnet::DmxView v;
+    if (!vizzz::artnet::parseDmx(pkt, size_t(n), v)) continue;  // ID, OpDmx, ProtVer >= 14, length
+    if (v.portAddress != universe()) continue;
+    // Two-node latch (audit 1-C1): a node that re-emits on Art OUT never takes
+    // another node's re-emitted frame back in. Master -> slave still works,
+    // because a slave has Art OUT off.
+    if (artOutEnabled && v.physical == vizzz::artnet::kVizzzPhysicalTag) continue;
+    if (vizzz::artnet::mergerAccept(artMerge, (uint32_t)from, v.sequence, v.data, v.length, now) ==
+        vizzz::artnet::MergeResult::Accepted) changed = true;
+  }
 
-    uint16_t len = (uint16_t(pkt[16]) << 8) | pkt[17];
-    if (len == 0 || 18 + len > uint16_t(n)) continue;
-
-    uint16_t dmxLen = min<uint16_t>(MAX_CH, len);
-    memcpy(artVals, pkt + 18, dmxLen);
-    if (dmxLen < MAX_CH) memset(artVals + dmxLen, 0, MAX_CH - dmxLen);
-    lastArtnetMs = millis();
+  uint8_t before = vizzz::artnet::mergerSources(artMerge);
+  vizzz::artnet::mergerExpire(artMerge, now, ART_MERGE_TIMEOUT_MS, ARTNET_TIMEOUT_MS);
+  if (changed || vizzz::artnet::mergerSources(artMerge) != before) {
+    artSourceCount = vizzz::artnet::mergerOutput(artMerge, artVals);  // HTP of up to two sources
+    if (changed) lastArtnetMs = now;
   }
 }
 
 // ── sACN (E1.31) IN ─────────────────────────────────────────────────────────
 static void pollSacn() {
   uint8_t pkt[638]; // enough for E1.31 packet with full universe
+  uint32_t now = millis();
+  bool changed = false;
 
   for (uint8_t processed = 0; processed < SACN_PKT_BUDGET; processed++) {
     int size = sacnUdp.parsePacket();
     if (size <= 0) break;
     int n = sacnUdp.read(pkt, min(int(sizeof(pkt)), size));
     sacnUdp.flush();
-    if (n < 126) continue;
+    if (n <= 0) continue;
 
-    // ACN Packet Identifier
-    static const uint8_t acnPid[12] = {
-      0x41, 0x53, 0x43, 0x2D, 0x45, 0x31, 0x2E, 0x31, 0x37, 0x00, 0x00, 0x00
-    };
-    if (memcmp(pkt + 4, acnPid, sizeof(acnPid)) != 0) continue;
+    vizzz::sacn::DataView v;
+    if (!vizzz::sacn::parseData(pkt, size_t(n), v)) continue;  // root, framing, DMP layers (§5-§7)
+    if (v.universe != sacnUniverse()) continue;
+    vizzz::sacn::Result r = vizzz::sacn::receiverAccept(sacnRx, v, now);
+    if (r == vizzz::sacn::Result::Accepted || r == vizzz::sacn::Result::Terminated) changed = true;
+  }
 
-    // Root Vector (Data Packet = 0x00000004)
-    if (!(pkt[18] == 0x00 && pkt[19] == 0x00 && pkt[20] == 0x00 && pkt[21] == 0x04)) continue;
-    // Framing Vector (Data Packet = 0x00000002)
-    if (!(pkt[40] == 0x00 && pkt[41] == 0x00 && pkt[42] == 0x00 && pkt[43] == 0x02)) continue;
-    // DMP Vector (set property)
-    if (pkt[117] != 0x02) continue;
-
-    uint16_t uni = (uint16_t(pkt[113]) << 8) | pkt[114];
-    if (uni != universe()) continue;
-
-    uint16_t propCount = (uint16_t(pkt[123]) << 8) | pkt[124];
-    if (propCount < 2) continue; // includes start code
-    if (125 + propCount > uint16_t(n)) continue;
-
-    const uint8_t* props = pkt + 125;
-    if (props[0] != 0x00) continue; // only DMX data start code
-
-    uint16_t dmxLen = min<uint16_t>(MAX_CH, propCount - 1);
-    memcpy(sacnVals, props + 1, dmxLen);
-    if (dmxLen < MAX_CH) memset(sacnVals + dmxLen, 0, MAX_CH - dmxLen);
-    lastSacnMs = millis();
+  uint8_t before = vizzz::sacn::receiverSources(sacnRx);
+  vizzz::sacn::receiverExpire(sacnRx, now);  // §6.7.1: 2.5 s per source
+  if (changed || vizzz::sacn::receiverSources(sacnRx) != before) {
+    uint8_t live = vizzz::sacn::receiverOutput(sacnRx, sacnVals);
+    lastSacnMs = live ? now : 0;  // terminated or lost: no sACN layer at once
   }
 }
 
@@ -2311,7 +2361,7 @@ static String nodeManifestJSON() {
     netModeName(netMode), apIp.c_str(), staCon ? "true" : "false", staIp.c_str(),
     DMX_TX, DMX_DIR, MAX_CH, (unsigned long)DMX_PERIOD_MS,
     ARTNET_PORT, universe(), outTarget.c_str(), artOutEnabled ? "true" : "false",
-    SACN_PORT, universe(),
+    SACN_PORT, sacnUniverse(),
     OSC_PORT,
     MAX_CH,
     modeName(mode), masterDimmer, artnetActive() ? "true" : "false", sacnActive() ? "true" : "false", webEnabled ? "true" : "false", fxModeName(snapFxMode), snapFxEnabled ? "true" : "false", snapColorEnabled ? "true" : "false", burnSafeMode ? "true" : "false", effectiveSafeMaxLevel(), effectiveSafeSlewStep()
@@ -3027,7 +3077,7 @@ void setup() {
   Serial.printf("Net Mode : %s\n", netModeName(netMode));
   Serial.printf("Art-Net  : net=%u sub=%u uni=%u (15-bit=%u)\n",
     artNet, artSubnet, artUni, universe());
-  Serial.printf("sACN     : universe=%u port=%u\n", universe(), SACN_PORT);
+  Serial.printf("sACN     : universe=%u port=%u\n", sacnUniverse(), SACN_PORT);
   Serial.printf("Art-Out  : %s\n", artOutEnabled ? "enabled" : "disabled");
   Serial.printf("Web      : %s\n", webEnabled ? "enabled" : "disabled");
   Serial.printf("OSC IN   : udp/%u\n", OSC_PORT);
