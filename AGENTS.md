@@ -76,6 +76,8 @@ Two FreeRTOS cores run concurrently:
 
 All access to `webVals[512]`, `outVals[512]`, and fade state **must** hold `gLock`.
 
+The identity Strings (`nodeName`, `apSsid`, `apPass`, `staSSID`, `staPass`) and `mdnsName` are written only under `gLock`; any reader outside `setup()` takes an `IdentitySnap` via `snapIdentity()` and uses the copy, never the String. Sockets, MDNS and WiFi calls belong to `loop()`: a web route sets a `pending*` flag (`pendingSockRefresh`, `pendingMdnsRestart`, `pendingBeacon`, `pendingBlackout`) and `loop()` services it (audit 2026-10-15 1-C2, 2-H4).
+
 ```cpp
 // Correct pattern for any route that reads/writes webVals:
 if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
