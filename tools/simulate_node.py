@@ -180,14 +180,22 @@ class Node:
         return {
             "schema": "vizzz.di.node.manifest.v1", "kind": "firmware-node",
             "product": "vizzz.di", "name": self.name, "fw": "simulator",
+            "firmware": {"tag": "simulator", "git": "simulator", "framework": "python"},
             "hardware": {"board": "ESP32 DevKit (simulated)", "dmx_uart": "DMX_NUM_1",
                          "dmx_tx_gpio": 25, "dmx_dir_gpio": 21,
                          "max_channels": MAX_CH, "dmx_period_ms": 23},
             "protocols": [
+                {"id": "http", "role": "control", "console_header": "X-Vizzz-Console: 1",
+                 "routes": list(ROUTES),
+                 "route_table": [{"path": r, "methods": ROUTE_METHODS[k], "console_header": k == "Console",
+                                  "cors": k == "GetShared"} for r, k in ROUTES.items()]},
+                {"id": "websocket", "role": "live-status", "endpoint": "/ws", "push_ms": 400},
                 {"id": "artnet", "role": "input-output", "port": 6454,
-                 "universe": self.uni15(), "output_enabled": self.art_out},
+                 "universe": self.uni15(), "net": self.art["net"], "subnet": self.art["subnet"],
+                 "uni": self.art["uni"], "output_enabled": self.art_out},
                 {"id": "sacn", "role": "input", "port": 5568,
-                 "universe": self.uni15() + 1},          # E1.31 §6.2.7: never 0
+                 "universe": self.uni15() + 1,           # E1.31 §6.2.7: never 0
+                 "universe_rule": "artnet port-address + 1"},
                 {"id": "osc", "role": "input", "transport": "udp", "port": 9000},
                 {"id": "dmx512", "role": "physical-output", "channels": MAX_CH}],
             "simulated": True,
@@ -378,15 +386,49 @@ def udp_loop(host, port, handler, multicast_uni=None):
 
 
 
-def ival(q, k, d=0):
-    try:
-        return int(q.get(k, [d])[0])
-    except (ValueError, TypeError):
-        return d
+CORE = os.path.join(ROOT, "include", "vizzz_core.h")
 
 
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
+def load_route_table(path=CORE):
+    """The firmware's own route table (vizzz::kRoutes): one source for both."""
+    src = open(path, encoding="utf-8").read()
+    table = dict(re.findall(r'\{"(/[^"]*)",\s*RouteKind::(\w+)\}', src))
+    if not table:
+        raise SystemExit("vizzz::kRoutes not found in %s" % path)
+    return table
+
+
+ROUTES = load_route_table()
+ROUTE_METHODS = {"GetLocal": "GET", "GetShared": "GET", "Operator": "GET, POST", "Console": "POST"}
+FADE_MAX_MS, MAX_GROUPS, MAX_CUES = 600000, 8, 16
+FX_NAMES = ["none", "strobe", "chase", "pulse", "sine", "sparkle", "comet", "bars", "glitch", "radar"]
+
+
+class BadArg(Exception):
+    def __init__(self, arg, why, lo, hi):
+        super().__init__(arg)
+        self.body = json.dumps({"error": why, "arg": arg, "min": lo, "max": hi}, separators=(",", ":"))
+
+
+def num(q, k, lo, hi, required=False):
+    """vizzz::parseUintArg: 1-10 decimal digits inside [lo, hi], else 400."""
+    if k not in q:
+        if required:
+            raise BadArg(k, "missing", lo, hi)
+        return None
+    s = q[k][0]
+    if not re.fullmatch(r"[0-9]{1,10}", s) or not lo <= int(s) <= hi:
+        raise BadArg(k, "bad number", lo, hi)
+    return int(s)
+
+
+def wpa_ok(s):
+    return 8 <= len(s) <= 63 and all(0x20 <= ord(c) <= 0x7e for c in s)
+
+
+def ipv4_ok(s):
+    parts = s.split(".")
+    return len(parts) == 4 and all(re.fullmatch(r"[0-9]{1,3}", p) and int(p) <= 255 for p in parts)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -396,29 +438,71 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code, body=b"", ctype="text/plain"):
+    def _send(self, code, body=b"", ctype="text/plain", headers=()):
         if isinstance(body, str):
             body = body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in headers:
+            self.send_header(k, v)
         self.end_headers()
         if body:
             self.wfile.write(body)
 
     def _json(self, obj):
-        self._send(200, json.dumps(obj), "application/json")
+        # Firmware sendJSON(): ACAO only on GetShared reads (audit 2-M7).
+        acao = [("Access-Control-Allow-Origin", "*")] if ROUTES.get(self._p) == "GetShared" else []
+        self._send(200, json.dumps(obj), "application/json", acao)
+
+    def do_OPTIONS(self):
+        p = urlparse(self.path).path
+        kind = ROUTES.get(p)
+        if kind is None:
+            return self._send(404, "Not found")
+        if kind == "GetShared":
+            return self._send(204, headers=[("Access-Control-Allow-Origin", "*"),
+                                            ("Access-Control-Allow-Methods", "GET"),
+                                            ("Access-Control-Max-Age", "600")])
+        return self._send(403, '{"error":"no cross-origin access"}', "application/json")
 
     def do_POST(self):
-        self.do_GET()
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n) if n > 0 else b""
+        extra = {}
+        if body and (self.headers.get("Content-Type") or "").startswith("application/x-www-form-urlencoded"):
+            extra = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
+        self._route("POST", extra)
 
     def do_GET(self):
-        u = urlparse(self.path)
-        p, q = u.path, parse_qs(u.query)
+        self._route("GET", {})
 
+    def _route(self, method, extra):
+        u = urlparse(self.path)
+        p, q = u.path, parse_qs(u.query, keep_blank_values=True)
+        q.update(extra)
+        self._p = p
         if p == "/ws":
             return self._websocket()
+        kind = ROUTES.get(p)
+        if kind is None:
+            return self._send(404, "Not found")
+        # Firmware route() gate (vizzz::gateRequest, audit 2-H2).
+        allowed = ("GET",) if kind in ("GetLocal", "GetShared") else \
+                  ("GET", "POST") if kind == "Operator" else ("POST",)
+        if method not in allowed:
+            return self._send(405, json.dumps({"error": "method not allowed", "allow": ROUTE_METHODS[kind]}),
+                              "application/json", [("Allow", ROUTE_METHODS[kind])])
+        if kind == "Console" and self.headers.get("X-Vizzz-Console") != "1":
+            return self._send(403, '{"error":"console route: send POST with X-Vizzz-Console: 1"}',
+                              "application/json")
+        try:
+            return self._handle(p, q)
+        except BadArg as e:
+            return self._send(400, e.body, "application/json")
+
+    def _handle(self, p, q):
         if p in PAGE_ROUTES:
             return self._send(200, APP_HTML, "text/html; charset=utf-8")
 
@@ -433,15 +517,16 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/monitor":
             return self._json({"out": n.out[:64]})
         if p == "/page":
-            i = clamp(ival(q, "i", 0), 0, PAGE_COUNT - 1)
+            i = num(q, "i", 0, PAGE_COUNT - 1) or 0
             s = i * PAGE_SIZE
             return self._json({"i": i, "web": n.web[s:s + PAGE_SIZE],
                                "out": n.out[s:s + PAGE_SIZE]})
         if p == "/peers":
             return self._json({"peers": n.peers, "count": len(n.peers)})
-        if p == "/discover":
-            return self._json({"name": n.name, "mac": n.mac, "ip": "192.168.4.1",
-                               "uni": n.status()["uni15"]})
+        if p == "/discover":   # firmware fields only, no side effect (2-L5)
+            return self._json({"name": n.name, "ip": "192.168.4.1", "ap_ip": "192.168.4.1",
+                               "ap_ssid": n.ap_ssid, "mdns": n.name.lower() + ".local",
+                               "mac": n.mac, "product": "vizzz.di"})
         if p == "/groups":
             return self._json({"groups": n.groups})
         if p == "/fixtures":
@@ -459,84 +544,131 @@ class Handler(BaseHTTPRequestHandler):
 
         with n.lock:
             if p == "/set":
-                if "ch" not in q or "v" not in q:
-                    return self._send(400, "missing arg")
-                n.web[clamp(ival(q, "ch", 1), 1, MAX_CH) - 1] = clamp(ival(q, "v"), 0, 255)
+                ch = num(q, "ch", 1, MAX_CH, True)
+                v = num(q, "v", 0, 255, True)
+                n.web[ch - 1] = v
             elif p == "/blackout" or p == "/net/blackout":
                 n.web = [0] * MAX_CH; n.fade = None
+                n.cue["run"] = False; n.fx["en"] = False
+            elif p == "/panic":   # firmware loop() pendingPanic
+                n.web = [0] * MAX_CH; n.fade = None; n.mode = 0; n.master = 255
+                n.cue["run"] = False; n.fx["en"] = False; n.color["en"] = False
             elif p == "/full" or p == "/net/full":
                 n.web = [255] * MAX_CH; n.fade = None
             elif p in ("/master", "/net/master"):
-                n.master = clamp(ival(q, "v", n.master), 0, 255)
+                v = num(q, "v", 0, 255)
+                if v is not None:
+                    n.master = v
             elif p == "/mode/set":
-                n.mode = clamp(ival(q, "m", n.mode), 0, 2)
+                n.mode = num(q, "m", 0, 2, True)
             elif p == "/mode/fallback":
-                n.artnet_fallback = bool(ival(q, "en", 1))
+                n.artnet_fallback = bool(num(q, "en", 0, 1, True))
             elif p == "/netmode/set":
-                n.net_mode = clamp(ival(q, "m", n.net_mode), 0, 2)
+                n.net_mode = num(q, "m", 0, 2, True)
             elif p == "/web/set":
-                n.web_enabled = bool(ival(q, "en", 1))
+                n.web_enabled = bool(num(q, "en", 0, 1, True))
             elif p == "/safety/set":
-                n.burn_safe = bool(ival(q, "burn", 0))
+                n.burn_safe = bool(num(q, "burn", 0, 1, True))
             elif p == "/artout/set":
-                n.art_out = bool(ival(q, "en", 0))
+                en = num(q, "en", 0, 1)
+                if en is not None:
+                    n.art_out = bool(en)
             elif p == "/artout/peer":
-                n.art_out_target = q.get("ip", [""])[0]
+                ip = q.get("ip", [""])[0].strip()
+                if ip and not ipv4_ok(ip):
+                    return self._send(400, "ip must be a dotted quad")
+                n.art_out_target = ip
             elif p == "/artnet/set":
-                n.art["net"] = clamp(ival(q, "net", n.art["net"]), 0, 127)
-                n.art["subnet"] = clamp(ival(q, "subnet", n.art["subnet"]), 0, 15)
-                n.art["uni"] = clamp(ival(q, "uni", n.art["uni"]), 0, 15)
+                vals = {k: num(q, k, 0, hi) for k, hi in (("net", 127), ("subnet", 15), ("uni", 15))}
+                for k, v in vals.items():
+                    if v is not None:
+                        n.art[k] = v
             elif p == "/scene/save":
-                n.scenes[clamp(ival(q, "n"), 0, SCENE_COUNT - 1)] = list(n.web)
+                n.scenes[num(q, "n", 0, SCENE_COUNT - 1, True)] = list(n.web)
             elif p in ("/scene/recall", "/net/scene/recall"):
-                s = n.scenes[clamp(ival(q, "n"), 0, SCENE_COUNT - 1)]
-                f = max(0, ival(q, "fade", 0))
+                s = n.scenes[num(q, "n", 0, SCENE_COUNT - 1, True)]
+                f = num(q, "fade", 0, FADE_MAX_MS) or 0
                 if f == 0:
                     n.web = list(s); n.fade = None
                 else:
                     n.fade = (time.time(), f, list(n.web), list(s))
-            elif p == "/group/set":
-                g = n.groups[clamp(ival(q, "g"), 0, 7)]
+            elif p in ("/group/set", "/fixture/set"):
+                fix = p == "/fixture/set"
+                idx = num(q, "i" if fix else "g", 0, (MAX_FIXTURES if fix else MAX_GROUPS) - 1, True)
+                start, end = num(q, "start", 1, MAX_CH), num(q, "end", 1, MAX_CH)
+                if start is not None and end is not None and end < start:
+                    raise BadArg("end", "end before start", start, MAX_CH)
+                en = num(q, "en", 0, 1)
+                if fix:
+                    x, y, count = num(q, "x", 0, 255), num(q, "y", 0, 255), num(q, "count", 1, MAX_FIXTURES)
+                    g = n.fixtures[idx]
+                    if x is not None: g["x"] = x
+                    if y is not None: g["y"] = y
+                    if count is not None: n.fixture_count = count
+                else:
+                    g = n.groups[idx]
                 if "name" in q: g["name"] = q["name"][0]
-                if "start" in q: g["start"] = clamp(ival(q, "start", 1), 1, MAX_CH)
-                if "end" in q: g["end"] = clamp(ival(q, "end", 1), 1, MAX_CH)
-                if "en" in q: g["en"] = bool(ival(q, "en", 1))
+                if start is not None: g["start"] = start
+                if end is not None: g["end"] = end
+                g["end"] = max(g["end"], g["start"])   # 2-L6
+                if en is not None: g["en"] = bool(en)
             elif p == "/group/apply":
-                g = n.groups[clamp(ival(q, "g"), 0, 7)]
-                v = clamp(ival(q, "v"), 0, 255)
+                g = n.groups[num(q, "g", 0, MAX_GROUPS - 1, True)]
+                v = num(q, "v", 0, 255, True)
                 for c in range(g["start"] - 1, min(g["end"], MAX_CH)):
                     n.web[c] = v
             elif p == "/cue/count":
-                n.cue["count"] = clamp(ival(q, "c", 1), 1, 16)
+                n.cue["count"] = num(q, "c", 1, MAX_CUES, True)
             elif p == "/cue/set":
-                i = clamp(ival(q, "i"), 0, 15)
-                st = n.cue["steps"][i]
-                if "scene" in q: st["scene"] = clamp(ival(q, "scene"), 0, SCENE_COUNT - 1)
-                if "dwell" in q: st["dwell"] = max(0, ival(q, "dwell", 1000))
-                if "fade" in q: st["fade"] = max(0, ival(q, "fade", 0))
+                st = n.cue["steps"][num(q, "i", 0, MAX_CUES - 1, True)]
+                sc, dw, fa = (num(q, "scene", 0, SCENE_COUNT - 1), num(q, "dwell", 0, FADE_MAX_MS),
+                              num(q, "fade", 0, FADE_MAX_MS))
+                if sc is not None: st["scene"] = sc
+                if dw is not None: st["dwell"] = dw
+                if fa is not None: st["fade"] = fa
             elif p == "/cue/run":
-                n.cue["run"] = bool(ival(q, "en", 0)); n._cue_at = time.time()
+                n.cue["run"] = bool(num(q, "en", 0, 1, True)); n._cue_at = time.time()
             elif p == "/cue/next":
                 n.cue["index"] = (n.cue["index"] + 1) % n.cue["count"]
             elif p == "/fx/set":
-                if "mode" in q: n.fx["mode"] = ival(q, "mode", 0)
-                if "en" in q: n.fx["en"] = bool(ival(q, "en", 0))
-                if "bpm" in q: n.fx["bpm"] = clamp(ival(q, "bpm", 120), 20, 240)
-                if "depth" in q: n.fx["depth"] = clamp(ival(q, "depth", 128), 0, 255)
+                en, bpm, depth = num(q, "en", 0, 1), num(q, "bpm", 20, 240), num(q, "depth", 0, 255)
+                if "mode" in q:
+                    m = q["mode"][0]
+                    if m in FX_NAMES: n.fx["mode"] = FX_NAMES.index(m)
+                    elif re.fullmatch(r"[0-9]", m): n.fx["mode"] = int(m)
+                    else: raise BadArg("mode", "unknown fx mode", 0, 9)
+                if en is not None: n.fx["en"] = bool(en)
+                if bpm is not None: n.fx["bpm"] = bpm
+                if depth is not None: n.fx["depth"] = depth
             elif p == "/fx/tap":
                 now = time.time(); n.tap = [t for t in n.tap if now - t < 3] + [now]
                 if len(n.tap) >= 2:
                     gaps = [b - a for a, b in zip(n.tap, n.tap[1:])]
-                    n.fx["bpm"] = clamp(int(60.0 / (sum(gaps) / len(gaps))), 20, 240)
+                    n.fx["bpm"] = max(20, min(240, int(60.0 / (sum(gaps) / len(gaps)))))
             elif p == "/color/set":
-                if "en" in q: n.color["en"] = bool(ival(q, "en", 0))
-                for k in "rgb":
-                    if k in q: n.color[k] = clamp(ival(q, k, 255), 0, 255)
+                vals = {k: num(q, k, 0, 255) for k in "rgb"}
+                en = num(q, "en", 0, 1)
+                if en is not None: n.color["en"] = bool(en)
+                for k, v in vals.items():
+                    if v is not None: n.color[k] = v
             elif p == "/node/set":
-                if "name" in q: n.name = q["name"][0]
-                if "ap_ssid" in q: n.ap_ssid = q["ap_ssid"][0]
-            elif p in ("/wifi/set", "/wifi/forget", "/reboot", "/factory-reset",
-                       "/peer/cmd"):
+                if "ap_pass" in q and not wpa_ok(q["ap_pass"][0]):
+                    return self._send(400, "ap_pass must be 8-63 printable ASCII characters")
+                if "ap_ssid" in q and not q["ap_ssid"][0]:
+                    return self._send(400, "ap_ssid must not be empty")
+                if "name" in q: n.name = q["name"][0][:31]
+                if "ap_ssid" in q: n.ap_ssid = q["ap_ssid"][0][:31]
+            elif p == "/wifi/set":
+                ssid = q.get("ssid", [None])[0]
+                if ssid is None:
+                    raise BadArg("ssid", "missing", 1, 32)
+                if not 1 <= len(ssid.encode()) <= 32:
+                    return self._send(400, '{"error":"ssid must be 1-32 bytes","arg":"ssid"}', "application/json")
+                pw = q.get("pass", [""])[0]
+                if pw and not wpa_ok(pw):
+                    return self._send(400, '{"error":"pass must be empty or 8-63 printable ASCII","arg":"pass"}',
+                                      "application/json")
+            elif p in ("/wifi/forget", "/reboot", "/factory-reset", "/peer/cmd", "/discover/announce"):
                 pass
             else:
                 return self._send(404, "no route: " + p)
