@@ -209,3 +209,21 @@ Total ≈ 47 agent-hours: ~80 % Sonnet, Opus for the D1/D5/V3/V4 design and revi
 
 Review (this job): 24 tool calls, Opus. Nothing was started or written outside this scratchpad. Sterile: yes; the only reads were
 GETs to the installed di.
+
+## 7. V0 result — heap baseline on the real node (measured 2026-10-15, fw 8168931)
+
+`tools/heap_probe.mjs --node http://<ip> --clients 3 --seconds 30 --every 2000` from aylmo, 15 polls per phase, 0 failed.
+Two console tabs were already holding `/ws` (ws_clients 2 at idle); the probe added 3 (5 total), each receiving the 400 ms push (75 in 30 s).
+
+| phase | ws clients | heap_free min / max (B) | heap_max_block min (B) |
+|---|---|---|---|
+| idle | 2 | 164,848 / 173,288 | 110,580 |
+| loaded | 5 | 161,648 / 165,596 | 98,292 (−12,288) |
+| after close | 2 | 169,208 / 172,604 | 110,580 (recovered) |
+
+Static RAM 57,748 B (17.6 %), Flash 933,261 B (71.2 %), native 38/38.
+
+**Decision on Q3 (fixture limit): 32, taken at V6 after V3, not before.**
+- Static cost of 12→32: `FixtureDef` is 24 B, so +480 B static, +480 B on the stack copy in the fixture snapshot, +~0.5 KB in the NVS blob. Nothing in the table above moves by that.
+- What can break is the reply, not the table: `/api/state` ≈ 47 KB at 32 fixtures. One copy fits (98 KB largest block under load, 2× margin); five concurrent copies (5 clients × 47 KB = 235 KB) do not fit in heap at all, and even today's 12 fixtures (5 × 22 KB) would not. So the limit is safe only with the streaming writer (V3) and the hard reply cap, which is why the order stays V3 → V6. With streaming, no reply ever needs a contiguous block near 47 KB.
+- Rule for the next measurement (V5): the same probe with 1, 3 and 5 clients on `/api/dmx/stream`; `heap_max_block` under load must stay above 64 KB, else the client cap drops.

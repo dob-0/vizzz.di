@@ -178,6 +178,8 @@ first lines (before the firmware starts) are at 115200 and look garbled at 25000
 `usb_baud`; the manifest has a `usb` protocol entry with the same facts.
 
 `/status` (and the `/ws` push) also carry `heap_free`, `heap_max_block` (largest allocatable block) and `ws_clients`; the manifest repeats them under `state`.
+
+`tools/heap_probe.mjs --node http://<ip> [--clients 3] [--seconds 30]` samples those three keys at idle, with N extra `/ws` clients and after they close (min/max/last, largest-block drop and recovery). Node ≥ 22, no dependencies.
 Proof on hardware: `tools/usb_probe.js` (see HANDOVER "USB flash-and-verify");
 without hardware: `tools/widget_pty_harness.cpp` runs the firmware's parser on a
 pseudo-terminal that di's driver opens.
