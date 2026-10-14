@@ -404,6 +404,31 @@ void test_ws_origin_rule() {
   TEST_ASSERT_FALSE(vizzz::wsOriginAllowed("http://192.168.4.1.evil", "192.168.4.1"));
 }
 
+// 2-M5: numbers are digits and in range, or rejected (no toInt() 0-fallback).
+void test_parse_uint_arg_strict() {
+  uint32_t v = 77;
+  TEST_ASSERT_TRUE(vizzz::parseUintArg("1", 1, 512, &v));   TEST_ASSERT_EQUAL_UINT32(1, v);
+  TEST_ASSERT_TRUE(vizzz::parseUintArg("512", 1, 512, &v)); TEST_ASSERT_EQUAL_UINT32(512, v);
+  TEST_ASSERT_TRUE(vizzz::parseUintArg("0007", 0, 255, &v)); TEST_ASSERT_EQUAL_UINT32(7, v);
+  TEST_ASSERT_TRUE(vizzz::parseUintArg("4294967295", 0, 4294967295u, &v));
+  v = 77;
+  const char* bad[] = {"", "abc", "1a", "a1", " 1", "1 ", "+1", "-1", "1.5", "0x10", "1e3",
+                       "513", "0", "99999999999", "42949672960"};
+  for (const char* b : bad) TEST_ASSERT_FALSE_MESSAGE(vizzz::parseUintArg(b, 1, 512, &v), b);
+  TEST_ASSERT_EQUAL_UINT32(77, v);  // untouched on failure
+  TEST_ASSERT_FALSE(vizzz::parseUintArg(nullptr, 0, 1, &v));
+}
+
+void test_parse_int_arg_strict() {
+  int32_t v = 5;
+  TEST_ASSERT_TRUE(vizzz::parseIntArg("-12", -100, 100, &v)); TEST_ASSERT_EQUAL_INT32(-12, v);
+  TEST_ASSERT_TRUE(vizzz::parseIntArg("100", -100, 100, &v)); TEST_ASSERT_EQUAL_INT32(100, v);
+  TEST_ASSERT_TRUE(vizzz::parseIntArg("-2147483648", INT32_MIN, INT32_MAX, &v));
+  TEST_ASSERT_EQUAL_INT32(INT32_MIN, v);
+  const char* bad[] = {"-", "--1", "-a", "1-", "101", "-101", "2147483648", ""};
+  for (const char* b : bad) TEST_ASSERT_FALSE_MESSAGE(vizzz::parseIntArg(b, -100, 100, &v), b);
+}
+
 static int runAll() {
   UNITY_BEGIN();
   RUN_TEST(test_pack_universe_uses_15bit_layout);
@@ -430,6 +455,8 @@ static int runAll() {
   RUN_TEST(test_route_table_kinds);
   RUN_TEST(test_route_gate_decisions);
   RUN_TEST(test_ws_origin_rule);
+  RUN_TEST(test_parse_uint_arg_strict);
+  RUN_TEST(test_parse_int_arg_strict);
   return UNITY_END();
 }
 

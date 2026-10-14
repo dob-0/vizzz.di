@@ -2627,6 +2627,33 @@ static void sendGateRefusal(AsyncWebServerRequest* r, vizzz::RouteKind kind, viz
   r->send(res);
 }
 
+// 2-M5: strict numeric arguments. need()/opt() parse with vizzz::parseUintArg
+// (digits only, in range) and answer 400 with a short JSON error on the first
+// missing or bad value; a handler checks ok before it touches any state.
+struct ArgReader {
+  AsyncWebServerRequest* r;
+  bool ok = true;
+  explicit ArgReader(AsyncWebServerRequest* req) : r(req) {}
+  void fail(const char* name, const char* why, uint32_t lo, uint32_t hi) {
+    if (!ok) return;
+    ok = false;
+    char b[128];
+    snprintf(b, sizeof(b), "{\"error\":\"%s\",\"arg\":\"%s\",\"min\":%lu,\"max\":%lu}",
+             why, name, (unsigned long)lo, (unsigned long)hi);
+    r->send(400, "application/json", b);
+  }
+  bool opt(const char* name, uint32_t lo, uint32_t hi, uint32_t& out) {
+    if (!ok || !r->hasArg(name)) return false;
+    if (!vizzz::parseUintArg(r->arg(name).c_str(), lo, hi, &out)) { fail(name, "bad number", lo, hi); return false; }
+    return true;
+  }
+  bool need(const char* name, uint32_t lo, uint32_t hi, uint32_t& out) {
+    if (!ok) return false;
+    if (!r->hasArg(name)) { fail(name, "missing", lo, hi); return false; }
+    return opt(name, lo, hi, out);
+  }
+};
+
 static void route(const char* path, ArRequestHandlerFunction fn) {
   int i = vizzz::findRoute(path);
   if (i < 0) {
@@ -2679,20 +2706,25 @@ static void setupWeb() {
   route("/manifest.json", [](AsyncWebServerRequest* r){ sendJSON(r, nodeManifestJSON()); });
 
   route("/page", [](AsyncWebServerRequest* r){
-    uint16_t p = r->hasArg("i")
-      ? uint16_t(constrain(r->arg("i").toInt(), 0, PAGE_COUNT - 1)) : 0;
-    sendJSON(r, pageJSON(p));
+    ArgReader a(r);
+    uint32_t p = 0;
+    a.opt("i", 0, PAGE_COUNT - 1, p);
+    if (!a.ok) return;
+    sendJSON(r, pageJSON(uint16_t(p)));
   });
 
   auto routeSet = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("ch") || !r->hasArg("v")) { r->send(400, "text/plain", "missing arg"); return; }
-    uint16_t ch = uint16_t(constrain(r->arg("ch").toInt(), 1, MAX_CH)) - 1;
-    uint8_t  v  = uint8_t(constrain(r->arg("v").toInt(), 0, 255));
+    ArgReader a(r);
+    uint32_t chArg = 0, v = 0;
+    a.need("ch", 1, MAX_CH, chArg);
+    a.need("v", 0, 255, v);
+    if (!a.ok) return;
+    uint16_t ch = uint16_t(chArg - 1);
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
     }
-    webVals[ch] = v;
+    webVals[ch] = uint8_t(v);
     xSemaphoreGive(gLock);
     r->send(204);
   };
@@ -2735,12 +2767,16 @@ static void setupWeb() {
   route("/full", routeFull);
 
   auto routeMaster = [](AsyncWebServerRequest* r){
-    if (r->hasArg("v")) {
+    ArgReader a(r);
+    uint32_t v = 0;
+    bool hasV = a.opt("v", 0, 255, v);
+    if (!a.ok) return;
+    if (hasV) {
       if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
         r->send(503, "text/plain", "busy");
         return;
       }
-      masterDimmer = uint8_t(constrain(r->arg("v").toInt(), 0, 255));
+      masterDimmer = uint8_t(v);
       xSemaphoreGive(gLock);
     }
     r->send(204);
@@ -2748,13 +2784,19 @@ static void setupWeb() {
   route("/master", routeMaster);
 
   auto routeArtNetSet = [](AsyncWebServerRequest* r){
+    ArgReader a(r);
+    uint32_t net = 0, sub = 0, uni = 0;
+    bool hasNet = a.opt("net", 0, 127, net);
+    bool hasSub = a.opt("subnet", 0, 15, sub);
+    bool hasUni = a.opt("uni", 0, 15, uni);
+    if (!a.ok) return;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
     }
-    if (r->hasArg("net"))    artNet    = uint8_t(constrain(r->arg("net").toInt(),    0, 127));
-    if (r->hasArg("subnet")) artSubnet = uint8_t(constrain(r->arg("subnet").toInt(), 0, 15));
-    if (r->hasArg("uni"))    artUni    = uint8_t(constrain(r->arg("uni").toInt(),    0, 15));
+    if (hasNet) artNet    = uint8_t(net);
+    if (hasSub) artSubnet = uint8_t(sub);
+    if (hasUni) artUni    = uint8_t(uni);
     xSemaphoreGive(gLock);
     saveConfig();
     // WiFiUDP::stop() frees the RX buffer loop() may be reading in pollSacn():
@@ -2765,12 +2807,16 @@ static void setupWeb() {
   route("/artnet/set", routeArtNetSet);
 
   auto routeArtOutSet = [](AsyncWebServerRequest* r){
-    if (r->hasArg("en")) {
+    ArgReader a(r);
+    uint32_t en = 0;
+    bool hasEn = a.opt("en", 0, 1, en);
+    if (!a.ok) return;
+    if (hasEn) {
       if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
         r->send(503, "text/plain", "busy");
         return;
       }
-      artOutEnabled = r->arg("en").toInt() != 0;
+      artOutEnabled = en != 0;
       xSemaphoreGive(gLock);
     }
     saveConfig(); r->send(204);
@@ -2778,24 +2824,30 @@ static void setupWeb() {
   route("/artout/set", routeArtOutSet);
 
   auto routeModeSet = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("m")) { r->send(400, "text/plain", "missing arg"); return; }
+    ArgReader a(r);
+    uint32_t mV = 0;
+    a.need("m", 0, int(MODE_HTP), mV);
+    if (!a.ok) return;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
     }
-    mode = Mode(constrain(r->arg("m").toInt(), 0, int(MODE_HTP)));
+    mode = Mode(mV);
     xSemaphoreGive(gLock);
     saveConfig(); r->send(204);
   };
   route("/mode/set", routeModeSet);
 
   auto routeModeFallback = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("en")) { r->send(400, "text/plain", "missing arg"); return; }
+    ArgReader a(r);
+    uint32_t enV = 0;
+    a.need("en", 0, 1, enV);
+    if (!a.ok) return;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
     }
-    artnetFallbackToWeb = r->arg("en").toInt() != 0;
+    artnetFallbackToWeb = enV != 0;
     xSemaphoreGive(gLock);
     saveConfig();
     r->send(204);
@@ -2803,12 +2855,15 @@ static void setupWeb() {
   route("/mode/fallback", routeModeFallback);
 
   auto routeNetModeSet = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("m")) { r->send(400, "text/plain", "missing arg"); return; }
+    ArgReader a(r);
+    uint32_t mV = 0;
+    a.need("m", 0, int(NET_AP_ONLY), mV);
+    if (!a.ok) return;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
     }
-    netMode = NetMode(constrain(r->arg("m").toInt(), 0, int(NET_AP_ONLY)));
+    netMode = NetMode(mV);
     xSemaphoreGive(gLock);
     saveConfig();
     r->send(200, "text/plain", "ok,rebooting");
@@ -2817,12 +2872,15 @@ static void setupWeb() {
   route("/netmode/set", routeNetModeSet);
 
   auto routeWebSet = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("en")) { r->send(400, "text/plain", "missing arg"); return; }
+    ArgReader a(r);
+    uint32_t enV = 0;
+    a.need("en", 0, 1, enV);
+    if (!a.ok) return;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
     }
-    webEnabled = r->arg("en").toInt() != 0;
+    webEnabled = enV != 0;
     xSemaphoreGive(gLock);
     saveConfig();
     r->send(200, "text/plain", "ok,rebooting");
@@ -2831,12 +2889,15 @@ static void setupWeb() {
   route("/web/set", routeWebSet);
 
   auto routeSafetySet = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("burn")) { r->send(400, "text/plain", "missing burn"); return; }
+    ArgReader a(r);
+    uint32_t burnV = 0;
+    a.need("burn", 0, 1, burnV);
+    if (!a.ok) return;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
     }
-    burnSafeMode = r->arg("burn").toInt() != 0;
+    burnSafeMode = burnV != 0;
     xSemaphoreGive(gLock);
     saveConfig();
     r->send(204);
@@ -2844,8 +2905,11 @@ static void setupWeb() {
   route("/safety/set", routeSafetySet);
 
   auto routeSceneSave = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("n")) { r->send(400, "text/plain", "missing arg"); return; }
-    uint8_t n = uint8_t(constrain(r->arg("n").toInt(), 0, SCENE_COUNT - 1));
+    ArgReader a(r);
+    uint32_t nV = 0;
+    a.need("n", 0, SCENE_COUNT - 1, nV);
+    if (!a.ok) return;
+    uint8_t n = uint8_t(nV);
     uint8_t snap[MAX_CH];
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
@@ -2859,9 +2923,14 @@ static void setupWeb() {
   route("/scene/save", routeSceneSave);
 
   auto routeSceneRecall = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("n")) { r->send(400, "text/plain", "missing arg"); return; }
-    uint8_t  n  = uint8_t(constrain(r->arg("n").toInt(), 0, SCENE_COUNT - 1));
-    uint32_t ft = r->hasArg("fade") ? uint32_t(max(0L, r->arg("fade").toInt())) : 0;
+    ArgReader a(r);
+    uint32_t nV = 0;
+    uint32_t fadeV = 0;
+    a.need("n", 0, SCENE_COUNT - 1, nV);
+    bool has_fade = a.opt("fade", 0, FADE_MAX_MS, fadeV);
+    if (!a.ok) return;
+    uint8_t  n  = uint8_t(nV);
+    uint32_t ft = has_fade ? fadeV : 0;
     uint8_t target[MAX_CH];
     loadScene(n, target);
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
@@ -2877,7 +2946,19 @@ static void setupWeb() {
   route("/wifi/scan", [](AsyncWebServerRequest* r){ sendJSON(r, wifiScanJSON()); });
 
   auto routeWifiSet = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("ssid")) { r->send(400, "text/plain", "missing ssid"); return; }
+    if (!r->hasArg("ssid")) { r->send(400, "application/json", "{\"error\":\"missing\",\"arg\":\"ssid\"}"); return; }
+    // 2-L3: an IEEE 802.11 SSID is 1-32 octets; the pass is empty (open
+    // network) or a WPA2 pass-phrase, 8-63 printable ASCII (802.11i H.4.1).
+    const String& ssidArg = r->arg("ssid");
+    if (ssidArg.isEmpty() || ssidArg.length() > 32) {
+      r->send(400, "application/json", "{\"error\":\"ssid must be 1-32 bytes\",\"arg\":\"ssid\"}");
+      return;
+    }
+    if (r->hasArg("pass") && !r->arg("pass").isEmpty() &&
+        !vizzz::isValidWpaPassphrase(r->arg("pass").c_str(), r->arg("pass").length())) {
+      r->send(400, "application/json", "{\"error\":\"pass must be empty or 8-63 printable ASCII\",\"arg\":\"pass\"}");
+      return;
+    }
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
@@ -2992,16 +3073,34 @@ static void setupWeb() {
   route("/fixtures", [](AsyncWebServerRequest* r){ sendJSON(r, fixturesJSON()); });
 
   auto routeFixtureSet = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("i")) { r->send(400, "text/plain", "missing i"); return; }
-    uint8_t i = uint8_t(constrain(r->arg("i").toInt(), 0, MAX_FIXTURES - 1));
+    ArgReader a(r);
+    uint32_t iV = 0;
+    uint32_t startV = 0;
+    uint32_t endV = 0;
+    uint32_t xV = 0;
+    uint32_t yV = 0;
+    uint32_t enV = 0;
+    uint32_t countV = 0;
+    a.need("i", 0, MAX_FIXTURES - 1, iV);
+    bool has_start = a.opt("start", 1, MAX_CH, startV);
+    bool has_end = a.opt("end", 1, MAX_CH, endV);
+    bool has_x = a.opt("x", 0, 255, xV);
+    bool has_y = a.opt("y", 0, 255, yV);
+    bool has_en = a.opt("en", 0, 1, enV);
+    bool has_count = a.opt("count", 1, MAX_FIXTURES, countV);
+    if (!a.ok) return;
+    if (has_start && has_end && endV < startV) { a.fail("end", "end before start", startV, MAX_CH); return; }
+    uint8_t i = uint8_t(iV);
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     if (r->hasArg("name")) r->arg("name").toCharArray(fixtures[i].name, sizeof(fixtures[i].name));
-    if (r->hasArg("start")) fixtures[i].start = uint16_t(constrain(r->arg("start").toInt(), 1, MAX_CH));
-    if (r->hasArg("end")) fixtures[i].end = uint16_t(constrain(r->arg("end").toInt(), fixtures[i].start, MAX_CH));
-    if (r->hasArg("x")) fixtures[i].x = uint8_t(constrain(r->arg("x").toInt(), 0, 255));
-    if (r->hasArg("y")) fixtures[i].y = uint8_t(constrain(r->arg("y").toInt(), 0, 255));
-    if (r->hasArg("en")) fixtures[i].enabled = r->arg("en").toInt() != 0;
-    if (r->hasArg("count")) fixtureCount = uint8_t(constrain(r->arg("count").toInt(), 1, MAX_FIXTURES));
+    if (has_start) fixtures[i].start = uint16_t(startV);
+    if (has_end)   fixtures[i].end   = uint16_t(endV);
+    // 2-L6: a start past the old end moves the end with it; start <= end always.
+    if (fixtures[i].end < fixtures[i].start) fixtures[i].end = fixtures[i].start;
+    if (has_x) fixtures[i].x = uint8_t(xV);
+    if (has_y) fixtures[i].y = uint8_t(yV);
+    if (has_en) fixtures[i].enabled = enV != 0;
+    if (has_count) fixtureCount = uint8_t(countV);
     for (uint8_t n = 0; n < MAX_FIXTURES; n++) fixtures[n].enabled = (n < fixtureCount) ? fixtures[n].enabled : false;
     xSemaphoreGive(gLock);
     saveFixtures();
@@ -3010,16 +3109,27 @@ static void setupWeb() {
   route("/fixture/set", routeFixtureSet);
 
   auto routeGroupSet = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("g")) { r->send(400, "text/plain", "missing g"); return; }
-    uint8_t g = uint8_t(constrain(r->arg("g").toInt(), 0, MAX_GROUPS - 1));
+    ArgReader a(r);
+    uint32_t gV = 0;
+    uint32_t startV = 0;
+    uint32_t endV = 0;
+    uint32_t enV = 0;
+    a.need("g", 0, MAX_GROUPS - 1, gV);
+    bool has_start = a.opt("start", 1, MAX_CH, startV);
+    bool has_end = a.opt("end", 1, MAX_CH, endV);
+    bool has_en = a.opt("en", 0, 1, enV);
+    if (!a.ok) return;
+    if (has_start && has_end && endV < startV) { a.fail("end", "end before start", startV, MAX_CH); return; }
+    uint8_t g = uint8_t(gV);
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     if (r->hasArg("name")) {
       String n = r->arg("name");
       n.toCharArray(groups[g].name, sizeof(groups[g].name));
     }
-    if (r->hasArg("start")) groups[g].start = uint16_t(constrain(r->arg("start").toInt(), 1, MAX_CH));
-    if (r->hasArg("end")) groups[g].end = uint16_t(constrain(r->arg("end").toInt(), groups[g].start, MAX_CH));
-    if (r->hasArg("en")) groups[g].enabled = r->arg("en").toInt() != 0;
+    if (has_start) groups[g].start = uint16_t(startV);
+    if (has_end)   groups[g].end   = uint16_t(endV);
+    if (groups[g].end < groups[g].start) groups[g].end = groups[g].start;  // 2-L6
+    if (has_en) groups[g].enabled = enV != 0;
     xSemaphoreGive(gLock);
     saveVj();
     r->send(204);
@@ -3027,9 +3137,14 @@ static void setupWeb() {
   route("/group/set", routeGroupSet);
 
   auto routeGroupApply = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("g") || !r->hasArg("v")) { r->send(400, "text/plain", "missing arg"); return; }
-    uint8_t g = uint8_t(constrain(r->arg("g").toInt(), 0, MAX_GROUPS - 1));
-    uint8_t v = uint8_t(constrain(r->arg("v").toInt(), 0, 255));
+    ArgReader a(r);
+    uint32_t gV = 0;
+    uint32_t vV = 0;
+    a.need("g", 0, MAX_GROUPS - 1, gV);
+    a.need("v", 0, 255, vV);
+    if (!a.ok) return;
+    uint8_t g = uint8_t(gV);
+    uint8_t v = uint8_t(vV);
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     if (!groups[g].enabled) {
       xSemaphoreGive(gLock);
@@ -3047,9 +3162,12 @@ static void setupWeb() {
   route("/cue/status", [](AsyncWebServerRequest* r){ sendJSON(r, cueJSON()); });
 
   auto routeCueCount = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("c")) { r->send(400, "text/plain", "missing c"); return; }
+    ArgReader a(r);
+    uint32_t cV = 0;
+    a.need("c", 1, MAX_CUES, cV);
+    if (!a.ok) return;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
-    cueCount = uint8_t(constrain(r->arg("c").toInt(), 1, MAX_CUES));
+    cueCount = uint8_t(cV);
     if (cueIndex >= cueCount) cueIndex = 0;
     xSemaphoreGive(gLock);
     saveVj();
@@ -3058,14 +3176,23 @@ static void setupWeb() {
   route("/cue/count", routeCueCount);
 
   auto routeCueSet = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("i")) { r->send(400, "text/plain", "missing i"); return; }
-    uint8_t i = uint8_t(constrain(r->arg("i").toInt(), 0, MAX_CUES - 1));
+    ArgReader a(r);
+    uint32_t iV = 0;
+    uint32_t sceneV = 0;
+    uint32_t dwellV = 0;
+    uint32_t fadeV = 0;
+    a.need("i", 0, MAX_CUES - 1, iV);
+    bool has_scene = a.opt("scene", 0, SCENE_COUNT - 1, sceneV);
+    bool has_dwell = a.opt("dwell", 0, FADE_MAX_MS, dwellV);
+    bool has_fade = a.opt("fade", 0, FADE_MAX_MS, fadeV);
+    if (!a.ok) return;
+    uint8_t i = uint8_t(iV);
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
-    if (r->hasArg("scene")) cueList[i].scene = uint8_t(constrain(r->arg("scene").toInt(), 0, SCENE_COUNT - 1));
+    if (has_scene) cueList[i].scene = uint8_t(sceneV);
     // Clamped at set time to what loadVj() re-clamps on boot (1-L5), and the
     // step to at least CUE_MIN_STEP_MS (1-M1): 0/0 re-fired a scene per loop().
-    if (r->hasArg("dwell")) cueList[i].dwellMs = vizzz::clampCueTimeMs(r->arg("dwell").toInt(), FADE_MAX_MS);
-    if (r->hasArg("fade"))  cueList[i].fadeMs  = vizzz::clampCueTimeMs(r->arg("fade").toInt(),  FADE_MAX_MS);
+    if (has_dwell) cueList[i].dwellMs = vizzz::clampCueTimeMs(long(dwellV), FADE_MAX_MS);
+    if (has_fade)  cueList[i].fadeMs  = vizzz::clampCueTimeMs(long(fadeV),  FADE_MAX_MS);
     if (cueList[i].fadeMs + cueList[i].dwellMs < vizzz::CUE_MIN_STEP_MS)
       cueList[i].dwellMs = vizzz::CUE_MIN_STEP_MS - cueList[i].fadeMs;
     xSemaphoreGive(gLock);
@@ -3075,9 +3202,12 @@ static void setupWeb() {
   route("/cue/set", routeCueSet);
 
   auto routeCueRun = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("en")) { r->send(400, "text/plain", "missing en"); return; }
+    ArgReader a(r);
+    uint32_t enV = 0;
+    a.need("en", 0, 1, enV);
+    if (!a.ok) return;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
-    cueRunning = (r->arg("en").toInt() != 0) && cueCount > 0;
+    cueRunning = (enV != 0) && cueCount > 0;
     if (cueRunning) {
       cueIndex = 0;
       xSemaphoreGive(gLock);
@@ -3104,6 +3234,22 @@ static void setupWeb() {
   route("/fx/status", [](AsyncWebServerRequest* r){ sendJSON(r, fxJSON()); });
 
   auto routeFxSet = [](AsyncWebServerRequest* r){
+    ArgReader a(r);
+    uint32_t enV = 0;
+    uint32_t bpmV = 0;
+    uint32_t depthV = 0;
+    bool has_en = a.opt("en", 0, 1, enV);
+    bool has_bpm = a.opt("bpm", 20, 240, bpmV);
+    bool has_depth = a.opt("depth", 0, 255, depthV);
+    if (!a.ok) return;
+    static const char* const kFxNames[] = {"none","strobe","chase","pulse","sine","sparkle","comet","bars","glitch","radar"};
+    if (r->hasArg("mode")) {
+      const String& m = r->arg("mode");
+      bool known = false;
+      for (uint8_t k = 0; k < 10; k++)
+        if (m == kFxNames[k] || (m.length() == 1 && m[0] == char('0' + k))) known = true;
+      if (!known) { a.fail("mode", "unknown fx mode", 0, 9); return; }
+    }
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
     if (r->hasArg("mode")) {
       String m = r->arg("mode");
@@ -3118,9 +3264,9 @@ static void setupWeb() {
       else if (m == "radar"   || m == "9") fxMode = FX_RADAR;
       else fxMode = FX_NONE;
     }
-    if (r->hasArg("en")) fxEnabled = r->arg("en").toInt() != 0;
-    if (r->hasArg("bpm")) fxBpm = uint16_t(constrain(r->arg("bpm").toInt(), 20, 240));
-    if (r->hasArg("depth")) fxDepth = uint8_t(constrain(r->arg("depth").toInt(), 0, 255));
+    if (has_en) fxEnabled = enV != 0;
+    if (has_bpm) fxBpm = uint16_t(bpmV);
+    if (has_depth) fxDepth = uint8_t(depthV);
     if (fxMode == FX_NONE) fxEnabled = false;
     xSemaphoreGive(gLock);
     r->send(204);
@@ -3148,11 +3294,21 @@ static void setupWeb() {
   route("/fx/tap", routeFxTap);
 
   auto routeColorSet = [](AsyncWebServerRequest* r){
+    ArgReader a(r);
+    uint32_t rV = 0;
+    uint32_t gV = 0;
+    uint32_t bV = 0;
+    uint32_t enV = 0;
+    bool has_r = a.opt("r", 0, 255, rV);
+    bool has_g = a.opt("g", 0, 255, gV);
+    bool has_b = a.opt("b", 0, 255, bV);
+    bool has_en = a.opt("en", 0, 1, enV);
+    if (!a.ok) return;
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { r->send(503, "text/plain", "busy"); return; }
-    if (r->hasArg("r")) colorR = uint8_t(constrain(r->arg("r").toInt(), 0, 255));
-    if (r->hasArg("g")) colorG = uint8_t(constrain(r->arg("g").toInt(), 0, 255));
-    if (r->hasArg("b")) colorB = uint8_t(constrain(r->arg("b").toInt(), 0, 255));
-    if (r->hasArg("en")) colorEnabled = r->arg("en").toInt() != 0;
+    if (has_r) colorR = uint8_t(rV);
+    if (has_g) colorG = uint8_t(gV);
+    if (has_b) colorB = uint8_t(bV);
+    if (has_en) colorEnabled = enV != 0;
     if (colorEnabled) applyColorWash_locked();
     xSemaphoreGive(gLock);
     r->send(204);
@@ -3209,12 +3365,16 @@ static void setupWeb() {
   route("/net/full", routeNetFull);
 
   auto routeNetMaster = [](AsyncWebServerRequest* r){
-    if (r->hasArg("v")) {
+    ArgReader a(r);
+    uint32_t v = 0;
+    bool hasV = a.opt("v", 0, 255, v);
+    if (!a.ok) return;
+    if (hasV) {
       if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
         r->send(503, "text/plain", "busy");
         return;
       }
-      masterDimmer = uint8_t(constrain(r->arg("v").toInt(), 0, 255));
+      masterDimmer = uint8_t(v);
       xSemaphoreGive(gLock);
     }
     char path[24];
@@ -3225,9 +3385,14 @@ static void setupWeb() {
   route("/net/master", routeNetMaster);
 
   auto routeNetSceneRecall = [](AsyncWebServerRequest* r){
-    if (!r->hasArg("n")) { r->send(400, "text/plain", "missing n"); return; }
-    uint8_t  n  = uint8_t(constrain(r->arg("n").toInt(), 0, SCENE_COUNT - 1));
-    uint32_t ft = r->hasArg("fade") ? uint32_t(max(0L, r->arg("fade").toInt())) : 0;
+    ArgReader a(r);
+    uint32_t nV = 0;
+    uint32_t fadeV = 0;
+    a.need("n", 0, SCENE_COUNT - 1, nV);
+    bool has_fade = a.opt("fade", 0, FADE_MAX_MS, fadeV);
+    if (!a.ok) return;
+    uint8_t  n  = uint8_t(nV);
+    uint32_t ft = has_fade ? fadeV : 0;
     uint8_t target[MAX_CH];
     loadScene(n, target);
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {

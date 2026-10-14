@@ -526,6 +526,36 @@ inline bool oscIsBundle(const uint8_t* p, size_t n) {
   return n >= 16 && memcmp(p, tag, 8) == 0;
 }
 
+// ── HTTP argument parsing (audit 2026-10-15 2-M5) ────────────────────────────
+// Arduino's String::toInt() answers 0 for "abc" and the old routes then
+// clamped, so /set?ch=abc&v=255 wrote channel 1. These accept only decimal
+// digits (and one leading '-' in parseIntArg, for the few arguments where a
+// negative value is legal), at most 10 digits, inside [lo, hi]. Anything else
+// returns false and leaves *out untouched; the route answers 400.
+inline bool parseUintArg(const char* s, uint32_t lo, uint32_t hi, uint32_t* out) {
+  if (!s || !*s) return false;
+  uint64_t v = 0;
+  size_t n = 0;
+  for (; *s; ++s) {
+    if (*s < '0' || *s > '9' || ++n > 10) return false;
+    v = v * 10 + uint64_t(*s - '0');
+  }
+  if (v < lo || v > hi) return false;
+  *out = uint32_t(v);
+  return true;
+}
+
+inline bool parseIntArg(const char* s, int32_t lo, int32_t hi, int32_t* out) {
+  if (!s || !*s) return false;
+  bool neg = (*s == '-');
+  uint32_t mag = 0;
+  if (!parseUintArg(neg ? s + 1 : s, 0, neg ? 2147483648u : 2147483647u, &mag)) return false;
+  int64_t v = neg ? -int64_t(mag) : int64_t(mag);
+  if (v < lo || v > hi) return false;
+  *out = int32_t(v);
+  return true;
+}
+
 // ── HTTP route table (audit 2026-10-15 2-H2, 2-M4, 2-M7) ─────────────────────
 // ONE list of every HTTP route. setupWeb() registers only through it and the
 // manifest is generated from it, so neither can drift from the other
