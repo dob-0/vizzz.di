@@ -8,6 +8,8 @@ Read this before changing the firmware. Keep it short and replace stale facts.
 Branch: `audit/2026-08-24` (pushed to origin; `main` untouched at `42f1963`)
 RAM 52,740 bytes (16.1%), Flash 927,093 bytes (70.7%), native tests 4/4.
 
+- 2026-10-15 desk UI step V1 (not yet merged; firmware build NOT run in the sandbox): pinned di.iiii f0b173d, 7 files, raw 468,729 B, gz -9 139,921 B (sum of `desk_ui.lock`, Python gzip level 9 mtime 0), `include/desk_ui_gz.h` 710,767 B of source (`wc -c`; not flash). Flash cost of the arrays = the 139,921 B gz; free-flash gate untested on a real binary (run `pio run -e esp32dev` on aylmo).
+
 ## Last session - 2026-08-24/25
 
 - Audited the firmware in three lanes (DMX/safety, network/HTTP, console UI + docs): 33 findings in `docs/AUDIT_2026_08_24.md`, 17 of them fixed in the same branch.

@@ -1,0 +1,57 @@
+{
+  "repo": "dob-0/di.iiii",
+  "branch": "cloud/desk-honest-render-caps-2026-10-15",
+  "commit": "f0b173de3a2aef9cc0060235bfcb7421a472bf84",
+  "contract_version": 1,
+  "files": [
+    {
+      "path": "index.html",
+      "bytes": 50366,
+      "sha256": "fa53e15aae85b83bfd19ecc4f041a1cf296826285d7044a2cf444992aec6d9e4",
+      "gz_bytes": 13212,
+      "gz_sha256": "d546bda9824ebb3793681bd030075cdebb97cbab30f505397d5fe0d9a8f38956"
+    },
+    {
+      "path": "app.js",
+      "bytes": 312409,
+      "sha256": "c297e4e0375fa56bfb3148d4f6446f7fab37e4f4f78cf5332ba190cb8d66ccd9",
+      "gz_bytes": 97130,
+      "gz_sha256": "20f4fac725116dda404ee2c1f110834359ea9deac936583c9e06489630271737"
+    },
+    {
+      "path": "style.css",
+      "bytes": 86574,
+      "sha256": "91db8765467ff465c18b0541ebfd28e3143f81adc07ec9a777f7a19aac121ec4",
+      "gz_bytes": 21322,
+      "gz_sha256": "16ff480997860264581558c57fa77a5881e8303980eb19d33644854f77c3d404"
+    },
+    {
+      "path": "qr.js",
+      "bytes": 7572,
+      "sha256": "f101b4c4f339e93cf0c00622a6cf83834e5e70b330e5f108afa75ff2d0db2061",
+      "gz_bytes": 3101,
+      "gz_sha256": "f33321abc05d3dd704279e7c32eb47b1a9bd344cc9e94ea6c62d6dec137588d4"
+    },
+    {
+      "path": "from.js",
+      "bytes": 4849,
+      "sha256": "e62d864e7323a80836cf6ec33150a58bd2934e4c824da1756750c8e6bf6ff1eb",
+      "gz_bytes": 2112,
+      "gz_sha256": "1343de496e7190251250dc7e8c523fba9d9d82ce8d358733e01bfb7f7bc07ad6"
+    },
+    {
+      "path": "show.js",
+      "bytes": 4291,
+      "sha256": "43158e5594f325d30d9f9a762233410ea62e23185f0b50fbd8925bd6e162ab6d",
+      "gz_bytes": 1814,
+      "gz_sha256": "e3ff597b1dd99503437a099970542adc3bef94c23c468a829be664f670f417ad"
+    },
+    {
+      "path": "caps.js",
+      "bytes": 2668,
+      "sha256": "e90683bc479847d398f49b54e922dc2f2b4b264d0f0a891253a8454ac71c5c56",
+      "gz_bytes": 1230,
+      "gz_sha256": "21edbe1c1956fe325f27297120dee3c642523c0facb6ddaa7e324bf3d6d48a25"
+    }
+  ]
+}

@@ -4,6 +4,13 @@
 
 #include "vizzz_core.h"
 
+#if !defined(ARDUINO)
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "desk_ui_gz.h"
+#endif
+
 void test_pack_universe_uses_15bit_layout() {
   TEST_ASSERT_EQUAL_UINT16(0x123, vizzz::packUniverse(0x01, 0x02, 0x03));
   TEST_ASSERT_EQUAL_UINT16(0x7ff, vizzz::packUniverse(0x07, 0x0f, 0x0f));
@@ -652,6 +659,77 @@ static void test_health_fields_truncation_reported() {
   TEST_ASSERT_TRUE(size_t(vizzz::healthJsonFields(buf, sizeof(buf), h)) < sizeof(buf));
 }
 
+#if !defined(ARDUINO)
+// desk_ui.lock is JSON written by tools/fetch_desk_ui.py (one key per line, indent 2); `pio test` and the
+// g++ build both run from the project root. A tiny scan is enough: find the file's "path", then the next keys.
+static bool lockValue(const char* lock, const char* path, const char* key, char* out, size_t n) {
+  char pat[96];
+  snprintf(pat, sizeof(pat), "\"path\": \"%s\"", path);
+  const char* p = strstr(lock, pat);
+  if (!p) return false;
+  snprintf(pat, sizeof(pat), "\"%s\": ", key);
+  p = strstr(p, pat);
+  if (!p) return false;
+  p += strlen(pat);
+  if (*p == '"') p++;
+  size_t i = 0;
+  while (*p && *p != '"' && *p != ',' && *p != '\n' && i + 1 < n) out[i++] = *p++;
+  out[i] = 0;
+  return true;
+}
+
+static char* readLock() {
+  FILE* f = fopen("desk_ui.lock", "rb");
+  if (!f) return nullptr;
+  static char buf[8192];
+  size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  return buf;
+}
+
+void test_desk_ui_header_matches_lock() {
+  char* lock = readLock();
+  TEST_ASSERT_NOT_NULL_MESSAGE(lock, "desk_ui.lock not readable from the project root");
+  char v[80];
+  TEST_ASSERT_TRUE(lockValue(lock, "index.html", "sha256", v, sizeof(v)));  // lock is parsable
+  const char* c = strstr(lock, "\"commit\": \"");
+  TEST_ASSERT_NOT_NULL(c);
+  c += strlen("\"commit\": \"");
+  TEST_ASSERT_EQUAL_INT(0, strncmp(c, DESK_UI_COMMIT, strlen(DESK_UI_COMMIT)));
+  TEST_ASSERT_EQUAL_CHAR('"', c[strlen(DESK_UI_COMMIT)]);
+  const char* cv = strstr(lock, "\"contract_version\": ");
+  TEST_ASSERT_NOT_NULL(cv);
+  TEST_ASSERT_EQUAL_INT(atoi(cv + strlen("\"contract_version\": ")), DESK_UI_CONTRACT_VERSION);
+  for (size_t i = 0; i < kDeskUiFileCount; i++) {
+    const DeskUiFile& f = kDeskUiFiles[i];
+    TEST_ASSERT_EQUAL_CHAR('/', f.path[0]);
+    TEST_ASSERT_TRUE_MESSAGE(lockValue(lock, f.path + 1, "gz_bytes", v, sizeof(v)), f.path);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)atol(v), (uint32_t)f.len, f.path);
+    TEST_ASSERT_TRUE_MESSAGE(lockValue(lock, f.path + 1, "sha256", v, sizeof(v)), f.path);
+    TEST_ASSERT_EQUAL_UINT32(16, strlen(f.etag));
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, strncmp(v, f.etag, 16), f.path);
+    TEST_ASSERT_EQUAL_HEX8(0x1f, f.data[0]);  // gzip magic
+    TEST_ASSERT_EQUAL_HEX8(0x8b, f.data[1]);
+  }
+}
+
+void test_desk_ui_table_has_exactly_the_locked_files() {
+  char* lock = readLock();
+  TEST_ASSERT_NOT_NULL(lock);
+  size_t inLock = 0;
+  for (const char* p = lock; (p = strstr(p, "\"path\": \"")) != nullptr; p++) inLock++;
+  TEST_ASSERT_EQUAL_UINT32(inLock, kDeskUiFileCount);
+  for (size_t i = 0; i < kDeskUiFileCount; i++) {
+    char pat[96];
+    snprintf(pat, sizeof(pat), "\"path\": \"%s\"", kDeskUiFiles[i].path + 1);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(lock, pat), kDeskUiFiles[i].path);
+    for (size_t j = i + 1; j < kDeskUiFileCount; j++)
+      TEST_ASSERT_NOT_EQUAL(0, strcmp(kDeskUiFiles[i].path, kDeskUiFiles[j].path));
+  }
+}
+#endif
+
 static int runAll() {
   UNITY_BEGIN();
   RUN_TEST(test_pack_universe_uses_15bit_layout);
@@ -692,6 +770,10 @@ static int runAll() {
   RUN_TEST(test_merge_usb_obeys_modes_like_artnet);
   RUN_TEST(test_health_fields_key_list_and_values);
   RUN_TEST(test_health_fields_truncation_reported);
+#if !defined(ARDUINO)
+  RUN_TEST(test_desk_ui_header_matches_lock);
+  RUN_TEST(test_desk_ui_table_has_exactly_the_locked_files);
+#endif
   return UNITY_END();
 }
 
