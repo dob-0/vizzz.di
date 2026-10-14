@@ -946,6 +946,17 @@ static void tickCueEngine(uint32_t now) {
   triggerCueStep(nextIdx);
 }
 
+// One blackout for every route (/blackout, /net/blackout, the deferred one in
+// loop()). It also stops the cue list and FX, as /panic does: otherwise
+// tickCueEngine fires the next step within fade+dwell and fades the rig back
+// up by itself (audit 2026-10-15 1-H2). Call with gLock held.
+static void applyBlackout_locked() {
+  memset(webVals, 0, MAX_CH);
+  fadeActive = false;
+  cueRunning = false;
+  fxEnabled  = false;
+}
+
 static uint8_t tri8(uint8_t phase) {
   return phase < 128 ? uint8_t(phase << 1) : uint8_t((255 - phase) << 1);
 }
@@ -2469,8 +2480,7 @@ static void setupWeb() {
       r->send(202, "text/plain", "queued");
       return;
     }
-    memset(webVals, 0, MAX_CH);
-    fadeActive = false;
+    applyBlackout_locked();
     xSemaphoreGive(gLock);
     r->send(204);
   };
@@ -2944,15 +2954,18 @@ static void setupWeb() {
 
   // ── Fleet (broadcast to self + all peers) ────────────────────────────────────
   auto routeNetBlackout = [](AsyncWebServerRequest* r){
-    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
-      r->send(503, "text/plain", "busy");
-      return;
+    // Never dropped on a busy lock (1-M5): the local blackout is deferred to
+    // loop() exactly as /blackout does, and the fleet broadcast is queued
+    // either way.
+    bool local = xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE;
+    if (local) {
+      applyBlackout_locked();
+      xSemaphoreGive(gLock);
+    } else {
+      pendingBlackout = true;
     }
-    memset(webVals, 0, MAX_CH);
-    fadeActive = false;
-    xSemaphoreGive(gLock);
-    if (!enqueueBcast("/blackout")) { r->send(503, "text/plain", "queue full"); return; }
-    r->send(204);
+    if (!enqueueBcast("/blackout")) { r->send(503, "text/plain", "local blackout done; fleet queue full"); return; }
+    r->send(local ? 204 : 202);
   };
   server.on("/net/blackout", HTTP_GET, routeNetBlackout);
   server.on("/net/blackout", HTTP_POST, routeNetBlackout);
@@ -3130,8 +3143,7 @@ void loop() {
   if (pendingBlackout) {
     if (xSemaphoreTake(gLock, portMAX_DELAY) == pdTRUE) {
       pendingBlackout = false;
-      memset(webVals, 0, MAX_CH);
-      fadeActive = false;
+      applyBlackout_locked();
       xSemaphoreGive(gLock);
     }
   }
