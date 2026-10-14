@@ -124,6 +124,7 @@ API Lows. Nothing flashed, no serial, the live node not contacted. Each finding 
 | `aea72d3` | 2-M3 | `escAttrJs` in onclick; `tools/check_console_escape.js` |
 | `1781443` | 2-M7 | ACAO only on GetShared reads, from the table |
 | `af68558` | 2-M4 | manifest routes + route_table from the table, git SHA, net/sub/uni; `tools/check_routes.py`; README table; onboard/crash tools send POST + header; check_di_compat.sh relative-path fix |
+| `c790f15` | 2-L5 | beacon route renamed `/announce` (prefix-swallow by `/discover`); guard test + check |
 | `0cdb7b7` | 2-M9 (HTTP rest) | simulator reads the same table and gate; `tools/check_http_api.sh` |
 
 ## Done (13) / open (5)
