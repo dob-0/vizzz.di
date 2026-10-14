@@ -367,6 +367,7 @@ static volatile bool     pendingPanic         = false;
 static volatile bool     pendingBlackout      = false;
 static volatile bool     pendingMdnsRestart   = false;  // set by /node/set, run in loop()
 static volatile bool     pendingBeacon        = false;  // set by /discover, run in loop()
+static volatile bool     pendingSockRefresh   = false;  // set by /artnet/set, run in loop()
 static bool              webStopped           = false;
 
 // ── Broadcast queue (web callbacks write, peer task drains) ───────────────────
@@ -2561,7 +2562,9 @@ static void setupWeb() {
     if (r->hasArg("uni"))    artUni    = uint8_t(constrain(r->arg("uni").toInt(),    0, 15));
     xSemaphoreGive(gLock);
     saveConfig();
-    refreshSacnSocket();
+    // WiFiUDP::stop() frees the RX buffer loop() may be reading in pollSacn():
+    // the rebind runs in loop(), never on this task (audit 2026-10-15 2-H4).
+    pendingSockRefresh = true;
     r->send(204);
   };
   server.on("/artnet/set", HTTP_GET, routeArtNetSet);
@@ -3218,14 +3221,19 @@ void loop() {
   pollSacn();
   pollOsc();
 
-  // Rejoin sACN multicast when WiFi link state changes.
-  static wl_status_t prevWiFiStatus = WL_IDLE_STATUS;
-  wl_status_t curWiFiStatus = WiFi.status();
-  if (curWiFiStatus != prevWiFiStatus) {
-    prevWiFiStatus = curWiFiStatus;
-    if (curWiFiStatus == WL_CONNECTED) { startMdns(); sendBeacon(); }
-    refreshArtNetSocket();
-    refreshSacnSocket();
+  // Rebind Art-Net/sACN only when the STA link comes up or goes down (the
+  // multicast join needs it), not on DISCONNECTED <-> NO_SSID_AVAIL flaps
+  // while retrying: each rebind drops Art-Net arriving via the AP (1-L9).
+  // A universe change from /artnet/set is serviced here too (2-H4).
+  static bool prevStaUp = false;
+  bool staUp = (WiFi.status() == WL_CONNECTED);
+  bool linkEdge = (staUp != prevStaUp);
+  prevStaUp = staUp;
+  if (linkEdge && staUp) { startMdns(); sendBeacon(); }
+  if (linkEdge) refreshArtNetSocket();
+  if (linkEdge || pendingSockRefresh) {
+    pendingSockRefresh = false;
+    refreshSacnSocket();  // re-joins the multicast group for the new universe
   }
 
   const uint32_t now = millis();
