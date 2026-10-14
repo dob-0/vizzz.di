@@ -24,6 +24,9 @@ from urllib.parse import urlparse, parse_qs
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAIN = os.path.join(ROOT, "src", "main.cpp")
+# The firmware's USB widget baud, read from main.cpp so the two never disagree.
+with open(MAIN, encoding="utf-8") as _f:
+    USB_WIDGET_BAUD = int(re.search(r"USB_WIDGET_BAUD\s*=\s*(\d+)", _f.read()).group(1))
 MAX_CH, SCENE_COUNT, PAGE_SIZE, PAGE_COUNT, MAX_FIXTURES = 512, 8, 32, 16, 12
 SAFE_MAX_LEVEL, SAFE_SLEW_STEP = 245, 18
 BURN_SAFE_MAX_LEVEL, BURN_SAFE_SLEW_STEP = 96, 8
@@ -174,6 +177,8 @@ class Node:
             "peer_count": len(self.peers), "burn_safe": self.burn_safe,
             "artnet_fallback_to_web": self.artnet_fallback,
             "safe_ceiling": self.ceiling(), "safe_slew_step": self.slew_step(),
+            # USB widget input exists only on hardware (no serial in the simulator).
+            "usb_active": False, "usb_frames": 0, "usb_baud": USB_WIDGET_BAUD,
         }
 
     def manifest(self):
@@ -197,6 +202,10 @@ class Node:
                  "universe": self.uni15() + 1,           # E1.31 §6.2.7: never 0
                  "universe_rule": "artnet port-address + 1"},
                 {"id": "osc", "role": "input", "transport": "udp", "port": 9000},
+                {"id": "usb", "role": "input", "transport": "serial", "uart": "UART0",
+                 "protocol": "ENTTEC DMX USB PRO widget API", "baud": USB_WIDGET_BAUD,
+                 "labels": [3, 4, 6, 10], "merge": "htp-with-artnet-sacn",
+                 "timeout_ms": 2500, "active": False, "frames": 0},
                 {"id": "dmx512", "role": "physical-output", "channels": MAX_CH}],
             "simulated": True,
         }

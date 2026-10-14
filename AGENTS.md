@@ -44,6 +44,16 @@ Before starting implementation, read `CURRENT.md` and `AGENTS.md`, then treat re
 | DMX period ≥ 23 ms | Full 512-ch frame at 250 kbaud = 22.7 ms; shorter period drops frames |
 | Always call `dmx_wait_sent()` after `dmx_write()` | Without it the next write may corrupt the outgoing frame |
 | GPIO25 = TX, GPIO21 = DIR | MAX485 DE+RE bridged to GPIO21 |
+| UART0 (`Serial`) = USB: text log AND ENTTEC widget protocol, 250000 baud | `USB_WIDGET_BAUD` must equal the baud di.iiii's `enttec.js` sets (250000); a different value silently kills USB DMX |
+
+### UART0 rules (USB widget input, 2026-10-15)
+
+- `Serial` is read ONLY by `pollUsb()` (bounded per pass); nothing else may `Serial.read()`.
+- Write to `Serial` only text lines (log) or a complete widget reply from `handleUsbFrame()`;
+  never a partial frame; avoid `~` (0x7E, the widget start byte) in log text — it costs a host that reads replies a resync.
+- `Serial.setRxBufferSize()` stays before `Serial.begin()` (4096: `sendDMX()` holds `loop()` ~25 ms).
+- Baud changes only together with di's driver, README "USB", `platformio.ini monitor_speed`.
+- The widget parser and merge rule live in `include/vizzz_core.h` (`vizzz::widget`, `vizzz::merge`) with native tests.
 
 ---
 
@@ -197,7 +207,7 @@ need no hardware:
 # Upload (Linux: dialout group not active in agent shells)
 sg dialout -c "~/.platformio/penv/bin/pio run --target upload"
 
-# Serial monitor
+# Serial monitor (250000 from platformio.ini; it holds the port — close it before di uses USB DMX)
 sg dialout -c "~/.platformio/penv/bin/pio device monitor"
 
 # Unit tests (no hardware)
