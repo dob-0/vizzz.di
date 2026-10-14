@@ -500,6 +500,224 @@ inline uint8_t receiverOutput(const Receiver& r, uint8_t* out) {
 
 }  // namespace sacn
 
+// ── ENTTEC DMX USB PRO widget protocol (USB serial in) ──────────────────────
+// Method: the public "ENTTEC DMX USB PRO API" (widget API) document, ENTTEC Pty Ltd.
+// Every message is: 0x7E start, label, data length LSB, data length MSB,
+// data[length], 0xE7 end. Labels implemented here, as the document defines them:
+//   3  Get Widget Parameters  request: user-config size LSB/MSB.
+//                             reply:   firmware version LSB, MSB, DMX output break
+//                                      time (10.67 us units, 9..127), mark-after-break
+//                                      time (10.67 us units, 1..127), output rate
+//                                      (packets/s, 1..40), then user-config bytes.
+//   4  Set Widget Parameters  user-config size LSB/MSB, break, MAB, rate, user data.
+//                             Accepted and counted; nothing is stored (the node's DMX
+//                             timing is its own driver's, see README "USB").
+//   6  Output Only Send DMX   DMX start code, then channel 1..N values.
+//   10 Get Widget Serial No.  reply: 4 bytes BCD, least significant digit pair first.
+// Any other label is ignored. A frame whose length is over kMaxData or whose end byte
+// is not 0xE7 is dropped and the bytes after its start byte are scanned again for the
+// next 0x7E, so garbage or a cut-off frame never costs the frames that follow it.
+// Pure code: no Arduino. Native tests in test/test_smoke.
+namespace widget {
+
+constexpr uint8_t  kStart = 0x7E;
+constexpr uint8_t  kEnd   = 0xE7;
+constexpr uint16_t kMaxData = 600;              // API: largest message data length
+constexpr uint16_t kMaxRaw  = kMaxData + 5;     // start, label, len x2, data, end
+constexpr uint8_t  kLabelGetParams = 3;
+constexpr uint8_t  kLabelSetParams = 4;
+constexpr uint8_t  kLabelSendDmx   = 6;
+constexpr uint8_t  kLabelGetSerial = 10;
+constexpr uint16_t kMaxUserConfig  = 508;       // API: user configuration size limit
+constexpr uint16_t kChannels       = 512;
+
+struct Parser {
+  uint8_t  raw[kMaxRaw];      // the frame in progress, raw[0] == kStart
+  uint16_t rawLen;
+  uint8_t  scratch[kMaxRaw];  // replay buffer for resync
+  uint32_t frames;            // complete, well-formed frames (any label)
+  uint32_t errors;            // frames dropped: oversize length or bad end byte
+  uint32_t skipped;           // bytes outside any frame (log text, noise)
+};
+
+inline void parserReset(Parser& p) {
+  p.rawLen = 0; p.frames = 0; p.errors = 0; p.skipped = 0;
+}
+
+enum class Step : uint8_t { None, Frame, Bad };
+
+inline uint8_t  frameLabel(const Parser& p) { return p.raw[1]; }
+inline uint16_t frameLen(const Parser& p) { return uint16_t(p.raw[2] | (uint16_t(p.raw[3]) << 8)); }
+inline const uint8_t* frameData(const Parser& p) { return p.raw + 4; }
+
+inline Step step(Parser& p, uint8_t b) {
+  if (p.rawLen == 0) {
+    if (b == kStart) p.raw[p.rawLen++] = b; else p.skipped++;
+    return Step::None;
+  }
+  p.raw[p.rawLen++] = b;
+  if (p.rawLen == 4 && frameLen(p) > kMaxData) return Step::Bad;
+  if (p.rawLen >= 4 && p.rawLen == 5 + frameLen(p)) {
+    if (b != kEnd) return Step::Bad;
+    p.frames++;
+    return Step::Frame;
+  }
+  return Step::None;
+}
+
+// Drop the frame in progress and re-scan every byte after its start byte.
+// Each nested failure restarts one byte after that frame's own start, so the
+// scan always moves forward and ends. onFrame(label, data, len) as in feed().
+template <class F>
+inline void resync(Parser& p, F&& onFrame) {
+  if (p.rawLen == 0) return;
+  p.errors++;
+  const uint16_t m = p.rawLen;
+  memcpy(p.scratch, p.raw, m);
+  p.rawLen = 0;
+  uint16_t i = 1, st = 1;
+  while (i < m) {
+    if (p.rawLen == 0) st = i;
+    Step s = step(p, p.scratch[i]);
+    if (s == Step::Frame) {
+      onFrame(frameLabel(p), frameData(p), frameLen(p));
+      p.rawLen = 0;
+    } else if (s == Step::Bad) {
+      p.errors++;
+      p.rawLen = 0;
+      i = uint16_t(st + 1);
+      continue;
+    }
+    i++;
+  }
+}
+
+// Feed one byte. onFrame(label, data, len) runs for every complete frame; data
+// is valid only during the call.
+template <class F>
+inline void feed(Parser& p, uint8_t b, F&& onFrame) {
+  Step s = step(p, b);
+  if (s == Step::Frame) {
+    onFrame(frameLabel(p), frameData(p), frameLen(p));
+    p.rawLen = 0;
+  } else if (s == Step::Bad) {
+    resync(p, onFrame);
+  }
+}
+
+template <class F>
+inline void feed(Parser& p, const uint8_t* buf, size_t n, F&& onFrame) {
+  for (size_t i = 0; i < n; i++) feed(p, buf[i], onFrame);
+}
+
+// Label 6: data[0] is the DMX start code, data[1..] channels 1..N. Only start
+// code 0 (dimmer data) is applied. Channels beyond the frame keep their value,
+// so a short frame (the API minimum is 24 channels) touches only its own.
+// Returns the number of channels written; 0 for a non-zero start code.
+inline uint16_t applyDmx(const uint8_t* data, uint16_t len, uint8_t* vals512) {
+  if (len < 2 || data[0] != 0x00) return 0;
+  uint16_t ch = uint16_t(len - 1);
+  if (ch > kChannels) ch = kChannels;
+  memcpy(vals512, data + 1, ch);
+  return ch;
+}
+
+inline size_t buildFrame(uint8_t* out, size_t cap, uint8_t label, const uint8_t* data, uint16_t len) {
+  if (len > kMaxData || cap < size_t(len) + 5) return 0;
+  out[0] = kStart;
+  out[1] = label;
+  out[2] = uint8_t(len & 0xff);
+  out[3] = uint8_t(len >> 8);
+  if (len) memcpy(out + 4, data, len);
+  out[4 + len] = kEnd;
+  return size_t(len) + 5;
+}
+
+struct Params {
+  uint16_t firmware;   // reported as LSB, MSB
+  uint16_t breakUs;    // the node's real DMX break, microseconds
+  uint16_t mabUs;      // the node's real mark-after-break, microseconds
+  uint16_t rateHz;     // the node's real DMX refresh, packets per second
+};
+
+// API units: 10.67 us per count, rounded to nearest.
+inline uint8_t usToUnits(uint16_t us, uint8_t lo, uint8_t hi) {
+  uint32_t u = (uint32_t(us) * 100 + 533) / 1067;
+  if (u < lo) u = lo;
+  if (u > hi) u = hi;
+  return uint8_t(u);
+}
+
+// Label 3 reply. userSize is what the request asked for (clamped to the API's
+// 508); the node keeps no user configuration, so those bytes are zero.
+inline size_t buildParamsReply(uint8_t* out, size_t cap, const Params& prm, uint16_t userSize) {
+  if (userSize > kMaxUserConfig) userSize = kMaxUserConfig;
+  const uint16_t len = uint16_t(5 + userSize);
+  if (cap < size_t(len) + 5) return 0;
+  uint8_t* d = out + 4;
+  d[0] = uint8_t(prm.firmware & 0xff);
+  d[1] = uint8_t(prm.firmware >> 8);
+  d[2] = usToUnits(prm.breakUs, 9, 127);
+  d[3] = usToUnits(prm.mabUs, 1, 127);
+  d[4] = uint8_t(prm.rateHz < 1 ? 1 : (prm.rateHz > 40 ? 40 : prm.rateHz));
+  memset(d + 5, 0, userSize);
+  out[0] = kStart; out[1] = kLabelGetParams;
+  out[2] = uint8_t(len & 0xff); out[3] = uint8_t(len >> 8);
+  out[4 + len] = kEnd;
+  return size_t(len) + 5;
+}
+
+// Requested user-config size of a label 3 request (0 when absent).
+inline uint16_t paramsRequestSize(const uint8_t* data, uint16_t len) {
+  return len >= 2 ? uint16_t(data[0] | (uint16_t(data[1]) << 8)) : 0;
+}
+
+// 8 decimal digits as 4 BCD bytes, least significant digit pair first.
+inline void toBcd(uint32_t decimal, uint8_t out[4]) {
+  decimal %= 100000000UL;
+  for (int i = 0; i < 4; i++) {
+    uint8_t lo = uint8_t(decimal % 10); decimal /= 10;
+    uint8_t hi = uint8_t(decimal % 10); decimal /= 10;
+    out[i] = uint8_t((hi << 4) | lo);
+  }
+}
+
+// Label 10 reply.
+inline size_t buildSerialReply(uint8_t* out, size_t cap, uint32_t serialDecimal) {
+  uint8_t bcd[4];
+  toBcd(serialDecimal, bcd);
+  return buildFrame(out, cap, kLabelGetSerial, bcd, 4);
+}
+
+}  // namespace widget
+
+// ── Output merge (computeOutput_locked) ─────────────────────────────────────
+// Network-class sources (Art-Net, sACN, USB widget) merge HTP among themselves;
+// the mode then decides what reaches the output. Mode numbers match main.cpp's
+// enum Mode: 0 WEB_ONLY, 1 ARTNET_ONLY, 2 MERGE_HTP.
+namespace merge {
+constexpr uint8_t kWebOnly = 0, kArtnetOnly = 1, kHtp = 2;
+
+inline uint8_t networkIn(bool aOn, uint8_t a, bool sOn, uint8_t sv, bool uOn, uint8_t u) {
+  uint8_t v = 0;
+  if (aOn && a > v) v = a;
+  if (sOn && sv > v) v = sv;
+  if (uOn && u > v) v = u;
+  return v;
+}
+
+// held = the channel's current output (ARTNET_ONLY holds it while every network
+// source is idle, unless fallbackToWeb).
+inline uint8_t forMode(uint8_t mode, bool netActive, uint8_t netIn, uint8_t web, uint8_t held,
+                       bool fallbackToWeb) {
+  switch (mode) {
+    case kWebOnly:    return web;
+    case kArtnetOnly: return netActive ? netIn : (fallbackToWeb ? web : held);
+    default:          return netActive ? (web > netIn ? web : netIn) : web;
+  }
+}
+}  // namespace merge
+
 // ── OSC 1.0 argument conversion ───────────────────────────────────────────────
 // Level addresses take ints 0..255, or floats: 0.0..1.0 is normalised (TouchOSC's
 // default fader range) and larger values are taken as levels. NaN/Inf and

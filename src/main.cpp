@@ -41,6 +41,22 @@ static constexpr uint32_t   ARTNET_TIMEOUT_MS = 3000;
 static constexpr uint16_t   ARTNET_PORT       = 6454;
 static constexpr uint32_t   SACN_TIMEOUT_MS   = vizzz::sacn::kLossTimeoutMs;  // E1.31-2018 §6.7.1: 2.5 s
 static constexpr uint32_t   ART_MERGE_TIMEOUT_MS = vizzz::artnet::kMergeTimeoutMs;  // Art-Net 4 "Data Merging": 10 s
+// USB serial in: the ENTTEC DMX USB PRO widget protocol ("DMX USB PRO API",
+// ENTTEC) on UART0 (`Serial`), the same UART as the text log. DMX itself stays
+// on DMX_NUM_1/UART2 (AGENTS.md). The baud is di.iiii's: serverXR/src/lighting/
+// enttec.js sets 250000 first (115200 only if the port refuses it), and a widget
+// host never negotiates, so both ends must simply agree. Host side: stty/mode.
+static constexpr uint32_t   USB_WIDGET_BAUD    = 250000;
+// Loss timeout for the USB layer. The widget API defines none (a real widget holds
+// its last frame forever); di sends every tick (~40 Hz, enttec.js "Transmit
+// CONTINUOUSLY"), so silence means the desk is gone. E1.31-2018 §6.7.1's 2.5 s
+// network-data-loss rule is used, like sACN, so a closed desk never latches the rig
+// on in HTP; ARTNET_ONLY still holds or falls back per artnetFallbackToWeb.
+static constexpr uint32_t   USB_TIMEOUT_MS     = vizzz::sacn::kLossTimeoutMs;
+static constexpr size_t     USB_RX_BUFFER      = 4096;  // ~160 ms of 250 kbaud; loop() can sit ~25 ms in sendDMX()
+static constexpr uint16_t   USB_BYTES_PER_PASS = 2048;  // bounded per loop pass, like the UDP packet budgets
+static constexpr uint32_t   USB_FRAME_GAP_MS   = 100;   // a frame stalled this long is dropped and re-scanned
+static constexpr uint16_t   USB_WIDGET_FW      = 0x0100; // label 3 "firmware version": vizzz widget layer 1.0, not an ENTTEC number
 static constexpr uint32_t   ART_OUT_KEEPALIVE_MS = 1000;  // resend an unchanged frame; inside the 3 s loss timeout
 static constexpr uint16_t   SACN_PORT         = 5568;
 static constexpr uint8_t    SAFE_MAX_LEVEL    = 245;
@@ -64,6 +80,8 @@ static constexpr uint32_t WEB_GRACE_MS = 90000;   // console stays up this long 
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
 enum Mode : uint8_t { MODE_WEB = 0, MODE_ARTNET = 1, MODE_HTP = 2 };
+static_assert(MODE_WEB == vizzz::merge::kWebOnly && MODE_ARTNET == vizzz::merge::kArtnetOnly &&
+              MODE_HTP == vizzz::merge::kHtp, "merge rule (vizzz_core.h) and Mode must agree");
 static const char* modeName(Mode m) {
   switch (m) {
     case MODE_WEB:    return "WEB_ONLY";
@@ -251,10 +269,14 @@ static uint8_t dmxFrame [MAX_CH + 1];
 static uint8_t webVals  [MAX_CH];   // web layer — protected by gLock
 static uint8_t artVals  [MAX_CH];   // Art-Net IN — written from loop UDP poll
 static uint8_t sacnVals [MAX_CH];   // sACN IN
+static uint8_t usbVals  [MAX_CH];   // USB widget IN (label 6) — written under gLock
 static uint8_t outVals  [MAX_CH];   // final computed output
 
 static volatile uint32_t lastArtnetMs = 0;
 static volatile uint32_t lastSacnMs   = 0;
+static volatile uint32_t lastUsbMs    = 0;
+static volatile uint32_t usbFrames    = 0;   // label-6 frames applied since boot
+static vizzz::widget::Parser usbRx;          // loop() only
 static uint8_t masterDimmer = 255;  // 0=off, 255=full — resets to full on boot
 
 // ── VJ controls (groups / cues / FX) ────────────────────────────────────────
@@ -835,6 +857,10 @@ static bool sacnActive() {
   return lastSacnMs && (millis() - lastSacnMs < SACN_TIMEOUT_MS);
 }
 
+static bool usbActive() {
+  return lastUsbMs && (millis() - lastUsbMs < USB_TIMEOUT_MS);
+}
+
 static void refreshArtNetSocket() {
   artInUdp.stop();
   artInUdp.begin(ARTNET_PORT);
@@ -1307,29 +1333,19 @@ static void pollOsc() {
 }
 
 // ── Output ────────────────────────────────────────────────────────────────────
-static void computeOutput_locked(bool aActive, bool sActive, uint32_t nowMs) {
-  bool netActive = aActive || sActive;
+// Network-class sources: Art-Net, sACN and the USB widget (label 6). Among
+// themselves they merge HTP; the result obeys the mode exactly as Art-Net always
+// did: WEB_ONLY ignores all three, ARTNET_ONLY outputs them alone (and holds or
+// falls back to web when all are idle), MERGE_HTP takes max(web, network).
+static void computeOutput_locked(bool aActive, bool sActive, bool uActive, uint32_t nowMs) {
+  bool netActive = aActive || sActive || uActive;
   uint8_t ceiling = effectiveSafeMaxLevel();
   uint8_t slewStep = effectiveSafeSlewStep();
 
   for (int i = 0; i < MAX_CH; i++) {
-    uint8_t netIn = 0;
-    if (aActive && sActive) netIn = max(artVals[i], sacnVals[i]);
-    else if (aActive)       netIn = artVals[i];
-    else if (sActive)       netIn = sacnVals[i];
-
-    uint8_t v;
-    switch (mode) {
-      case MODE_WEB:
-        v = webVals[i];
-        break;
-      case MODE_ARTNET:
-        v = netActive ? netIn : (artnetFallbackToWeb ? webVals[i] : outVals[i]);
-        break;
-      default: // MODE_HTP
-        v = netActive ? max(webVals[i], netIn) : webVals[i];
-        break;
-    }
+    uint8_t netIn = vizzz::merge::networkIn(aActive, artVals[i], sActive, sacnVals[i], uActive, usbVals[i]);
+    uint8_t v = vizzz::merge::forMode(uint8_t(mode), netActive, netIn, webVals[i], outVals[i],
+                                      artnetFallbackToWeb);
 
     if (masterDimmer < 255) v = vizzz::applyMaster(v, masterDimmer);
     v = vizzz::clampLevel(v, ceiling);
@@ -1477,6 +1493,62 @@ static void pollSacn() {
     uint8_t live = vizzz::sacn::receiverOutput(sacnRx, sacnVals);
     lastSacnMs = live ? now : 0;  // terminated or lost: no sACN layer at once
   }
+}
+
+// ── USB widget IN (ENTTEC DMX USB PRO API on UART0) ─────────────────────────
+// Replies (labels 3, 10) go out as binary on the same UART as the text log, so a
+// host reading the log sees binary only after it asked for it.
+static void handleUsbFrame(uint8_t label, const uint8_t* d, uint16_t len) {
+  static uint8_t reply[5 + 5 + vizzz::widget::kMaxUserConfig];
+  switch (label) {
+    case vizzz::widget::kLabelSendDmx: {
+      if (len < 2 || d[0] != 0x00) return;  // only start code 0 is dimmer data
+      if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) != pdTRUE) return;  // next frame is ~25 ms away
+      vizzz::widget::applyDmx(d, len, usbVals);
+      xSemaphoreGive(gLock);
+      lastUsbMs = millis();
+      usbFrames = usbFrames + 1;
+      return;
+    }
+    case vizzz::widget::kLabelGetParams: {
+      vizzz::widget::Params prm{USB_WIDGET_FW, uint16_t(dmx_get_break_len(dmxPort)),
+                                uint16_t(dmx_get_mab_len(dmxPort)), uint16_t(1000 / DMX_PERIOD_MS)};
+      size_t n = vizzz::widget::buildParamsReply(reply, sizeof(reply), prm,
+                                                 vizzz::widget::paramsRequestSize(d, len));
+      if (n) Serial.write(reply, n);
+      return;
+    }
+    case vizzz::widget::kLabelGetSerial: {
+      uint8_t mac[6];
+      WiFi.macAddress(mac);  // 24 low MAC bits as 8 decimal digits: stable per board
+      size_t n = vizzz::widget::buildSerialReply(reply, sizeof(reply),
+                                                 (uint32_t(mac[3]) << 16) | (uint32_t(mac[4]) << 8) | mac[5]);
+      if (n) Serial.write(reply, n);
+      return;
+    }
+    case vizzz::widget::kLabelSetParams:  // accepted; the node's DMX timing is its own driver's
+    default:
+      return;
+  }
+}
+
+static void pollUsb() {
+  static uint32_t lastByteMs = 0;
+  const uint32_t now = millis();
+  uint8_t buf[256];
+  uint16_t budget = USB_BYTES_PER_PASS;
+  while (budget) {
+    int avail = Serial.available();
+    if (avail <= 0) break;
+    size_t want = min(size_t(avail), min(sizeof(buf), size_t(budget)));
+    size_t n = Serial.read(buf, want);
+    if (!n) break;
+    vizzz::widget::feed(usbRx, buf, n, handleUsbFrame);
+    budget = uint16_t(budget - n);
+    lastByteMs = now;
+  }
+  if (usbRx.rawLen && now - lastByteMs >= USB_FRAME_GAP_MS)
+    vizzz::widget::resync(usbRx, handleUsbFrame);  // a cut frame never blocks the next one
 }
 
 // ── Unified App UI ───────────────────────────────────────────────────────────
@@ -2235,6 +2307,9 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     "\"safe_ceiling\":%u,"
     "\"safe_slew_step\":%u,"
     "\"ap_fb\":%s,"
+    "\"usb_active\":%s,"
+    "\"usb_frames\":%lu,"
+    "\"usb_baud\":%lu,"
     "\"rst\":\"%s\","
     "\"fw\":\"%s\""
     "}",
@@ -2263,6 +2338,9 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     effectiveSafeMaxLevel(),
     effectiveSafeSlewStep(),
     apFallbackActive ? "true" : "false",
+    usbActive() ? "true" : "false",
+    (unsigned long)usbFrames,
+    (unsigned long)USB_WIDGET_BAUD,
     resetReasonName(esp_reset_reason()),
     FW_BUILD
   );
@@ -2276,7 +2354,8 @@ static size_t fillStatusJSON(char* buf, size_t n) {
 
 // STATUS_JSON_MAX: worst case measured from the format at ~920 bytes (~420
 // literal + three 79-byte escaped names + IPs, MAC, numbers); 800 could truncate.
-static constexpr size_t STATUS_JSON_MAX = 1024;
+// The USB fields add at most 62 (~982), so 1152 keeps the margin.
+static constexpr size_t STATUS_JSON_MAX = 1152;
 
 
 
@@ -2559,6 +2638,7 @@ static String nodeManifestJSON() {
       "{\"id\":\"artnet\",\"role\":\"input-output\",\"port\":%u,\"universe\":%u,\"net\":%u,\"subnet\":%u,\"uni\":%u,\"output_target\":\"%s\",\"output_enabled\":%s},"
       "{\"id\":\"sacn\",\"role\":\"input\",\"port\":%u,\"universe\":%u,\"universe_rule\":\"artnet port-address + 1\"},"
       "{\"id\":\"osc\",\"role\":\"input\",\"transport\":\"udp\",\"port\":%u},"
+      "{\"id\":\"usb\",\"role\":\"input\",\"transport\":\"serial\",\"uart\":\"UART0\",\"protocol\":\"ENTTEC DMX USB PRO widget API\",\"baud\":%lu,\"labels\":[3,4,6,10],\"merge\":\"htp-with-artnet-sacn\",\"timeout_ms\":%lu,\"active\":%s,\"frames\":%lu},"
       "{\"id\":\"dmx512\",\"role\":\"physical-output\",\"channels\":%d}"
     "],"
     "\"state\":{\"output_mode\":\"%s\",\"master\":%u,\"artnet_active\":%s,\"sacn_active\":%s,\"web_enabled\":%s,\"fx_mode\":\"%s\",\"fx_enabled\":%s,\"color_enabled\":%s,\"burn_safe\":%s,\"safe_ceiling\":%u,\"safe_slew_step\":%u},"
@@ -2568,6 +2648,7 @@ static String nodeManifestJSON() {
     outTarget.c_str(), artOutEnabled ? "true" : "false",
     SACN_PORT, sacnUniverse(),
     OSC_PORT,
+    (unsigned long)USB_WIDGET_BAUD, (unsigned long)USB_TIMEOUT_MS, usbActive() ? "true" : "false", (unsigned long)usbFrames,
     MAX_CH,
     modeName(mode), masterDimmer, artnetActive() ? "true" : "false", sacnActive() ? "true" : "false", webEnabled ? "true" : "false", fxModeName(snapFxMode), snapFxEnabled ? "true" : "false", snapColorEnabled ? "true" : "false", burnSafeMode ? "true" : "false", effectiveSafeMaxLevel(), effectiveSafeSlewStep()
   );
@@ -3472,7 +3553,9 @@ void setup() {
   pinMode(DMX_DIR, OUTPUT);
   digitalWrite(DMX_DIR, LOW);
 
-  Serial.begin(115200);
+  // UART0 = USB serial: the text log AND the ENTTEC widget protocol (README "USB").
+  Serial.setRxBufferSize(USB_RX_BUFFER);  // before begin(), or the 256-byte default stays
+  Serial.begin(USB_WIDGET_BAUD);
 
   gLock = xSemaphoreCreateMutex();
 
@@ -3486,6 +3569,8 @@ void setup() {
   memset(webVals,  0, MAX_CH);
   memset(artVals,  0, MAX_CH);
   memset(sacnVals, 0, MAX_CH);
+  memset(usbVals,  0, MAX_CH);
+  vizzz::widget::parserReset(usbRx);
   memset(outVals,  0, MAX_CH);
 
   setupDMX();
@@ -3508,6 +3593,7 @@ void setup() {
 
   lastArtnetMs = 0;
   lastSacnMs = 0;
+  lastUsbMs = 0;
 
   // Task watchdog on the DMX path (1-M8). The Arduino loop task is not
   // subscribed by default (core 2.0.17 esp32-hal-misc.c enableLoopWDT());
@@ -3689,6 +3775,7 @@ void loop() {
 
   pollArtNet();
   pollSacn();
+  pollUsb();
   pollOsc();
 
   // Rebind Art-Net/sACN only when the STA link comes up or goes down (the
@@ -3717,7 +3804,7 @@ void loop() {
 
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
       updateFade_locked();
-      computeOutput_locked(artnetActive(), sacnActive(), now);
+      computeOutput_locked(artnetActive(), sacnActive(), usbActive(), now);
       xSemaphoreGive(gLock);
     }
 
