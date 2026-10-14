@@ -429,6 +429,23 @@ void test_parse_int_arg_strict() {
   for (const char* b : bad) TEST_ASSERT_FALSE_MESSAGE(vizzz::parseIntArg(b, -100, 100, &v), b);
 }
 
+// 2-M7: ACAO only on shared JSON reads.
+void test_acao_only_on_shared_reads() {
+  size_t shared = 0;
+  for (size_t i = 0; i < vizzz::kRouteCount; i++) {
+    bool acao = vizzz::routeSendsAcao(vizzz::kRoutes[i].kind);
+    if (acao) shared++;
+    if (vizzz::kRoutes[i].kind == vizzz::RouteKind::Console ||
+        vizzz::kRoutes[i].kind == vizzz::RouteKind::Operator)
+      TEST_ASSERT_FALSE_MESSAGE(acao, vizzz::kRoutes[i].path);
+  }
+  TEST_ASSERT_EQUAL_UINT32(12, shared);
+  TEST_ASSERT_TRUE(vizzz::routeSendsAcao(vizzz::kRoutes[vizzz::findRoute("/status")].kind));
+  TEST_ASSERT_TRUE(vizzz::routeSendsAcao(vizzz::kRoutes[vizzz::findRoute("/discover")].kind));
+  TEST_ASSERT_FALSE(vizzz::routeSendsAcao(vizzz::kRoutes[vizzz::findRoute("/wifi/scan")].kind));
+  TEST_ASSERT_FALSE(vizzz::routeSendsAcao(vizzz::kRoutes[vizzz::findRoute("/reboot")].kind));
+}
+
 static int runAll() {
   UNITY_BEGIN();
   RUN_TEST(test_pack_universe_uses_15bit_layout);
@@ -457,6 +474,7 @@ static int runAll() {
   RUN_TEST(test_ws_origin_rule);
   RUN_TEST(test_parse_uint_arg_strict);
   RUN_TEST(test_parse_int_arg_strict);
+  RUN_TEST(test_acao_only_on_shared_reads);
   return UNITY_END();
 }
 

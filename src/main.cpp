@@ -2132,9 +2132,16 @@ initRouteWork();
 </body></html>)HTML";
 
 // ── JSON helpers ──────────────────────────────────────────────────────────────
+// One CORS rule (audit 2026-10-15 2-M7): Access-Control-Allow-Origin: * goes
+// on the JSON reads the route table marks GetShared (/status, /page, /discover,
+// /peers, the manifests, /safety/status, /cue/status, /fx/status, /groups,
+// /fixtures, /monitor) and nowhere else: not on /wifi/scan, not on any command
+// route, not on 4xx answers. di reads /status cross-origin through it.
 static void sendJSON(AsyncWebServerRequest* req, const String& body) {
   AsyncWebServerResponse* res = req->beginResponse(200, "application/json", body);
-  res->addHeader("Access-Control-Allow-Origin", "*");
+  int ri = vizzz::findRoute(req->url().c_str());
+  if (ri >= 0 && vizzz::routeSendsAcao(vizzz::kRoutes[ri].kind))
+    res->addHeader("Access-Control-Allow-Origin", "*");
   res->addHeader("Cache-Control", "no-store");
   req->send(res);
 }
