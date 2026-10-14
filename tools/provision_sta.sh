@@ -21,4 +21,4 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 printf 'key,type,encoding,value\ncfg,namespace,,\nsta_ssid,data,string,%s\nsta_pass,data,string,%s\n' "$SSID" "$PASS" > "$T/nvs.csv"
 "$VENV/bin/python" "$GEN" generate "$T/nvs.csv" "$T/nvs.bin" 0x5000 >/dev/null
 python3 "$ESPT" --chip esp32 --port "$PORT" --baud 460800 write_flash 0x9000 "$T/nvs.bin" | grep -E "Wrote|verified|rror"
-echo "done: node reboots; its boot log prints 'STA SSID : $SSID' and the STA IP (115200 baud)."
+echo "done: node reboots; its boot log prints 'STA SSID : $SSID' and the STA IP (250000 baud, USB_WIDGET_BAUD)."

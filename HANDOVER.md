@@ -192,3 +192,72 @@ old page (it sent GET): reload once.
 - Lesson, made durable: the route list exists once (`vizzz::kRoutes`) and `tools/check_routes.py` fails the
   di compat check on drift, so 2-M4's "manifest out of date" cannot come back silently (AGENTS.md
   "Adding a New HTTP Route" rewritten around it).
+
+---
+
+# Handover — USB widget input (branch feat/usb-enttec-pro), 2026-10-15
+
+The node speaks the ENTTEC DMX USB PRO widget protocol ("ENTTEC DMX USB PRO API":
+labels 3, 4, 6, 10) on UART0, so di.iiii's light desk drives it over the USB cable with
+its existing `enttec` driver. README "USB" has the protocol table, baud and modes table.
+
+| Commit | What |
+|---|---|
+| `e35f760` | `vizzz::widget` parser (resync, 600-byte cap), label 3/10 reply builders; tests 27 → 35 |
+| `2038ef2` | firmware: `pollUsb()` bounded 2048 B/pass, RX buffer 4096, `usbVals` under gLock, `usbActive()` 2.5 s (E1.31 §6.7.1), HTP with Art-Net/sACN via pure `vizzz::merge`; `/status` `usb_active` `usb_frames` `usb_baud`; manifest `usb`; simulator mirrors; tests → 36 |
+| `7678493` | `tools/usb_probe.js` (di's own driver), `tools/widget_pty_harness.cpp` (parser on a pty) |
+
+Measured (aylmo, no board): esp32dev RAM 55,476 → 57,748 B (17.6 %), Flash 931,285 →
+933,169 B (71.2 %); native 36/36; check_routes, check_di_compat, check_http_api (simulator,
+24/0) PASS. Pty loopback: di's `enttec.js` opened the pty at 250000, sent 119 frames in 3 s,
+0 dropped; the firmware parser took 119 label-6 frames, 0 errors, ch64 = 180;
+`usb_probe.js params` 4/4 PASS with 170 interleaved log bytes skipped.
+**Not measured: anything on the real board** (UART timing at 250000, RX overruns under
+Wi-Fi load, DTR/RTS reset on port open). Live node before flashing: `fw` cacd490, no `usb_baud`.
+
+**Baud change for every log reader.** UART0 now runs at 250000 (`USB_WIDGET_BAUD`).
+`pio device monitor` picks it up from `platformio.ini` (`monitor_speed = 250000`); any
+other reader (screen, `stty`-based bootlog readers, tools/provision_sta.sh's note) must use
+250000. The ROM bootloader lines before the app starts stay at 115200.
+
+## USB flash-and-verify
+
+Run on aylmo with the board on `/dev/ttyUSB0`, di's desk output NOT on enttec (the probe
+needs the port to itself), `pio device monitor` closed.
+
+```
+cd ~/work/vizzz.di-usb
+PLATFORMIO_CORE_DIR=/home/dob/work/vizzz.di/.platformio-core ~/.local/bin/pio test -e native   # 36 test cases: 36 succeeded
+sg dialout -c "PLATFORMIO_CORE_DIR=/home/dob/work/vizzz.di/.platformio-core ~/.local/bin/pio run -e esp32dev -t upload"
+curl -s http://192.168.88.66/status | python3 -m json.tool | grep -E '"fw"|usb_'     # fw = this SHA; usb_baud 250000
+sg dialout -c "node tools/usb_probe.js params --di /home/dob/work/di.iiii --port /dev/ttyUSB0"
+#   expect: label 3 reply (firmware 1.0, break 16-17 x10.67us, MAB 1, rate 40), label 10 serial 8 digits; "4 passed, 0 failed"
+sg dialout -c "node tools/usb_probe.js --di /home/dob/work/di.iiii --port /dev/ttyUSB0 --node http://192.168.88.66 --ch 64 --v 180 --seconds 5"
+#   expect: 8 PASS, "0 failed": reachable, usb_baud present, host baud 250000 == node, node stayed
+#   reachable (no DTR/RTS reset), usb_active true, usb_frames grew (~200 for 5 s at 40 Hz),
+#   out at ch 64 == 180 (MERGE_HTP, master 255, ceiling 255; the probe prints the formula), released to web
+```
+
+Conditions: mode MERGE_HTP or ARTNET_ONLY (WEB_ONLY ignores USB by design and the out check
+then expects the web value), channel 64 at 0 in the web layer, burn-safe off or the ceiling is
+taken into the expectation. Then the owner's look: in di's light desk set output driver
+`enttec`, serial port `/dev/ttyUSB0`, move a fader — the fixture follows; close the desk —
+the rig returns to the web layer within 2.5 s.
+
+Owed if a check fails:
+- "node stayed reachable" FAIL → opening the port resets the ESP32 through the DTR/RTS
+  auto-reset transistors. Fix belongs in di's driver (`stty -hupcl`, DTR/RTS handling) or a
+  hardware cut; write it as a ledger row, do not patch around it in firmware.
+- usb_frames grows slower than the driver's `sent` → RX overruns; measure `loop()` pass time
+  and raise `USB_RX_BUFFER` / `USB_BYTES_PER_PASS`.
+
+## Review (AAR)
+
+- Meant: widget protocol on UART0 driven by di's driver, merged HTP, proof tool. Happened:
+  built and tested on host; board steps above owed (no flashing in this job by rule).
+- Lesson made durable: the merge rule was inline in `computeOutput_locked` and untestable;
+  it now lives in `vizzz::merge` with a modes test and a static_assert to `enum Mode`.
+- Simulator `--serial` mode: skipped — not cheap (needs a C++-equivalent parser in Python
+  and a pty); the pty harness covers the parser against di's real driver instead.
+- Nothing left behind: everything is in this repo (`vizzz::widget`, `pollUsb`, probe, harness);
+  no production name in code.
