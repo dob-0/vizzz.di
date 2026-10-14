@@ -626,6 +626,32 @@ void test_merge_usb_obeys_modes_like_artnet() {
   TEST_ASSERT_EQUAL_UINT8(50, forMode(kHtp, false, 0, 50, 77, false));
 }
 
+static void test_health_fields_key_list_and_values() {
+  const vizzz::HealthFacts h{123456u, 65536u, 3u};
+  char buf[128];
+  int n = vizzz::healthJsonFields(buf, sizeof(buf), h);
+  TEST_ASSERT_TRUE(n > 0 && size_t(n) < sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("\"heap_free\":123456,\"heap_max_block\":65536,\"ws_clients\":3", buf);
+  TEST_ASSERT_EQUAL_UINT(3, vizzz::kHealthKeyCount);
+  const char* at = buf;
+  for (size_t i = 0; i < vizzz::kHealthKeyCount; i++) {
+    char q[40];
+    snprintf(q, sizeof(q), "\"%s\":", vizzz::kHealthKeys[i]);
+    const char* f = strstr(at, q);
+    TEST_ASSERT_NOT_NULL_MESSAGE(f, vizzz::kHealthKeys[i]);
+    TEST_ASSERT_NULL_MESSAGE(strstr(f + 1, q), vizzz::kHealthKeys[i]);
+    at = f;
+  }
+}
+
+static void test_health_fields_truncation_reported() {
+  const vizzz::HealthFacts h{4294967295u, 4294967295u, 4294967295u};
+  char small[16];
+  TEST_ASSERT_TRUE(size_t(vizzz::healthJsonFields(small, sizeof(small), h)) >= sizeof(small));
+  char buf[96];
+  TEST_ASSERT_TRUE(size_t(vizzz::healthJsonFields(buf, sizeof(buf), h)) < sizeof(buf));
+}
+
 static int runAll() {
   UNITY_BEGIN();
   RUN_TEST(test_pack_universe_uses_15bit_layout);
@@ -664,6 +690,8 @@ static int runAll() {
   RUN_TEST(test_widget_serial_reply_bcd);
   RUN_TEST(test_widget_stalled_frame_resync_replays);
   RUN_TEST(test_merge_usb_obeys_modes_like_artnet);
+  RUN_TEST(test_health_fields_key_list_and_values);
+  RUN_TEST(test_health_fields_truncation_reported);
   return UNITY_END();
 }
 
