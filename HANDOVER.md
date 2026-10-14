@@ -119,7 +119,7 @@ API Lows. Nothing flashed, no serial, the live node not contacted. Each finding 
 
 | commit | findings | what |
 |---|---|---|
-| `9372087` | 2-H2, 2-L3 (part), 2-L5, 2-L7 | `vizzz::kRoutes` + `route()` gate: Console = POST + `X-Vizzz-Console: 1`; console JS sends it; /discover read-only + POST /discover/announce; /ws Origin check |
+| `9372087` | 2-H2, 2-L3 (part), 2-L5, 2-L7 | `vizzz::kRoutes` + `route()` gate: Console = POST + `X-Vizzz-Console: 1`; console JS sends it; /discover read-only + POST /announce; /ws Origin check |
 | `efeff26` | 2-M5, 2-L6, 2-L3 | `parseUintArg/parseIntArg` + `ArgReader`, 400 JSON; start ≤ end; SSID/pass lengths |
 | `aea72d3` | 2-M3 | `escAttrJs` in onclick; `tools/check_console_escape.js` |
 | `1781443` | 2-M7 | ACAO only on GetShared reads, from the table |
@@ -185,6 +185,9 @@ old page (it sent GET): reload once.
   triple quotes; a pattern with leading spaces; README pipes split by the checker), none in firmware code.
 - Found on the way: `tools/check_di_compat.sh ../di.iiii` (the documented relative form) failed before this
   pass — `di_side.js` `require()`d a path relative to itself. Fixed in af68558.
+- Caught in self-review before hand-off: `/discover/announce` would have been answered by the `/discover`
+  handler (ESPAsyncWebServer serves `<uri>/...` with the `<uri>` handler), i.e. 405. Renamed `/announce`;
+  a native test and `check_routes.py` now fail on any route that is another's prefix + "/".
 - Lesson, made durable: the route list exists once (`vizzz::kRoutes`) and `tools/check_routes.py` fails the
   di compat check on drift, so 2-M4's "manifest out of date" cannot come back silently (AGENTS.md
   "Adding a New HTTP Route" rewritten around it).

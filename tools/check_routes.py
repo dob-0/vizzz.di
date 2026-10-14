@@ -38,6 +38,12 @@ def main() -> int:
         errors.append(f"main.cpp registers {p}, not in kRoutes")
     for p in sorted(table.keys() - registered):
         errors.append(f"kRoutes has {p}, main.cpp never registers it")
+    # ESPAsyncWebServer also matches "<uri>/..." to a handler for <uri>
+    # (AsyncCallbackWebHandler::canHandle), so /x would swallow /x/y.
+    for p in table:
+        for q in table:
+            if p != "/" and q.startswith(p + "/"):
+                errors.append(f"{q} would be served by the {p} handler (prefix match); rename one")
     if len(re.findall(r"\bserver\.on\(", main_cpp)) != 1:
         errors.append("server.on() used outside route(): register through the table")
 

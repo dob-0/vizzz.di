@@ -1695,7 +1695,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--di-black);border
         </div>
         <div class="card">
           <h2>Peers</h2>
-          <div class="row" style="margin-bottom:8px"><button onclick="hit('/discover/announce');setTimeout(loadPeers,1500)">Refresh</button><span class="footerNote" id="peerCount" style="margin-left:8px">—</span></div>
+          <div class="row" style="margin-bottom:8px"><button onclick="hit('/announce');setTimeout(loadPeers,1500)">Refresh</button><span class="footerNote" id="peerCount" style="margin-left:8px">—</span></div>
           <div id="peerList"><span class="footerNote">Join a WiFi network to discover other vizzz.di nodes.</span></div>
         </div>
       </div>
@@ -3077,12 +3077,12 @@ static void setupWeb() {
     snprintf(buf, sizeof(buf),
       "{\"name\":\"%s\",\"ip\":\"%s\",\"ap_ip\":\"%s\",\"ap_ssid\":\"%s\",\"mdns\":\"%s.local\",\"mac\":\"%s\",\"product\":\"vizzz.di\"}",
       eName, ipStr(WiFi.localIP()).c_str(), apIp, eApSsid, id.mdns, mac.c_str());
-    sendJSON(r, buf);  // a read: no side effect (2-L5); the beacon is POST /discover/announce
+    sendJSON(r, buf);  // a read: no side effect (2-L5); the beacon is POST /announce
   });
 
   // Ask every node on the LAN to answer now instead of within 30 s. Sends one
   // UDP beacon from loop() (discoverUdp belongs to loop(); never this task).
-  route("/discover/announce", [](AsyncWebServerRequest* r){
+  route("/announce", [](AsyncWebServerRequest* r){
     pendingBeacon = true;
     r->send(204);
   });

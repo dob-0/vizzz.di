@@ -178,7 +178,7 @@ curl 'http://192.168.4.1/set?ch=1&v=255'                                     # o
 | POST | yes | - | `/net/master` | `v=0-255` | Set master on this node and all discovered peers |
 | POST | yes | - | `/net/scene/recall` | `n=0-7&fade=ms` | Recall scene on this node and all discovered peers |
 | POST | yes | - | `/peer/cmd` | `ip=X&path=/blackout\|/full\|/master?v=\|/scene/recall?n=` | Forward an allowed command to one known peer |
-| POST | yes | - | `/discover/announce` | - | Send one discovery beacon now (else every 30 s) |
+| POST | yes | - | `/announce` | - | Send one discovery beacon now (else every 30 s) |
 | POST | yes | - | `/wifi/set` | `ssid=1-32 B&pass=empty or 8-63 (form body)` | Connect STA |
 | POST | yes | - | `/wifi/forget` | - | Clear STA credentials |
 | POST | yes | - | `/node/set` | `name=X&ap_ssid=Y&ap_pass=8-63 (form body)` | Update node identity |

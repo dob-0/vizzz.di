@@ -668,7 +668,7 @@ class Handler(BaseHTTPRequestHandler):
                 if pw and not wpa_ok(pw):
                     return self._send(400, '{"error":"pass must be empty or 8-63 printable ASCII","arg":"pass"}',
                                       "application/json")
-            elif p in ("/wifi/forget", "/reboot", "/factory-reset", "/peer/cmd", "/discover/announce"):
+            elif p in ("/wifi/forget", "/reboot", "/factory-reset", "/peer/cmd", "/announce"):
                 pass
             else:
                 return self._send(404, "no route: " + p)

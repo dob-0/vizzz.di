@@ -614,7 +614,7 @@ static constexpr RouteSpec kRoutes[] = {
   {"/group/set", RouteKind::Console}, {"/group/apply", RouteKind::Console},
   {"/cue/count", RouteKind::Console}, {"/cue/set", RouteKind::Console},
   {"/fx/set", RouteKind::Console}, {"/color/set", RouteKind::Console},
-  {"/peer/cmd", RouteKind::Console}, {"/discover/announce", RouteKind::Console},
+  {"/peer/cmd", RouteKind::Console}, {"/announce", RouteKind::Console},
   {"/net/blackout", RouteKind::Console}, {"/net/full", RouteKind::Console},
   {"/net/master", RouteKind::Console}, {"/net/scene/recall", RouteKind::Console},
 };
