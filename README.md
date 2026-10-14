@@ -2,7 +2,7 @@
 
 ESP32 WiFi -> DMX512 firmware node. It outputs DMX512 through a MAX485
 transceiver, accepts Art-Net and sACN input, broadcasts Art-Net for node sync,
-and exposes a black/cyan browser console plus a machine-readable node manifest.
+and exposes a browser console in di.iiii's light desk look plus a machine-readable node manifest.
 
 ## Features
 
@@ -74,6 +74,8 @@ sg dialout -c ".venv-pio/bin/pio run -e esp32dev --target upload"
 # Native unit tests
 .venv-pio/bin/pio test -e native
 ```
+
+The console follows di.iiii's light desk tokens (serverXR/src/lighting/ui/style.css): `--bg #0c0c0d`, `--bar #060607`, `--pane #121213`, `--pane2 #1a1a1c`, `--field #060607`, `--cell #161617`, `--line #26262a`, `--text #d8dadb`, `--muted #878d92`, `--accent #35d2dd` (live/selected only), `--danger #e0524a` (Blackout, Panic); mono 11px for data, system sans for UI, 1 px lines, square corners. Top bar: vizzz.di mark, page tabs, Blackout; below it a status row of chips (mode, network, Art-Net, sACN, out, web, STA, peers). Pictures: `docs/console/`.
 
 To work on the console UI without an ESP32, `tools/simulate_node.py` serves the
 real `APP_HTML` from `src/main.cpp` against an in-memory model of the firmware:
