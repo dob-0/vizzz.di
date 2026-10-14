@@ -197,6 +197,14 @@ static void loadConfig() {
   prefs.end();
   if (mode > MODE_HTP) mode = MODE_HTP;
   if (netMode > NET_AP_ONLY) netMode = NET_AP_STA;
+  // An AP pass-phrase stored by older firmware may be 1-7 chars (softAP()
+  // refuses it: no AP at all) or empty (an open AP that drives the rig).
+  // Neither is a valid WPA2 pass-phrase (1-H1); boot with the build default.
+  if (!vizzz::isValidWpaPassphrase(apPass.c_str(), apPass.length())) {
+    Serial.printf("cfg: stored AP password invalid (%u chars), using build default\n", unsigned(apPass.length()));
+    apPass = AP_PASS_DEFAULT;
+    needSaveConfig = true;
+  }
 
   // Update persisted FW_TAG and regenerate node name if still default.
   // Do NOT clear apSsid on firmware updates — suffix is random, would break reconnection.
@@ -588,11 +596,24 @@ static IPAddress artOutTarget() {
   return IPAddress(192, 168, 4, 255);
 }
 
+static_assert(sizeof(AP_PASS_DEFAULT) - 1 >= 8 && sizeof(AP_PASS_DEFAULT) - 1 <= 63,
+              "AP_PASS_DEFAULT must be a valid WPA2 pass-phrase (8-63 chars)");
+static bool apFallbackActive = false;  // true when the configured AP was refused
+
+// Core 2.0.17 WiFi.softAP() returns false on an empty SSID, a 1-7 char
+// pass-phrase (WiFiAP.cpp:145) or a driver error. An AP-only node with no AP
+// is unreachable, so on refusal fall back to the MAC SSID + build-time
+// pass-phrase and say so on serial and in /status ("ap_fb") (1-H1).
 static void startSoftAP() {
   WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
   IdentitySnap id;
   snapIdentity(id, pdMS_TO_TICKS(100));
-  WiFi.softAP(id.apSsid, id.apPass);
+  if (WiFi.softAP(id.apSsid, id.apPass)) { apFallbackActive = false; return; }
+  String fbSsid = String(AP_SSID_PREFIX) + "_" + macSuffix6();
+  Serial.printf("AP: softAP(\"%s\", %u-char pass) refused; falling back to \"%s\" + build pass\n",
+                id.apSsid, unsigned(strlen(id.apPass)), fbSsid.c_str());
+  apFallbackActive = true;
+  if (!WiFi.softAP(fbSsid.c_str(), AP_PASS_DEFAULT)) Serial.println("AP: fallback softAP refused too");
 }
 
 static void ensureStaInterface() {
@@ -2065,7 +2086,8 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     "\"burn_safe\":%s,"
     "\"artnet_fallback_to_web\":%s,"
     "\"safe_ceiling\":%u,"
-    "\"safe_slew_step\":%u"
+    "\"safe_slew_step\":%u,"
+    "\"ap_fb\":%s"
     "}",
     apIp,
     staIp,
@@ -2090,7 +2112,8 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     burnSafeMode ? "true" : "false",
     artnetFallbackToWeb ? "true" : "false",
     effectiveSafeMaxLevel(),
-    effectiveSafeSlewStep()
+    effectiveSafeSlewStep(),
+    apFallbackActive ? "true" : "false"
   );
   if (written < 0) {
     buf[0] = '\0';
@@ -2100,8 +2123,12 @@ static size_t fillStatusJSON(char* buf, size_t n) {
   return size_t(written);
 }
 
+// STATUS_JSON_MAX: worst case measured from the format at ~860 bytes (380
+// literal + three 79-byte escaped names + IPs, MAC, numbers); 800 could truncate.
+static constexpr size_t STATUS_JSON_MAX = 1024;
+
 static String statusJSON() {
-  char buf[800];
+  char buf[STATUS_JSON_MAX];
   fillStatusJSON(buf, sizeof(buf));
   return buf;
 }
@@ -2692,6 +2719,20 @@ static void setupWeb() {
   server.on("/wifi/forget", HTTP_POST, routeWifiForget);
 
   auto routeNodeSet = [](AsyncWebServerRequest* r){
+    // Validate before changing anything (1-H1): a WPA2 pass-phrase is 8-63
+    // printable ASCII chars (IEEE 802.11i Annex H.4.1); empty would open the
+    // AP, 1-7 would make softAP() refuse and leave an AP-only node unreachable.
+    if (r->hasArg("ap_pass")) {
+      const String& pw = r->arg("ap_pass");
+      if (!vizzz::isValidWpaPassphrase(pw.c_str(), pw.length())) {
+        r->send(400, "text/plain", "ap_pass must be 8-63 printable ASCII characters");
+        return;
+      }
+    }
+    if (r->hasArg("ap_ssid") && r->arg("ap_ssid").isEmpty()) {
+      r->send(400, "text/plain", "ap_ssid must not be empty");
+      return;
+    }
     if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) != pdTRUE) {
       r->send(503, "text/plain", "busy");
       return;
@@ -3244,7 +3285,7 @@ void loop() {
     if (now - lastWs >= 400) {
       lastWs = now;
       if (ws.count() > 0) {
-        char statusBuf[800];
+        char statusBuf[STATUS_JSON_MAX];
         size_t len = fillStatusJSON(statusBuf, sizeof(statusBuf));
         ws.textAll(statusBuf, len);
       }
