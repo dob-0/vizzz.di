@@ -103,9 +103,15 @@ constexpr uint32_t cueStepMs(uint32_t fadeMs, uint32_t dwellMs) {
              : ((uint64_t(fadeMs) + dwellMs) > 0xFFFFFFFFull ? 0xFFFFFFFFu : uint32_t(fadeMs + dwellMs));
 }
 
-// True when the running step is over. Delta form, so millis() wrap is harmless.
+// True when at least `ms` have passed since `since`. Delta form, so a
+// millis() wrap (every 49.7 days) is harmless.
+constexpr bool elapsedAtLeast(uint32_t now, uint32_t since, uint32_t ms) {
+  return uint32_t(now - since) >= ms;
+}
+
+// True when the running cue step is over.
 constexpr bool cueStepDue(uint32_t now, uint32_t startedMs, uint32_t stepMs) {
-  return uint32_t(now - startedMs) >= stepMs;
+  return elapsedAtLeast(now, startedMs, stepMs);
 }
 
 // ── STA re-join back-off ──────────────────────────────────────────────────────

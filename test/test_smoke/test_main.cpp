@@ -90,6 +90,13 @@ void test_cue_timing() {
   TEST_ASSERT_TRUE(vizzz::cueStepDue(30u, 0xFFFFFFECu, 50));
 }
 
+void test_elapsed_at_least_wraps() {
+  TEST_ASSERT_TRUE(vizzz::elapsedAtLeast(30000, 0, 30000));
+  TEST_ASSERT_FALSE(vizzz::elapsedAtLeast(29999, 0, 30000));
+  TEST_ASSERT_TRUE(vizzz::elapsedAtLeast(29000u, 0xFFFFF000u, 30000));   // 33096 ms across the wrap
+  TEST_ASSERT_FALSE(vizzz::elapsedAtLeast(20000u, 0xFFFFF000u, 30000));  // 24096 ms
+}
+
 void test_sta_retry_backoff() {
   TEST_ASSERT_EQUAL_UINT32(0, vizzz::staRetryDelayMs(0));
   TEST_ASSERT_EQUAL_UINT32(30000, vizzz::staRetryDelayMs(1));
@@ -110,6 +117,7 @@ static int runAll() {
   RUN_TEST(test_sanitize_host_label);
   RUN_TEST(test_parse_ipv4_strict);
   RUN_TEST(test_cue_timing);
+  RUN_TEST(test_elapsed_at_least_wraps);
   RUN_TEST(test_sta_retry_backoff);
   return UNITY_END();
 }

@@ -628,10 +628,27 @@ static void ensureStaInterface() {
   WiFi.setSleep(false);
 }
 
+// STA join state, owned by loop() (serviceStaJoin) and setup().
+static constexpr uint32_t STA_JOIN_WINDOW_MS = 10000;  // one join attempt
+static uint32_t staAttemptMs   = 0;      // when the current attempt started
+static uint32_t staParkedMs    = 0;      // when STA retries were parked
+static uint8_t  staFailedJoins = 0;
+static bool     staParked      = false;  // auto-reconnect off, waiting for back-off
+static bool     staBootResolved = false; // STA_ONLY boot safety net done
+
 static void startWiFi() {
   wifi_mode_t wm = WIFI_AP_STA;
   if (netMode == NET_AP_ONLY) wm = WIFI_AP;
   if (netMode == NET_STA_ONLY) wm = WIFI_STA;
+  // DHCP hostname BEFORE WiFi.mode(): core 2.0.17 copies it to the STA netif
+  // inside mode() (WiFiGeneric.cpp:1265), so setting it later left the lease
+  // as "esp32-XXXXXX" (1-L2).
+  buildMdnsName();
+  {
+    IdentitySnap id;
+    snapIdentity(id, pdMS_TO_TICKS(100));
+    WiFi.setHostname(id.mdns);
+  }
   WiFi.mode(wm);
   WiFi.setSleep(false);
 
@@ -651,15 +668,6 @@ static void startWiFi() {
     }
   }
 
-  // Register DHCP hostname BEFORE connecting so the router's table is correct.
-  // Without this both devices appear as generic "espressif" in the DHCP lease list.
-  buildMdnsName();
-  {
-    IdentitySnap id;
-    snapIdentity(id, pdMS_TO_TICKS(100));
-    WiFi.setHostname(id.mdns);
-  }
-
   if (netMode != NET_STA_ONLY) {
     startSoftAP();
   }
@@ -667,15 +675,11 @@ static void startWiFi() {
   IdentitySnap cred;
   snapIdentity(cred, pdMS_TO_TICKS(100));
   if (netMode != NET_AP_ONLY && cred.staSsid[0]) {
+    // Non-blocking (1-M6): the old 10 s wait here ran before loop() sent its
+    // first DMX frame. serviceStaJoin() in loop() now owns the join window
+    // and the STA_ONLY safety-net AP.
     WiFi.begin(cred.staSsid, cred.staPass);
-    uint32_t t = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t < 10000) delay(100);
-
-    // Safety net: in STA_ONLY without a successful join, enable temporary AP.
-    if (netMode == NET_STA_ONLY && WiFi.status() != WL_CONNECTED) {
-      WiFi.mode(WIFI_AP_STA);
-      startSoftAP();
-    }
+    staAttemptMs = millis();
   } else if (netMode == NET_STA_ONLY) {
     // No STA credentials in STA_ONLY: expose AP so the node is still recoverable.
     WiFi.mode(WIFI_AP_STA);
@@ -963,7 +967,7 @@ static void tickCueEngine(uint32_t now) {
   // a contended lock cannot turn into an NVS read per loop() pass.
   static uint32_t failedAtMs = 0;
   static bool retryPending = false;
-  if (retryPending && !vizzz::cueStepDue(now, failedAtMs, vizzz::CUE_MIN_STEP_MS)) return;
+  if (retryPending && !vizzz::elapsedAtLeast(now, failedAtMs, vizzz::CUE_MIN_STEP_MS)) return;
   uint8_t nextIdx = 0;
   if (xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) != pdTRUE) return;
   // Delta comparison, not `now < cueNextMs`. The absolute form free-runs for
@@ -3157,6 +3161,63 @@ void setup() {
   }
 }
 
+// STA join supervision, called from loop() (1-M6, 1-M9).
+// - STA_ONLY: if the boot join has not succeeded within STA_JOIN_WINDOW_MS,
+//   bring up the temporary AP so the node stays reachable (was a blocking wait).
+// - While the soft-AP is up, a STA that cannot join keeps scanning, and the AP
+//   follows the STA's channel (ESP-IDF Wi-Fi guide, station/AP coexistence):
+//   the operator's phone drops. After a failed window, park the STA
+//   (auto-reconnect off, disconnect) and retry after vizzz::staRetryDelayMs()
+//   (30 s doubling to 300 s), and only when no client is on the AP.
+static void serviceStaJoin(uint32_t now) {
+  static uint32_t lastRunMs = 0;
+  if ((uint32_t)(now - lastRunMs) < 250) return;
+  lastRunMs = now;
+  if (netMode == NET_AP_ONLY) return;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    if (staFailedJoins || staParked) Serial.println("STA: joined");
+    staFailedJoins = 0;
+    staParked = false;
+    staAttemptMs = now;
+    staBootResolved = true;
+    return;
+  }
+
+  IdentitySnap cred;
+  if (!snapIdentity(cred, pdMS_TO_TICKS(5))) return;
+  if (!cred.staSsid[0]) { staParked = false; return; }
+
+  if (!staParked) {
+    if ((uint32_t)(now - staAttemptMs) < STA_JOIN_WINDOW_MS) return;
+    if (netMode == NET_STA_ONLY && !staBootResolved) {
+      Serial.println("STA_ONLY: no join in 10 s, temporary AP up");
+      WiFi.mode(WIFI_AP_STA);
+      startSoftAP();
+    }
+    staBootResolved = true;
+    if (staFailedJoins < 255) staFailedJoins++;
+    if (WiFi.getMode() & WIFI_MODE_AP) {
+      WiFi.setAutoReconnect(false);
+      WiFi.disconnect(false);
+      staParked = true;
+      staParkedMs = now;
+      Serial.printf("STA: join failed (%u), next try in %lu s\n", staFailedJoins,
+                    (unsigned long)(vizzz::staRetryDelayMs(staFailedJoins) / 1000));
+    } else {
+      staAttemptMs = now;  // STA only, no AP to protect: keep core auto-reconnect
+    }
+    return;
+  }
+
+  if (!vizzz::elapsedAtLeast(now, staParkedMs, vizzz::staRetryDelayMs(staFailedJoins))) return;
+  if (WiFi.softAPgetStationNum() > 0) return;  // never pull the AP from under a client
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(cred.staSsid, cred.staPass);
+  staParked = false;
+  staAttemptMs = now;
+}
+
 void loop() {
   if (pendingReboot) { delay(150); ESP.restart(); }
 
@@ -3218,8 +3279,15 @@ void loop() {
     wifiScanActive = false;
     ensureStaInterface();
     IdentitySnap cred;
-    if (snapIdentity(cred)) WiFi.begin(cred.staSsid, cred.staPass);
-    else pendingWifiReconnect = true;  // lock busy: retry next pass
+    if (snapIdentity(cred)) {
+      WiFi.setAutoReconnect(true);
+      WiFi.begin(cred.staSsid, cred.staPass);
+      staParked = false;       // new credentials: fresh join window, no back-off
+      staFailedJoins = 0;
+      staAttemptMs = millis();
+    } else {
+      pendingWifiReconnect = true;  // lock busy: retry next pass
+    }
   }
 
   if (pendingMdnsRestart) {
@@ -3252,6 +3320,7 @@ void loop() {
   }
 
   const uint32_t now = millis();
+  serviceStaJoin(now);
   tickCueEngine(now);
 
   // DMX output cycle
