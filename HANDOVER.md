@@ -11,6 +11,13 @@ DeskApi route rule; its reviewer verdict (lead reviewed instead). The branch is 
 
 **PRs:** vizzz.di #1–#8 merged. di.iiii #939 (D0+D1) and #941 (D2) wait for the owner's look and merge into dev (in that order).
 
+**RUNNING (fired 11:07Z = 15:07 local, account b cloud, Sonnet; schedules disabled after the fire):**
+- trig_01NTfnWaVxo5TMUzXL4gTupN — di.iiii **D3** stream transport → `cloud/desk-stream-transport-2026-10-15`, draft PR to dev.
+- trig_01QLNGej9w36PCeEkZGgSNht — vizzz.di **V5** SSE /api/dmx/stream → `cloud/desk-dmx-stream-2026-10-15`, draft PR to int.
+- trig_01R9apNzZYHtPp5qf6DefTNH — di.iiii **D4** bundle export → `cloud/desk-bundle-export-2026-10-15`, draft PR to dev.
+A watcher on aylmo wakes the lead when all three PRs exist. Trap: a cloud run that hits its 5 h limit pushes its branch and never
+opens the PR (check `list_runs` → `get_run_log`, last line `rate_limit: rejected (five_hour)`); merge the branch by hand then.
+
 **Next (plan §4):** D3 (stream transport in di's UI, caps.stream) + V5 (SSE /api/dmx/stream, client cap, heap with 1/3/5 clients) →
 D4 (bundle export) → D5 (This node section) + V6 (MAX_FIXTURES 32, NVS v2) → V7 (simulator parity, phone, latency vs old console).
 A logged-in lead creates the cloud routines (RemoteTrigger is OAuth-only). Owner decisions open: login/token; DMX Out blackout mapping.
