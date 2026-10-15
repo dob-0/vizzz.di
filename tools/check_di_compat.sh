@@ -15,5 +15,8 @@ node "$here/tools/di_compat/di_side.js" gen "$lighting" "$tmp"
 "$tmp/harness" sacn   "$tmp/sacn.bin"
 "$tmp/harness" reply  "$tmp/reply.bin"
 node "$here/tools/di_compat/di_side.js" list "$lighting" "$tmp/reply.bin"
+g++ -std=c++17 -Wall -I "$here/include" "$here/tools/di_compat/stream_harness.cpp" -o "$tmp/stream_harness"   # V5
+"$tmp/stream_harness" > "$tmp/stream.jsonl"
+node "$here/tools/di_compat/stream_side.js" "$lighting" "$tmp/stream.jsonl"
 python3 "$here/tools/check_routes.py" --di "$di"   # HTTP: di's GET routes stay plain-GET (2-H2)
 echo "di compat: PASS"

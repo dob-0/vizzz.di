@@ -19,7 +19,7 @@ priority / sequence handling, and OSC int/float/bundle input. One deviation:
 the ArtPollReply goes to the poll's source address and port (the firmware
 always uses port 6454, which is the same thing for di and tools/net_probe.py).
 """
-import argparse, base64, gzip, hashlib, io, json, math, os, re, socket, struct, threading, time
+import argparse, base64, gzip, hashlib, io, json, math, os, re, select, socket, struct, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -31,6 +31,11 @@ with open(MAIN, encoding="utf-8") as _f:
 MAX_CH, SCENE_COUNT, PAGE_SIZE, PAGE_COUNT, MAX_FIXTURES = 512, 8, 32, 16, 12
 SAFE_MAX_LEVEL, SAFE_SLEW_STEP = 245, 18
 BURN_SAFE_MAX_LEVEL, BURN_SAFE_SLEW_STEP = 96, 8
+# GET /api/dmx/stream (V5): the rate, keepalive, cap and gap are read from the firmware's header.
+with open(os.path.join(ROOT, "include", "vizzz_stream.h"), encoding="utf-8") as _f:
+    _st = _f.read()
+STREAM = {k: int(re.search(r"constexpr \w+ %s\s*=\s*(\d+)" % k, _st).group(1))
+          for k in ("kPeriodMs", "kKeepaliveMs", "kMaxClients", "kGap", "kRetryMs")}
 DESK_CACHE = os.path.join(ROOT, "tools", ".desk_ui_cache")
 LOCK = os.path.join(ROOT, "desk_ui.lock")
 MIME = {".html": "text/html", ".js": "application/javascript", ".css": "text/css"}
@@ -232,6 +237,7 @@ class Node:
             "usb_active": False, "usb_frames": 0, "usb_baud": USB_WIDGET_BAUD,
             "api_replies": DESK.replies, "api_busy": DESK.busy,
             "heap_free": 180000, "heap_max_block": 110000, "ws_clients": 0,
+            "sse_clients": DESK.sse,
         }
 
     def manifest(self):
@@ -581,6 +587,8 @@ class DeskState:
         self.hold_released = False
         self.replies = 0
         self.busy = 0
+        self.sse = 0                        # live /api/dmx/stream clients
+        self.sse_lock = threading.Lock()
 
 
 DESK = DeskState()
@@ -699,7 +707,8 @@ def state_obj(n):
         "audioCfg": {"enabled": False, "mode": "level", "amount": 255, "release": 300, "useBeats": True},
         "output": output_obj(n), "profiles": profiles, "roleKinds": role_kinds,
         "caps": {"midi": False, "audio": False, "library": False, "looks": False, "layers": False, "lfos": False,
-                 "sets": False, "cues": False, "profilesEdit": False, "multiUniverse": False, "node": True},
+                 "sets": False, "cues": False, "profilesEdit": False, "multiUniverse": False, "stream": True,
+                 "node": True},
         "show": show_obj(n),
         "status": {"universes": [0], "nodes": [], "interfaces": SIM_IFACES,
                    "broadcast": ["192.168.4.255", "192.168.88.255"], "packetsSent": 0, "lastError": None,
@@ -1321,6 +1330,33 @@ def ipv4_ok(s):
     return len(parts) == 4 and all(re.fullmatch(r"[0-9]{1,3}", p) and int(p) <= 255 for p in parts)
 
 
+def stream_delta_runs(prev, nxt, gap=None):
+    """dmxstream.js deltaRuns (and vizzz::desk::stream::formatDelta): the runs of changed slots,
+    runs closer than the gap joined."""
+    gap = STREAM["kGap"] if gap is None else gap
+    runs, start, last = [], -1, -1
+    for i in range(len(nxt)):
+        if prev is not None and prev[i] == nxt[i]:
+            continue
+        if start >= 0 and i - last <= gap:
+            last = i
+            continue
+        if start >= 0:
+            runs.append((start, last))
+        start = last = i
+    if start >= 0:
+        runs.append((start, last))
+    return [[0, a, list(nxt[a:b + 1])] for a, b in runs]
+
+
+def stream_event(seq, t, key, d, meta):
+    """`event: frame` + `data: {s,t,k,d,m?}` + blank line, the key order of the firmware."""
+    body = {"s": seq, "t": t, "k": 1 if key else 0, "d": d}
+    if meta is not None:
+        body["m"] = meta
+    return ("event: frame\ndata: %s\n\n" % json.dumps(body, separators=(",", ":"))).encode()
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "vizzz.di-sim"
@@ -1412,6 +1448,62 @@ class Handler(BaseHTTPRequestHandler):
         except BadArg as e:
             return self._send(400, e.body, "application/json")
 
+    def _stream(self):
+        """GET /api/dmx/stream, the firmware's apiDmxStream + streamTick for one client: the cap
+        answers 503 {"error":"stream full"}; the frame is outVals; an event only when the frame or the
+        master changed, at most every kPeriodMs, a key frame every kKeepaliveMs."""
+        with DESK.sse_lock:
+            if DESK.sse >= STREAM["kMaxClients"]:
+                full = True
+            else:
+                full = False
+                DESK.sse += 1
+        if full:
+            return self._desk_json(503, {"error": "stream full"})
+        DESK.replies += 1
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            self.wfile.write(("retry: %d\n" % STREAM["kRetryMs"]).encode())
+            self.wfile.flush()
+            period, keep = STREAM["kPeriodMs"] / 1000.0, STREAM["kKeepaliveMs"] / 1000.0
+            sent, sent_meta, seq, last_send = None, None, 0, 0.0
+            while True:
+                with NODE.lock:
+                    frame, meta = list(NODE.out), {"master": NODE.master, "blackout": False,
+                                                   "looks": [], "cues": None}
+                now = time.time()
+                changed = sent is None or frame != sent
+                meta_changed = sent_meta is None or meta != sent_meta
+                if sent is None or now - last_send >= keep:
+                    key = True
+                elif changed or meta_changed:
+                    key = False
+                else:
+                    key = None
+                if key is not None:
+                    seq += 1
+                    t = int((now - NODE.boot) * 1000)
+                    if key:
+                        d = [[0, 0, frame]]
+                    else:
+                        d = stream_delta_runs(sent, frame)
+                    self.wfile.write(stream_event(seq, t, key, d, meta if (key or meta_changed) else None))
+                    self.wfile.flush()
+                    sent, sent_meta, last_send = frame, meta, now
+                time.sleep(period)
+                if select.select([self.connection], [], [], 0)[0] and not self.connection.recv(1, socket.MSG_PEEK):
+                    break   # the reader closed: free the slot at once
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            pass
+        finally:
+            with DESK.sse_lock:
+                DESK.sse -= 1
+            self.close_connection = True
+
     def _desk_json(self, code, obj):
         DESK.replies += 1
         self._send(code, json.dumps(obj, ensure_ascii=False, separators=(",", ":")), "application/json")
@@ -1424,6 +1516,8 @@ class Handler(BaseHTTPRequestHandler):
             allow = ", ".join(methods)
             return self._send(405, json.dumps({"error": "method not allowed", "allow": allow}),
                               "application/json", [("Allow", allow)])
+        if p == "/api/dmx/stream":
+            return self._stream()
         b = {}
         if method == "POST":
             ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()

@@ -122,6 +122,7 @@ Routes are a table, not a list of `server.on()` calls (audit 2026-10-15 2-H2/2-M
 5. The console calls it with `hit(url[, URLSearchParams body])` (POST + header). Secrets go in the body.
 6. Follow the mutex pattern for anything touching `webVals`; no route blocks longer than ~20 ms.
 7. Mirror it in `tools/simulate_node.py` `_handle()`; `tools/check_http_api.sh <base>` must PASS.
+8. A `DeskApi` path that is NOT in di's vendored contract (today only `/api/dmx/stream`, V5) goes in `vizzz::desk::kDeskExtra` (vizzz_desk.h), not `kDeskApi`, so `check_routes.py` keeps comparing `kDeskApi` to the contract exactly.
 
 ```cpp
 route("/my/route", [](AsyncWebServerRequest* r) {
