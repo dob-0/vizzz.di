@@ -85,6 +85,8 @@ def main() -> int:
     if "h.setFilter(" not in main_cpp:
         errors.append("route() no longer adds the exact-URL filter DeskApi routes rely on")
 
+    node_checked = set()
+
     def contract_paths(path):
         c = json.loads(path.read_text())
         out = {}
@@ -93,7 +95,9 @@ def main() -> int:
             m.add(e["method"])
             out["/" + e["path"]] = (m, cl)
         return out
-    contracts = [ROOT / "test" / "fixtures" / "api-contract.v1.json"]
+    # v1 = the 57 paths kDeskApi holds; v2 (V7) adds api/dmx/stream, so it must equal kDeskApi + kDeskExtra.
+    contracts = [ROOT / "test" / "fixtures" / "api-contract.v1.json",
+                 ROOT / "test" / "fixtures" / "api-contract.v2.json"]
     if a.di:
         contracts.append(pathlib.Path(a.di) / "serverXR" / "src" / "lighting" / "api-contract.json")
     for cpath in contracts:
@@ -101,11 +105,20 @@ def main() -> int:
             errors.append(f"{cpath} not found")
             continue
         want = contract_paths(cpath)
-        for p in sorted(want.keys() ^ desk.keys()):
-            errors.append(f"{p}: in {'the contract' if p in want else 'kDeskApi'} only ({cpath})")
-        for p in sorted(want.keys() & desk.keys()):
-            if want[p] != desk[p]:
-                errors.append(f"{p}: kDeskApi {desk[p]} but {cpath.name} {want[p]}")
+        have = desk_all if "caps" in json.loads(cpath.read_text()) else desk
+        for p in sorted(want.keys() ^ have.keys()):
+            errors.append(f"{p}: in {'the contract' if p in want else 'kDeskApi/kDeskExtra'} only ({cpath})")
+        for p in sorted(want.keys() & have.keys()):
+            if want[p] != have[p]:
+                errors.append(f"{p}: kDeskApi {have[p]} but {cpath.name} {want[p]}")
+        # v2 node_routes: the routes the 'This node' fold calls must exist in kRoutes with the right kind.
+        nr = json.loads(cpath.read_text()).get("node_routes")
+        for r in (nr or {}).get("routes", []):
+            k = table.get(r["path"])
+            ok = {"console": ("Console",), "read": ("GetLocal", "GetShared", "Operator")}[r["kind"]]
+            if k not in ok:
+                errors.append(f"node_routes {r['method']} {r['path']} ({r['kind']}): kRoutes kind is {k}, want one of {ok}")
+            node_checked.add(r["path"])
 
     readme = (ROOT / "README.md").read_text()
     seen = set()
@@ -149,7 +162,7 @@ def main() -> int:
     counts = {c: sum(len(m) for m, k in desk.values() if k == c) for c in "abc"}
     print(f"desk api: {len(desk)} paths, method+path calls: class a {counts['a']}, b {counts['b']}, c {counts['c']} "
           f"+ {len(extra)} outside the contract ({' '.join(sorted(extra))}) = kRoutes DeskApi {len(desk_kind)}; "
-          f"the {len(desk)} = {len(contracts)} contract file(s)")
+          f"the {len(desk)} = {len(contracts)} contract file(s); node_routes checked: {len(node_checked)}")
     print(f"routes: {len(table)} in table, {len(registered)} registered, "
           f"{len(seen)} in README -> {'FAIL' if errors else 'PASS'}")
     return 1 if errors else 0
