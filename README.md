@@ -299,6 +299,94 @@ curl 'http://192.168.4.1/set?ch=1&v=255'                                     # o
 | GET | - | - | `/control` `/patch` `/scenes` `/vj` `/network` `/system` `/performance` | - | 301 to the desk (`/#control` or `/`) |
 | WS | - | - | `/ws` | - | Status push every ~400 ms; refuses a foreign `Origin` |
 
+### Desk API (`/api/*`, build step V4)
+
+di's desk page at `/` talks to these. They are di's own desk API, held to di's
+`serverXR/src/lighting/api-contract.json` (vendored as
+`test/fixtures/api-contract.v1.json`, commit 091a1a6): **23 class-a routes really
+work, 28 class-b answer static shapes or `{error:"not on this node"}`, 8 class-c
+answer `404 {error}`**. Mapping rules and decisions: `docs/DESK_BRIDGE_CORE.md`.
+
+- **Gate.** GET routes: same origin, no `Access-Control-Allow-Origin`. POST routes
+  need `Content-Type: application/json` (else `415`). That is a non-simple request:
+  a cross-site page cannot send it without a CORS preflight, and every `/api/*`
+  preflight answers `403` without ACAO (OWASP CSRF Prevention Cheat Sheet). di's
+  `post()` sends exactly that header and nothing custom. A method a path lacks
+  answers `405` with `Allow`. No login yet (owner's decision, as for the operator routes).
+- **Bodies** are JSON objects up to 2048 bytes (`413` above, `400 {error}` when not
+  valid JSON or not an object), parsed with ArduinoJson 7.4.2.
+- **Replies** are JSON, streamed chunked from one per-request copy of the facts
+  (`Cache-Control: no-store`). Under 32 KB of largest free heap block the node
+  answers `503 {"error":"node busy"}` instead of allocating; `/status` counts
+  `api_replies` and `api_busy`. A busy lock answers `503 {"error":"busy"}`.
+- Ids are the node's: fixtures `f1`…`f12` (slot + 1), scenes `s1`…`s8`, groups `g1`…`g8`;
+  universe is always 0.
+
+```bash
+curl http://192.168.4.1/api/state
+curl -X POST -H 'content-type: application/json' -d '{"master":200}' http://192.168.4.1/api/master
+```
+
+| Method | Class | Path | What the node does |
+|---|---|---|---|
+| GET | a | `/api/state` | Whole desk state, streamed from one frozen copy: fixtures (values read from the web layer through each profile), saved scenes (read from their snapshots through today's patch), groups, chase, fx, output, status |
+| GET | a | `/api/dmx` | `outVals`, the 512 bytes on the cable (merged, mastered, slew-limited), as `dmx["0"]` |
+| GET/POST | a | `/api/input` | GET: the source mode in di's words (input off = WEB, line desk `follow` = ARTNET, `htp` = HTP; loss `release`/`hold` = fallback). POST changes mode/fallback (saved); refuses `artnet:false`/`sacn:false`, another universe, LTP, a different name |
+| POST | a | `/api/input/release` | Lets go of a held network frame until a source is live again |
+| POST | a | `/api/master` | `master` = master dimmer; `blackout:true` = `/blackout` (web layer to 0, cue list and FX stop); `blackout:false` changes nothing (no blackout flag on the node) |
+| POST | a | `/api/raw` | `channel`/`channels[]` write web-layer channels (universe 0 only); `clear` and null values change nothing (one layer, nothing held) |
+| POST | a | `/api/fx` | The node's FX engine (`mode` from `fxModes`, `bpm` 20–240, `depth`, `enabled`); refuses unknown modes, `spatial` other than `patch`, a non-empty `exclude` |
+| POST | a | `/api/chase` | The cue runner: `sceneIds` become the steps, `holdMs`/`fadeMs` each step's dwell/fade, `enabled` runs it; refuses `sync:"beat"` |
+| POST | a | `/api/output` | Art-Net OUT: `enabled` (saved), `mode`/`targets` = broadcast or one unicast peer; refuses other drivers, a serial port, a refresh other than 43 Hz, two targets |
+| POST | a | `/api/fixtures/add` | Next free slot, profile by name from the 13 built-in, `address` from the body or the next free one; 409 on a taken address without `force`; never writes the web layer |
+| POST | a | `/api/fixture` | `values` written through the profile into the web layer (cancels a running fade), `name`, `x`/`y`; `on:false` refused (no mute mask yet) |
+| POST | a | `/api/fixtures/all` | `values` to every listed fixture; `on:false` refused |
+| POST | a | `/api/fixtures/move` | Stage position (`x`, `y` 0..1 kept as 0..255) |
+| POST | a | `/api/fixtures/readdress` | New start address (universe 0); atomic, 409 on overlap without `force` |
+| POST | a | `/api/fixtures/identify` | Level and colour roles to full for `seconds` (1–10, default 2), then the saved values are written back; refused while a fade runs; `off` ends it |
+| POST | a | `/api/groups/add` | One channel range = the selection; refused when another fixture lies inside that range |
+| POST | a | `/api/scenes/save` | Web layer into the first free of the 8 NVS slots, with `name` (`sN.name`) and `fadeMs` (`sN.fade`); 409 when all 8 are used |
+| POST | a | `/api/scenes/update` | `name`, `fadeMs`, `restage` (re-capture the web layer); refuses `fx`/`lfos`/`audioCfg` |
+| POST | a | `/api/scenes/recall` | Fades to the slot over `fadeMs` or the scene's own fade; stops a running chase |
+| POST | a | `/api/scenes/remove` | Clears the slot and its NVS keys, and the chase steps that used it |
+| POST | a | `/api/groups/remove` | Disables the group slot |
+| POST | a | `/api/fixtures/remove` | Unpatches the listed fixtures |
+| GET | b | `/api/cues` | An empty cue list (`n:0` hides the cue strip) |
+| POST | b | `/api/cues/go` | `{error:"not on this node", cues:<empty list>}` |
+| POST | b | `/api/cues/back` | `{error:"not on this node", cues:<empty list>}` |
+| POST | b | `/api/cues/stop` | `{error:"not on this node", cues:<empty list>}` |
+| POST | b | `/api/cues/loop` | `{error:"not on this node", cues:<empty list>}` |
+| GET | b | `/api/show` | One show, this node's, `live` = Art-Net OUT on |
+| GET | b | `/api/looks` | `{looks:[]}` |
+| POST | b | `/api/looks/add` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/looks/remove` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/looks/capture` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/looks/fire` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/layer` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/layers/add` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/layers/remove` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/lfos` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/sets` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/fan` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/fixtures/limits` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/profiles/add` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/profiles/remove` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/output/send` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/output/send/remove` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/nodes/add` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/nodes/remove` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/discover` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/serial/identify` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/audio` | `{error:"not on this node"}` (200) |
+| POST | b | `/api/audiocfg` | `{error:"not on this node"}` (200) |
+| GET | c | `/api/library` | 404 `{error:"not on this node"}` |
+| GET | c | `/api/library/manufacturer` | 404 `{error:"not on this node"}` |
+| GET | c | `/api/library/fixture` | 404 `{error:"not on this node"}` |
+| POST | c | `/api/library/import` | 404 `{error:"not on this node"}` |
+| GET/POST | c | `/api/midi` | 404 `{error:"not on this node"}` |
+| POST | c | `/api/show/open` | 404 `{error:"not on this node"}` |
+| POST | c | `/api/show/copy-machine` | 404 `{error:"not on this node"}` |
+
 ## Node Manifest
 
 The product name is `vizzz.di`. The manifest schema remains
@@ -347,8 +435,9 @@ Recommended sequence:
 
 ## Dependencies
 
-- AsyncTCP
-- ESPAsyncWebServer
+- AsyncTCP 3.3.2
+- ESPAsyncWebServer 3.6.0
+- ArduinoJson 7.4.2 (`/api/*` POST bodies only)
 - Direct ArtDMX parser over Arduino WiFiUDP
 - esp_dmx, vendored in `lib/esp_dmx/`
 - Arduino WiFi / WiFiUDP / Preferences
