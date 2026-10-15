@@ -251,7 +251,9 @@ static AsyncWebServer server(80);
 static AsyncWebSocket ws("/ws");
 // GET /api/dmx/stream (plan step V5). Not added with addHandler(): route() gates
 // the request (heap floor, client cap) and calls sse.handleRequest(r), so a
-// plain `curl` without `Accept: text/event-stream` gets the stream too.
+// plain `curl` without `Accept: text/event-stream` gets the stream too. route()
+// uses AnyConnTypeHandler for it, because a callback handler never matches a
+// request that has that header (it is typed RCT_EVENT, not HTTP).
 static AsyncEventSource sse("/api/dmx/stream");
 static WiFiUDP        artInUdp;
 static WiFiUDP        artOutUdp;
@@ -3557,6 +3559,21 @@ struct ArgReader {
   }
 };
 
+// ESPAsyncWebServer 3.6.0: AsyncCallbackWebHandler::canHandle() demands
+// request->isHTTP(), but a request carrying `Accept: text/event-stream` is typed
+// RCT_EVENT by the parser, so no callback handler matches it and it falls to
+// onNotFound (404). A browser's EventSource always sends that header. This
+// handler matches the exact URL whatever the connection type, then runs the same
+// gate and handler as route(). Used for the stream route only.
+class AnyConnTypeHandler : public AsyncWebHandler {
+  const char* _path;
+  ArRequestHandlerFunction _fn;
+ public:
+  AnyConnTypeHandler(const char* path, ArRequestHandlerFunction fn) : _path(path), _fn(fn) {}
+  bool canHandle(AsyncWebServerRequest* r) const override { return r->url() == _path; }
+  void handleRequest(AsyncWebServerRequest* r) override { _fn(r); }
+};
+
 static void route(const char* path, ArRequestHandlerFunction fn) {
   int i = vizzz::findRoute(path);
   if (i < 0) {
@@ -3574,6 +3591,12 @@ static void route(const char* path, ArRequestHandlerFunction fn) {
     return;
   }
   routeRegistered[i] = true;
+  if (api && strcmp(path, "/api/dmx/stream") == 0) {
+    server.addHandler(new AnyConnTypeHandler(path, [api, fn](AsyncWebServerRequest* r){
+      if (deskGate(r, api)) fn(r);
+    }));
+    return;
+  }
   AsyncCallbackWebHandler& h = server.on(path, HTTP_ANY, [kind, api, fn](AsyncWebServerRequest* r){
     if (api) {
       if (deskGate(r, api)) fn(r);
