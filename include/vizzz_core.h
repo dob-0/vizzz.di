@@ -796,7 +796,17 @@ inline bool parseIntArg(const char* s, int32_t lo, int32_t hi, int32_t* out) {
 //             cannot add a custom header without a CORS preflight, and the
 //             node answers every preflight on these routes with 403 and no
 //             ACAO, so the browser never sends the request.
-enum class RouteKind : uint8_t { GetLocal, GetShared, Operator, Console, Static };
+//   DeskApi   di's desk API (plan step V4), one row per path of di's
+//             api-contract.json; the methods per path are in
+//             vizzz::desk::kDeskApi (vizzz_desk.h), the gate is gateDesk().
+//             GET: like GetLocal (no ACAO). POST: Content-Type must be
+//             application/json, else 415. That is a non-simple request: a
+//             cross-site page cannot send it without a CORS preflight, which
+//             these routes refuse with 403 and no ACAO (OWASP CSRF Prevention
+//             Cheat Sheet, "use of custom request headers" / non-simple
+//             requests). Matched exactly: /api/input does not swallow
+//             /api/input/release (route() adds an exact-URL filter).
+enum class RouteKind : uint8_t { GetLocal, GetShared, Operator, Console, Static, DeskApi };
 
 struct RouteSpec {
   const char* path;
@@ -845,6 +855,35 @@ static constexpr RouteSpec kRoutes[] = {
   {"/peer/cmd", RouteKind::Console}, {"/announce", RouteKind::Console},
   {"/net/blackout", RouteKind::Console}, {"/net/full", RouteKind::Console},
   {"/net/master", RouteKind::Console}, {"/net/scene/recall", RouteKind::Console},
+
+  // DeskApi: the 57 paths of di's api-contract.json (091a1a6), in its order.
+  {"/api/state", RouteKind::DeskApi}, {"/api/dmx", RouteKind::DeskApi}, {"/api/input", RouteKind::DeskApi},
+  {"/api/input/release", RouteKind::DeskApi}, {"/api/master", RouteKind::DeskApi},
+  {"/api/raw", RouteKind::DeskApi}, {"/api/fx", RouteKind::DeskApi}, {"/api/chase", RouteKind::DeskApi},
+  {"/api/output", RouteKind::DeskApi}, {"/api/fixtures/add", RouteKind::DeskApi},
+  {"/api/fixture", RouteKind::DeskApi}, {"/api/fixtures/all", RouteKind::DeskApi},
+  {"/api/fixtures/move", RouteKind::DeskApi}, {"/api/fixtures/readdress", RouteKind::DeskApi},
+  {"/api/fixtures/identify", RouteKind::DeskApi}, {"/api/groups/add", RouteKind::DeskApi},
+  {"/api/scenes/save", RouteKind::DeskApi}, {"/api/scenes/update", RouteKind::DeskApi},
+  {"/api/scenes/recall", RouteKind::DeskApi}, {"/api/scenes/remove", RouteKind::DeskApi},
+  {"/api/groups/remove", RouteKind::DeskApi}, {"/api/fixtures/remove", RouteKind::DeskApi},
+  {"/api/cues", RouteKind::DeskApi}, {"/api/cues/go", RouteKind::DeskApi},
+  {"/api/cues/back", RouteKind::DeskApi}, {"/api/cues/stop", RouteKind::DeskApi},
+  {"/api/cues/loop", RouteKind::DeskApi}, {"/api/show", RouteKind::DeskApi},
+  {"/api/looks", RouteKind::DeskApi}, {"/api/looks/add", RouteKind::DeskApi},
+  {"/api/looks/remove", RouteKind::DeskApi}, {"/api/looks/capture", RouteKind::DeskApi},
+  {"/api/looks/fire", RouteKind::DeskApi}, {"/api/layer", RouteKind::DeskApi},
+  {"/api/layers/add", RouteKind::DeskApi}, {"/api/layers/remove", RouteKind::DeskApi},
+  {"/api/lfos", RouteKind::DeskApi}, {"/api/sets", RouteKind::DeskApi}, {"/api/fan", RouteKind::DeskApi},
+  {"/api/fixtures/limits", RouteKind::DeskApi}, {"/api/profiles/add", RouteKind::DeskApi},
+  {"/api/profiles/remove", RouteKind::DeskApi}, {"/api/output/send", RouteKind::DeskApi},
+  {"/api/output/send/remove", RouteKind::DeskApi}, {"/api/nodes/add", RouteKind::DeskApi},
+  {"/api/nodes/remove", RouteKind::DeskApi}, {"/api/discover", RouteKind::DeskApi},
+  {"/api/serial/identify", RouteKind::DeskApi}, {"/api/audio", RouteKind::DeskApi},
+  {"/api/audiocfg", RouteKind::DeskApi}, {"/api/library", RouteKind::DeskApi},
+  {"/api/library/manufacturer", RouteKind::DeskApi}, {"/api/library/fixture", RouteKind::DeskApi},
+  {"/api/library/import", RouteKind::DeskApi}, {"/api/midi", RouteKind::DeskApi},
+  {"/api/show/open", RouteKind::DeskApi}, {"/api/show/copy-machine", RouteKind::DeskApi},
 };
 constexpr size_t kRouteCount = sizeof(kRoutes) / sizeof(kRoutes[0]);
 
@@ -915,6 +954,7 @@ enum class Gate : uint8_t {
   PreflightDenied,  // 403, no ACAO: the browser drops the real request
   NotAllowed,       // 405 + Allow: routeMethods(kind)
   NeedHeader,       // 403: POST without X-Vizzz-Console: 1
+  NeedJson,         // 415: DeskApi POST whose Content-Type is not application/json
 };
 
 inline Gate gateRequest(RouteKind k, HttpMethod m, bool consoleHeader) {
@@ -930,6 +970,8 @@ inline Gate gateRequest(RouteKind k, HttpMethod m, bool consoleHeader) {
     case RouteKind::Console:
       if (m != HttpMethod::Post) return Gate::NotAllowed;
       return consoleHeader ? Gate::Allow : Gate::NeedHeader;
+    case RouteKind::DeskApi:
+      return Gate::NotAllowed;  // per-path methods: use desk::gateDesk()
   }
   return Gate::NotAllowed;
 }

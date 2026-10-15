@@ -371,11 +371,13 @@ void test_route_table_kinds() {
     TEST_ASSERT_TRUE_MESSAGE(vizzz::kRoutes[vizzz::findRoute(p)].kind == RouteKind::GetShared, p);
   TEST_ASSERT_EQUAL_INT(-1, vizzz::findRoute("/nope"));
   // ESPAsyncWebServer serves "<uri>/..." with the <uri> handler: no route may
-  // be another route's prefix + "/" (it would be swallowed).
+  // be another route's prefix + "/" (it would be swallowed). DeskApi routes
+  // are registered with an exact-URL filter (main.cpp route()), so /api/input
+  // may sit beside /api/input/release; no other kind may.
   for (size_t a = 0; a < vizzz::kRouteCount; a++) {
     const char* pa = vizzz::kRoutes[a].path;
     size_t la = strlen(pa);
-    if (la <= 1) continue;
+    if (la <= 1 || vizzz::kRoutes[a].kind == RouteKind::DeskApi) continue;
     for (size_t b = 0; b < vizzz::kRouteCount; b++) {
       const char* pb = vizzz::kRoutes[b].path;
       TEST_ASSERT_FALSE_MESSAGE(strncmp(pb, pa, la) == 0 && pb[la] == '/', pb);
