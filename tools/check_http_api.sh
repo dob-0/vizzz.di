@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# HTTP API checks for audit 2026-10-15 2-H2/2-M5/2-M7/2-M4 against a node or
-# tools/simulate_node.py. Only harmless writes: channel 64 set to 0, master
-# re-set to its current value, Art OUT re-set to its current state; /reboot
-# and the other dangerous routes are only probed in ways that are refused.
+# HTTP API checks for audit 2026-10-15 2-H2/2-M5/2-M7/2-M4 and the V4 desk API
+# gate against a node or tools/simulate_node.py. Only harmless writes: channel
+# 64 set to 0, master re-set to its current value, Art OUT re-set to its current
+# state, an empty /api/master body; /reboot and the other dangerous routes are
+# only probed in ways that are refused.
 # Usage: tools/check_http_api.sh http://192.168.4.1     (or http://127.0.0.1:8088)
 set -uo pipefail
 base="${1:?usage: $0 http://node}"
@@ -94,5 +95,37 @@ redir /vj /
 redir /network /
 redir /system /
 redir /performance /
+# V4 desk API (/api/*): the gate, the body rules and the class-c 404, all JSON
+J='Content-Type: application/json'
+jsonbody() {  # jsonbody <want-code> <python-expr on d> <label> <curl args...>
+  local want="$1" expr="$2" label="$3"; shift 3
+  local out; out="$(curl -s --max-time 4 -w '\n%{http_code}' "$@")"
+  local got="${out##*$'\n'}" body="${out%$'\n'*}"
+  if [[ "$got" == "$want" ]] && python3 -c "import json,sys; d=json.loads(sys.argv[1]); assert $expr" "$body" 2>/dev/null; then
+    pass=$((pass+1)); echo "ok   $got $label"
+  else fail=$((fail+1)); echo "FAIL $got (want $want) $label: ${body:0:120}"; fi
+}
+jsonbody 200 '"master" in d and "fixtures" in d and "status" in d' "GET /api/state is the desk state" "$base/api/state"
+jsonbody 200 'len(d["dmx"]["0"]) == 512' "GET /api/dmx has 512 channels" "$base/api/dmx"
+has no 'access-control-allow-origin' "no ACAO on GET /api/state" "$base/api/state"
+jsonbody 200 'd == {"ok": True}' "POST /api/master {} (changes nothing)" -X POST -H "$J" -d '{}' "$base/api/master"
+jsonbody 415 '"error" in d' "POST /api/master as text/plain" -X POST -H 'Content-Type: text/plain' -d '{}' "$base/api/master"
+jsonbody 415 '"error" in d' "POST /api/master as a form" -X POST --data-urlencode master=0 "$base/api/master"
+big="$(python3 -c 'import json; print(json.dumps({"channels": [{"channel": 64, "value": 0}] * 120}))')"
+jsonbody 413 '"error" in d' "POST /api/raw with ${#big} bytes" -X POST -H "$J" -d "$big" "$base/api/raw"
+jsonbody 400 '"error" in d' "POST /api/master invalid JSON" -X POST -H "$J" -d '{"master":' "$base/api/master"
+jsonbody 400 '"error" in d' "POST /api/master a JSON array" -X POST -H "$J" -d '[1]' "$base/api/master"
+jsonbody 405 'd["allow"] == "POST"' "GET /api/master" "$base/api/master"
+has yes '^allow: POST' "GET /api/master carries Allow: POST" "$base/api/master"
+jsonbody 405 'd["allow"] == "GET"' "POST /api/state" -X POST -H "$J" -d '{}' "$base/api/state"
+expect 403 "OPTIONS /api/master (preflight)"   -X OPTIONS -H 'Origin: http://evil.example' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: content-type' "$base/api/master"
+has no 'access-control-allow-origin' "no ACAO on /api/master preflight" -X OPTIONS -H 'Origin: http://evil.example' "$base/api/master"
+jsonbody 404 'd["error"] == "not on this node"' "GET /api/library (class c)" "$base/api/library"
+jsonbody 404 'd["error"] == "not on this node"' "POST /api/midi (class c)" -X POST -H "$J" -d '{}' "$base/api/midi"
+jsonbody 200 'd == {"error": "not on this node"}' "POST /api/looks/add (class b)" -X POST -H "$J" -d '{}' "$base/api/looks/add"
+jsonbody 200 'd["cues"]["n"] == 0' "GET /api/cues (class b, empty list)" "$base/api/cues"
+jsonbody 400 '"error" in d' "POST /api/fixture on:false refused" -X POST -H "$J" -d '{"id":"f1","on":false}' "$base/api/fixture"
+jsonbody 400 '"error" in d' "POST /api/raw universe 1 refused" -X POST -H "$J" -d '{"universe":1,"channel":64,"value":0}' "$base/api/raw"
+jsonbody 200 'isinstance(d["api_replies"], int) and isinstance(d["api_busy"], int)' "/status has api_replies, api_busy" "$base/status"
 echo "http api: $pass passed, $fail failed"
 exit $((fail ? 1 : 0))

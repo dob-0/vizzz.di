@@ -151,6 +151,7 @@ class Node:
         with self.lock:
             self._fade_tick()
             self._cue_tick()
+            ident_tick(self)
             src = self._merged()
             cap, step = self.ceiling(), self.slew_step()
             for i in range(MAX_CH):
@@ -164,10 +165,13 @@ class Node:
 
     def _merged(self):
         net = self.net_layer if self.net_active() else None
+        if net:
+            DESK.hold_released = False          # a live source ends an api/input/release
         if self.mode == 0:
             base = list(self.web)
         elif self.mode == 1:
-            base = list(net) if net else (list(self.web) if self.artnet_fallback else list(self.out))
+            fallback = self.artnet_fallback or DESK.hold_released
+            base = list(net) if net else (list(self.web) if fallback else list(self.out))
         else:
             base = [max(a, b) for a, b in zip(self.web, net)] if net else list(self.web)
         if self.fx["en"]:
@@ -226,6 +230,7 @@ class Node:
             "safe_ceiling": self.ceiling(), "safe_slew_step": self.slew_step(),
             # USB widget input exists only on hardware (no serial in the simulator).
             "usb_active": False, "usb_frames": 0, "usb_baud": USB_WIDGET_BAUD,
+            "api_replies": DESK.replies, "api_busy": DESK.busy,
             "heap_free": 180000, "heap_max_block": 110000, "ws_clients": 0,
         }
 
@@ -239,9 +244,11 @@ class Node:
                          "max_channels": MAX_CH, "dmx_period_ms": 23},
             "protocols": [
                 {"id": "http", "role": "control", "console_header": "X-Vizzz-Console: 1",
-                 "routes": list(ROUTES),
+                 "routes": [r for r, k in ROUTES.items() if k != "DeskApi"],
                  "route_table": [{"path": r, "methods": ROUTE_METHODS[k], "console_header": k == "Console",
-                                  "cors": k == "GetShared"} for r, k in ROUTES.items()]},
+                                  "cors": k == "GetShared"} for r, k in ROUTES.items() if k != "DeskApi"]},
+                {"id": "desk-api", "role": "control", "prefix": "/api/", "paths": len(DESK_API),
+                 "contract_version": 1, "post_content_type": "application/json", "max_body": MAX_BODY},
                 {"id": "websocket", "role": "live-status", "endpoint": "/ws", "push_ms": 400},
                 {"id": "artnet", "role": "input-output", "port": 6454,
                  "universe": self.uni15(), "net": self.art["net"], "subnet": self.art["subnet"],
@@ -459,9 +466,832 @@ ROUTES = load_route_table()
 REDIRECTS = load_redirects()
 DESK_UI = load_desk_ui()   # exits with a message when the cached files are absent
 ROUTE_METHODS = {"GetLocal": "GET", "GetShared": "GET", "Operator": "GET, POST", "Console": "POST",
-                 "Static": "GET"}
+                 "Static": "GET"}   # DeskApi: per path, from vizzz::desk::kDeskApi (DESK_API below)
 FADE_MAX_MS, MAX_GROUPS, MAX_CUES = 600000, 8, 16
 FX_NAMES = ["none", "strobe", "chase", "pulse", "sine", "sparkle", "comet", "bars", "glitch", "radar"]
+
+
+# ── Desk API (/api/*, firmware plan step V4) ─────────────────────────────────
+# The same paths, shapes and refusals as src/main.cpp + include/vizzz_desk.h,
+# from this model's state. The route table, roles and profiles are read from
+# vizzz_desk.h, so the simulator and the firmware have one source for them.
+DESK_H = os.path.join(ROOT, "include", "vizzz_desk.h")
+
+
+def load_desk_tables(path=DESK_H):
+    src = open(path, encoding="utf-8").read()
+    masks = {"kGet": ("GET",), "kPost": ("POST",), "kGet | kPost": ("GET", "POST")}
+    api = {p: (masks[m], c.lower()) for p, m, c in
+           re.findall(r'\{"(/api/[^"]*)",\s*(kGet \| kPost|kGet|kPost),\s*ApiClass::(\w)\}', src)}
+    enum = re.search(r"enum class Role : uint8_t \{([^}]*)\}", src).group(1)
+    enum = [e.strip() for e in enum.split(",")]
+    roles = re.findall(r'\{"(\w+)", (\d+), Kind::(\w+)\}', src)
+    kinds = {e: (name, kind.lower()) for e, (name, _d, kind) in zip(enum, roles)}
+    profiles = {}
+    for name, cat, _n, body in re.findall(r'\{"(\w+)",\s*"(_\w+)",\s*(\d+),\s*\{([^}]*)\}\}', src):
+        profiles[name] = {"cat": cat, "roles": [kinds[r.strip().split("::")[-1]][0]
+                                                 for r in body.split(",") if r.strip()]}
+    role_kind = {name: kind for name, kind in kinds.values()}
+    if not api or not profiles:
+        raise SystemExit("desk tables not found in %s" % path)
+    return api, profiles, role_kind, [kinds[e][0] for e in enum]
+
+
+DESK_API, PROFILES, ROLE_KIND, ROLE_ORDER = load_desk_tables()
+PROFILE_ORDER = list(PROFILES)
+NOT_ON_NODE = "not on this node"
+MAX_BODY, SCENE_NAME_MAX, FIXTURE_NAME_MAX = 2048, 23, 15
+BY_WIDTH = {1: "dimmer", 2: "ds", 3: "rgb", 4: "drgb", 5: "drgbw", 6: "drgbwa", 9: "ppttdrgbw"}
+EMPTY_CUES = {"project": None, "list": [], "loop": False, "autoplay": False, "index": -1, "running": False,
+              "nextAt": None, "missing": [], "n": 0, "name": None, "nextInMs": None}
+DEFAULT_LIMITS = {"dimMin": 0, "dimMax": 255, "panMin": 0, "panMax": 255, "tiltMin": 0, "tiltMax": 255,
+                  "invertPan": False, "invertTilt": False, "swapPT": False}
+
+
+class DeskRefusal(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code, self.msg = code, msg
+
+
+def is_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def truthy(v):
+    if v is None or v is False:
+        return False
+    if is_num(v):
+        return v != 0
+    if isinstance(v, str):
+        return v != ""
+    return True
+
+
+def parse_id(s, prefix, mx):
+    """vizzz::desk::parseId: prefix + 1..max, digits only, no leading zero."""
+    if not isinstance(s, str) or not re.fullmatch(prefix + r"[1-9][0-9]*", s):
+        return -1
+    v = int(s[1:])
+    return v - 1 if v <= mx else -1
+
+
+def clean_name(v, cap):
+    """vizzz::desk::cleanName on UTF-8 bytes: drop controls, trim, at most cap-1 bytes."""
+    if not isinstance(v, str):
+        return ""
+    b = "".join(c for c in v.lstrip(" \t") if ord(c) >= 0x20 and ord(c) != 0x7f).encode("utf-8")[:cap - 1]
+    return b.decode("utf-8", "ignore").rstrip(" \t")
+
+
+def level(v):
+    return 0 if not v > 0 else 255 if v >= 255 else int(v + 0.5)
+
+
+def clamp_fade(v):
+    return 0 if not v > 0 else FADE_MAX_MS if v >= FADE_MAX_MS else int(v + 0.5)
+
+
+def pos_to_milli(b):
+    return (b * 1000 + 127) // 255
+
+
+def unit_to_byte(v):
+    if not v > 0:
+        return 0
+    if v >= 1:
+        return 255
+    return (min(1000, int(v * 1000 + 0.5)) * 255 + 500) // 1000
+
+
+def unit255(b):
+    m = pos_to_milli(b)
+    return 1 if m >= 1000 else (0 if m == 0 else float("%d.%03d" % (0, m)))
+
+
+class DeskState:
+    """The desk-side facts the firmware keeps beside its old state (V4)."""
+    def __init__(self):
+        self.saved = set()                  # scene slots holding a scene
+        self.scene_name = [""] * SCENE_COUNT
+        self.scene_fade = [0] * SCENE_COUNT
+        self.fix_prof = [None] * MAX_FIXTURES
+        self.active = -1
+        self.ident = None                   # {"start", "dur", "saved": {ch: v}, "slots": set}
+        self.hold_released = False
+        self.replies = 0
+        self.busy = 0
+
+
+DESK = DeskState()
+
+
+def fixture_view(n, i):
+    """main.cpp deskFixture_locked(): profile from the slot, or picked by width."""
+    f = n.fixtures[i]
+    width = f["end"] - f["start"] + 1 if f["end"] >= f["start"] else 1
+    p = DESK.fix_prof[i]
+    if p is None or len(PROFILES[p]["roles"]) != width:
+        p = BY_WIDTH.get(width, "dimmer")
+    return {"slot": i, "name": f["name"][:FIXTURE_NAME_MAX], "start": f["start"], "profile": p,
+            "width": len(PROFILES[p]["roles"]), "x": f["x"], "y": f["y"],
+            "listed": f["en"] and i < n.fixture_count}
+
+
+def views(n):
+    return [fixture_view(n, i) for i in range(MAX_FIXTURES)]
+
+
+def role_ch(fv, role):
+    roles = PROFILES[fv["profile"]]["roles"]
+    if role not in roles:
+        return -1
+    ch = fv["start"] - 1 + roles.index(role)
+    return ch if ch < MAX_CH else -1
+
+
+def values_from(fv, frame):
+    out = {}
+    for role in PROFILES[fv["profile"]]["roles"]:
+        ch = role_ch(fv, role)
+        if ch >= 0:
+            out[role] = frame[ch]
+    return out
+
+
+def fixture_obj(fv, frame):
+    return {"id": "f%d" % (fv["slot"] + 1), "index": fv["slot"] + 1, "name": fv["name"], "universe": 0,
+            "address": fv["start"], "profile": fv["profile"], "on": True, "x": unit255(fv["x"]),
+            "y": unit255(fv["y"]), "values": values_from(fv, frame), "limits": dict(DEFAULT_LIMITS)}
+
+
+def end_of(fv):
+    return fv["start"] + fv["width"] - 1
+
+
+def in_range(fv, s, e):
+    return fv["start"] >= s and end_of(fv) <= e
+
+
+def group_listed(n, fvs, g):
+    gr = n.groups[g]
+    return gr["en"] and any(f["listed"] and in_range(f, gr["start"], gr["end"]) for f in fvs)
+
+
+def group_obj(n, fvs, g):
+    gr = n.groups[g]
+    return {"id": "g%d" % (g + 1), "name": gr["name"][:15],
+            "ids": ["f%d" % (f["slot"] + 1) for f in fvs if f["listed"] and in_range(f, gr["start"], gr["end"])]}
+
+
+def scene_obj(n, fvs, s):
+    listed = [f for f in fvs if f["listed"]]
+    return {"id": "s%d" % (s + 1), "name": DESK.scene_name[s] or "Scene %d" % (s + 1),
+            "fadeMs": DESK.scene_fade[s],
+            "fixtures": [{"id": "f%d" % (f["slot"] + 1), "on": True, "values": values_from(f, n.scenes[s])}
+                         for f in listed],
+            "raw": {}, "live": len(listed), "missing": 0}
+
+
+def chase_obj(n):
+    steps = n.cue["steps"][:n.cue["count"]]
+    return {"enabled": n.cue["run"], "sceneIds": ["s%d" % (st["scene"] + 1) for st in steps if st["scene"] in DESK.saved],
+            "holdMs": steps[0]["dwell"] if steps else 0, "fadeMs": steps[0]["fade"] if steps else 0,
+            "sync": "clock", "beats": 4}
+
+
+def fx_obj(n):
+    return {"mode": FX_NAMES[n.fx["mode"]], "bpm": n.fx["bpm"], "depth": n.fx["depth"], "enabled": n.fx["en"],
+            "spatial": "patch", "exclude": []}
+
+
+def output_obj(n):
+    t = n.art_out_target
+    return {"driver": "artnet", "serialPort": "", "mode": "unicast" if t else "broadcast",
+            "targets": [t] if t else [], "enabled": n.art_out, "refreshHz": 1000 // 23, "extra": []}
+
+
+SIM_IFACES = [{"iface": "ap", "address": "192.168.4.1", "netmask": "255.255.255.0"},
+              {"iface": "sta", "address": "192.168.88.140", "netmask": "255.255.255.0"}]
+
+
+def show_obj(n):
+    return {"space": None, "label": n.name, "file": "", "saved": True, "live": n.art_out, "machine": None}
+
+
+def state_obj(n):
+    fvs = views(n)
+    fixtures = [fixture_obj(f, n.web) for f in fvs if f["listed"]]
+    profiles = {}
+    for name in PROFILE_ORDER:
+        roles = PROFILES[name]["roles"]
+        profiles[name] = {"label": "%s (%d Channel%s)" % (name, len(roles), "" if len(roles) == 1 else "s"),
+                          "channels": list(roles), "cat": PROFILES[name]["cat"], "custom": False}
+    role_kinds = {k: [r for r in ROLE_ORDER if ROLE_KIND[r] == k]
+                  for k in ("emitter", "level", "position", "fine", "control")}
+    return {
+        "master": n.master, "blackout": False, "fixtures": fixtures,
+        "groups": [group_obj(n, fvs, g) for g in range(MAX_GROUPS) if group_listed(n, fvs, g)],
+        "raw": {}, "scenes": [scene_obj(n, fvs, s) for s in range(SCENE_COUNT) if s in DESK.saved],
+        "activeScene": "s%d" % (DESK.active + 1) if DESK.active in DESK.saved else None,
+        "chase": chase_obj(n), "fx": fx_obj(n), "fxModes": list(FX_NAMES),
+        "lfos": [], "layers": [], "looks": [], "sets": [], "customProfiles": [],
+        "audioCfg": {"enabled": False, "mode": "level", "amount": 255, "release": 300, "useBeats": True},
+        "output": output_obj(n), "profiles": profiles, "roleKinds": role_kinds,
+        "caps": {"midi": False, "audio": False, "library": False, "looks": False, "layers": False, "lfos": False,
+                 "sets": False, "cues": False, "profilesEdit": False, "multiUniverse": False, "node": True},
+        "show": show_obj(n),
+        "status": {"universes": [0], "nodes": [], "interfaces": SIM_IFACES,
+                   "broadcast": ["192.168.4.255", "192.168.88.255"], "packetsSent": 0, "lastError": None,
+                   "serial": None, "identifying": [], "extra": [], "driver": "artnet",
+                   "outputEnabled": n.art_out, "fading": False},
+    }
+
+
+def input_obj(n):
+    """vizzz::desk::writeInput, from the simulator's network inputs."""
+    enabled = n.mode != 0
+    desk = "follow" if n.mode == 1 else "htp"
+    pa = n.uni15()
+    art, sacn = NET.art_active(), NET.sacn_active()
+    art_age = int((time.time() - NET.last_art) * 1000) if NET.last_art else -1
+    live = art or sacn
+    held = n.mode == 1 and not n.artnet_fallback and not DESK.hold_released and not live and art_age >= 0
+    state = "live" if live else "held" if held else "lost" if art_age >= 0 else "waiting"
+    sources = []
+    if art_age >= 0:
+        sources.append({"key": "artnet", "protocol": "artnet", "name": "Art-Net", "ip": "", "priority": 100,
+                        "fps": 0, "ageMs": art_age, "packets": 0, "outOfSequence": 0, "sources": len(NET.art),
+                        "winning": art, "lost": not art, "lostWhy": None})
+    if live:
+        names = [x for x, on in (("Art-Net", art), ("sACN", sacn)) if on]
+        summary = {"enabled": True, "text": "Following %s on 1 of 1 universe" % ", ".join(names),
+                   "level": "ok", "live": 1, "universes": 1}
+    elif enabled:
+        summary = {"enabled": True, "text": {"held": "No signal — holding the last look",
+                                             "lost": "No signal — the desk has the rig"}.get(state, "Listening — no signal yet"),
+                   "level": "warn", "live": 0, "universes": 1}
+    else:
+        summary = {"enabled": False, "text": "Input off"}
+    su = pa + 1
+    return {
+        "config": {"enabled": enabled, "artnet": True, "sacn": True,
+                   "interfaces": [i["address"] for i in SIM_IFACES],
+                   "universes": [{"universe": pa, "merge": "htp", "desk": desk}],
+                   "loss": "release" if n.artnet_fallback else "hold", "name": n.name},
+        "interfaces": [dict(i, internal=False) for i in SIM_IFACES],
+        "listening": [{"protocol": "artnet", "address": "0.0.0.0", "port": 6454, "ok": True, "error": None,
+                       "broadcast": True},
+                      {"protocol": "sacn", "address": "0.0.0.0", "port": 5568, "ok": True, "error": None,
+                       "groups": ["239.255.%d.%d" % (su >> 8, su & 255)], "groupErrors": []}],
+        "lines": [{"universe": pa, "merge": "htp", "desk": desk,
+                   "artnet": "%d:%d:%d" % ((pa >> 8) & 0x7f, (pa >> 4) & 15, pa & 15), "sacn": su,
+                   "state": state, "lastAt": None, "ageMs": art_age if art_age >= 0 else None,
+                   "sources": sources, "exceeded": None}],
+        "unlistened": [], "stats": {}, "problems": [], "foreign": 0, "polls": None,
+        "summary": summary, "lanAllowed": True,
+    }
+
+
+def overlap_slot(fvs, start, width, ignore=()):
+    end = start + width - 1
+    for f in fvs:
+        if f["slot"] in ignore or not f["listed"]:
+            continue
+        if f["start"] <= end and end_of(f) >= start:
+            return f["slot"]
+    return -1
+
+
+def next_free(fvs, width):
+    a = 1
+    while a + width - 1 <= MAX_CH:
+        hit = overlap_slot(fvs, a, width)
+        if hit < 0:
+            return a
+        a = end_of(fvs[hit]) + 1
+    return 0
+
+
+def id_set(lst, one=None):
+    src = lst if isinstance(lst, list) else [one]
+    return {s for s in (parse_id(v, "f", MAX_FIXTURES) for v in src) if s >= 0}
+
+
+def role_values(values):
+    if not isinstance(values, dict):
+        return []
+    return [(k, level(v)) for k, v in values.items() if k in ROLE_KIND and is_num(v)][:16]
+
+
+def write_values(n, fv, vals):
+    for role, v in vals:
+        ch = role_ch(fv, role)
+        if ch >= 0:
+            n.web[ch] = v
+
+
+def start_fade(n, target, ms):
+    DESK.ident = None
+    if ms <= 0:
+        n.web = list(target)
+        n.fade = None
+    else:
+        n.fade = (time.time(), ms, list(n.web), list(target))
+
+
+def ident_tick(n):
+    """loop(): identify ends -> the saved values are written back."""
+    i = DESK.ident
+    if i and (time.time() - i["start"]) * 1000 >= i["dur"]:
+        for ch, v in i["saved"].items():
+            n.web[ch] = v
+        DESK.ident = None
+
+
+def desk_api(n, method, p, b):
+    """One /api request against the model. Returns (code, obj). Call with n.lock held."""
+    cls = DESK_API[p][1]
+    if cls == "c":
+        raise DeskRefusal(404, NOT_ON_NODE)
+    if p == "/api/cues" and method == "GET":
+        return 200, {"cues": dict(EMPTY_CUES)}
+    if p.startswith("/api/cues/"):
+        return 200, {"error": NOT_ON_NODE, "cues": dict(EMPTY_CUES)}
+    if p == "/api/show":
+        return 200, show_obj(n)
+    if p == "/api/looks":
+        return 200, {"looks": []}
+    if cls == "b":
+        return 200, {"error": NOT_ON_NODE}
+    if p == "/api/state":
+        return 200, state_obj(n)
+    if p == "/api/dmx":
+        return 200, {"dmx": {"0": list(n.out)}, "master": n.master, "blackout": False, "looks": [], "cues": None}
+    if p == "/api/input" and method == "GET":
+        return 200, input_obj(n)
+    return DESK_POST[p](n, b)
+
+
+def p_master(n, b):
+    m = b.get("master")
+    if m is not None and not is_num(m):
+        raise DeskRefusal(400, "master must be a number 0..255")
+    if m is not None:
+        n.master = level(m)
+    if truthy(b.get("blackout")):          # applyBlackout_locked()
+        DESK.ident = None
+        n.web = [0] * MAX_CH; n.fade = None; n.cue["run"] = False; n.fx["en"] = False
+        DESK.active = -1
+    return 200, {"ok": True}
+
+
+def refuse_off(b):
+    if "on" in b and b["on"] is not None and not truthy(b["on"]):
+        raise DeskRefusal(400, "on:false is not stored on this node (no mute mask yet): set the levels to 0")
+
+
+def p_fixture(n, b):
+    slot = parse_id(b.get("id"), "f", MAX_FIXTURES)
+    if slot < 0:
+        raise DeskRefusal(404, "no such fixture")
+    refuse_off(b)
+    if any(b.get(k) is not None for k in ("address", "universe", "profile", "index", "limits")):
+        raise DeskRefusal(400, "api/fixture changes values, name and x/y here: re-patch with fixtures/readdress")
+    if b.get("values") is not None and not isinstance(b["values"], dict):
+        raise DeskRefusal(400, "values must be an object")
+    fv = fixture_view(n, slot)
+    if not fv["listed"]:
+        raise DeskRefusal(404, "no such fixture")
+    vals = role_values(b.get("values"))
+    if vals:
+        write_values(n, fv, vals); n.fade = None; DESK.active = -1
+    name = clean_name(b.get("name"), FIXTURE_NAME_MAX + 1)
+    if name:
+        n.fixtures[slot]["name"] = name
+    for k in ("x", "y"):
+        if is_num(b.get(k)):
+            n.fixtures[slot][k] = unit_to_byte(b[k])
+    return 200, {"ok": True, "fixture": fixture_obj(fixture_view(n, slot), n.web)}
+
+
+def p_fixtures_all(n, b):
+    refuse_off(b)
+    vals = role_values(b.get("values"))
+    if vals:
+        for fv in views(n):
+            if fv["listed"]:
+                write_values(n, fv, vals)
+        n.fade = None; DESK.active = -1
+    return 200, {"ok": True}
+
+
+def universe_zero(v):
+    return v is None or (is_num(v) and v == 0)
+
+
+def p_raw(n, b):
+    if truthy(b.get("clear")):
+        return 200, {"ok": True, "raw": {}}
+    sets = []
+
+    def take(c):
+        if not isinstance(c, dict) or not universe_zero(c.get("universe")):
+            raise DeskRefusal(400, "only universe 0 on this node")
+        ch, v = c.get("channel"), c.get("value")
+        if not is_num(ch) or ch < 1 or ch > MAX_CH or ch != int(ch):
+            raise DeskRefusal(400, "channel must be 1..512")
+        if v is None or (is_num(v) and v < 0):
+            return
+        if not is_num(v):
+            raise DeskRefusal(400, "value must be a number 0..255")
+        if len(sets) >= 64:
+            raise DeskRefusal(400, "at most 64 channels per request")
+        sets.append((int(ch) - 1, level(v)))
+    if isinstance(b.get("channels"), list):
+        for c in b["channels"]:
+            take(c)
+    elif b.get("channel") is not None:
+        take(b)
+    for ch, v in sets:
+        n.web[ch] = v
+    if sets:
+        n.fade = None; DESK.active = -1
+    return 200, {"ok": True, "raw": {}}
+
+
+def p_fixtures_add(n, b):
+    prof = "rgb"
+    if b.get("profile") is not None:
+        prof = b["profile"] if isinstance(b["profile"], str) and b["profile"] in PROFILES else None
+        if prof is None:
+            raise DeskRefusal(400, "unknown profile: the node patches its built-in profiles only (state.profiles)")
+    if not universe_zero(b.get("universe")):
+        raise DeskRefusal(400, "only universe 0 on this node")
+    width = len(PROFILES[prof]["roles"])
+    count = 1
+    if is_num(b.get("count")):
+        count = 1 if b["count"] < 1 else int(b["count"])
+    count = min(count, MAX_FIXTURES)
+    address = 0
+    a = b.get("address")
+    if a is not None and not (is_num(a) and a == 0):
+        if not is_num(a) or a < 1 or a > MAX_CH or a != int(a):
+            raise DeskRefusal(400, "address must be 1..512")
+        address = int(a)
+    name = clean_name(b.get("name"), FIXTURE_NAME_MAX + 1) or prof
+    fvs = views(n)
+    if address and not truthy(b.get("force")):
+        for i in range(count):
+            start = address + i * width
+            if start + width - 1 > MAX_CH:
+                break
+            if overlap_slot(fvs, start, width) >= 0:
+                raise DeskRefusal(409, "those channels are taken by a patched fixture: patch somewhere else, or send force to stack them")
+    added = []
+    at = address or next_free(fvs, width)
+    for _ in range(count):
+        slot = next((f["slot"] for f in fvs if not f["listed"]), -1)
+        if slot < 0 or at == 0 or at + width - 1 > MAX_CH:
+            break
+        n.fixtures[slot].update({"name": name, "start": at, "end": at + width - 1,
+                                 "x": unit_to_byte(0.06 + (slot % 12) * 0.075),
+                                 "y": unit_to_byte(0.28 + (slot // 12) * 0.16), "en": True})
+        DESK.fix_prof[slot] = prof
+        n.fixture_count = max(n.fixture_count, slot + 1)
+        fvs[slot] = fixture_view(n, slot)
+        added.append(slot)
+        at = at + width if address else next_free(fvs, width)
+    if not added:
+        raise DeskRefusal(409, "no room: every fixture slot is used, or no free channels fit this profile")
+    return 200, {"ok": True, "added": [fixture_obj(fvs[s], n.web) for s in sorted(added)]}
+
+
+def p_fixtures_remove(n, b):
+    if b.get("ids") is None and b.get("id") is None:
+        raise DeskRefusal(400, "nothing to remove")
+    removed = 0
+    for s in id_set(b.get("ids"), b.get("id")):
+        if fixture_view(n, s)["listed"]:
+            n.fixtures[s]["en"] = False
+            removed += 1
+    return 200, {"ok": True, "removed": removed, "groupsRemoved": []}
+
+
+def p_fixtures_move(n, b):
+    for m in b.get("moves") if isinstance(b.get("moves"), list) else []:
+        s = parse_id(m.get("id") if isinstance(m, dict) else None, "f", MAX_FIXTURES)
+        if s < 0 or not fixture_view(n, s)["listed"]:
+            continue
+        for k in ("x", "y"):
+            if is_num(m.get(k)):
+                n.fixtures[s][k] = unit_to_byte(m[k])
+    return 200, {"ok": True}
+
+
+def p_fixtures_readdress(n, b):
+    moves = b["moves"] if isinstance(b.get("moves"), list) else ([b] if b.get("id") is not None else [])
+    plan = []
+    for m in moves:
+        s = parse_id(m.get("id") if isinstance(m, dict) else None, "f", MAX_FIXTURES)
+        if s < 0:
+            raise DeskRefusal(404, "no such fixture")
+        if not universe_zero(m.get("universe")):
+            raise DeskRefusal(400, "only universe 0 on this node")
+        if m.get("address") is not None and not is_num(m["address"]):
+            raise DeskRefusal(400, "address must be 1..512")
+        plan.append((s, m.get("address")))
+    if not plan:
+        raise DeskRefusal(400, "nothing to move")
+    fvs = views(n)
+    to = {}
+    for s, a in plan:
+        f = fvs[s]
+        if not f["listed"]:
+            raise DeskRefusal(404, "no such fixture")
+        addr = int(min(MAX_CH, max(1, f["start"] if a is None else a)))
+        if addr + f["width"] - 1 > MAX_CH:
+            raise DeskRefusal(409, "the fixture runs off the end of the universe there")
+        to[s] = addr
+    if not truthy(b.get("force")):
+        planned = [dict(f, start=to.get(f["slot"], f["start"])) for f in fvs]
+        for s in to:
+            if overlap_slot(planned, planned[s]["start"], planned[s]["width"], ignore=(s,)) >= 0:
+                raise DeskRefusal(409, "those channels are taken by a patched fixture: send force to stack them")
+    for s, addr in to.items():
+        n.fixtures[s]["start"], n.fixtures[s]["end"] = addr, addr + fvs[s]["width"] - 1
+    DESK.active = -1
+    return 200, {"ok": True, "moved": [{"id": "f%d" % (s + 1), "universe": 0, "address": to[s]} for s in sorted(to)]}
+
+
+def p_fixtures_identify(n, b):
+    off = truthy(b.get("off"))
+    if off:
+        if DESK.ident:
+            DESK.ident["dur"] = 0
+            ident_tick(n)
+        return 200, {"ok": True, "identifying": []}
+    slots = id_set(b.get("ids")) if isinstance(b.get("ids"), list) else set()
+    if not slots:
+        raise DeskRefusal(400, "select a fixture to find")
+    seconds = 2
+    if is_num(b.get("seconds")):
+        seconds = 1 if b["seconds"] < 1 else 10 if b["seconds"] > 10 else int(b["seconds"] + 0.5)
+    if n.fade:
+        raise DeskRefusal(409, "a fade is running: identify once it has landed")
+    i = DESK.ident or {"saved": {}, "slots": set()}
+    for s in sorted(slots):
+        fv = fixture_view(n, s)
+        if not fv["listed"]:
+            continue
+        for role in PROFILES[fv["profile"]]["roles"]:
+            if ROLE_KIND[role] not in ("level", "emitter"):
+                continue
+            ch = role_ch(fv, role)
+            if ch < 0:
+                continue
+            i["saved"].setdefault(ch, n.web[ch])
+            n.web[ch] = 255
+        i["slots"].add(s)
+    if not i["slots"]:
+        raise DeskRefusal(400, "select a fixture to find")
+    i["start"], i["dur"] = time.time(), seconds * 1000
+    DESK.ident = i
+    return 200, {"ok": True, "identifying": ["f%d" % (s + 1) for s in sorted(i["slots"])]}
+
+
+def scene_meta(b):
+    if any(b.get(k) is not None for k in ("fx", "lfos", "audioCfg")):
+        raise DeskRefusal(400, "node scenes hold levels only (no fx, lfos or audio)")
+    if b.get("fadeMs") is not None and not is_num(b["fadeMs"]):
+        raise DeskRefusal(400, "fadeMs must be a number")
+    return ("name" in b and b["name"] is not None, clean_name(b.get("name"), SCENE_NAME_MAX + 1),
+            b.get("fadeMs") is not None, clamp_fade(b["fadeMs"]) if b.get("fadeMs") is not None else 0)
+
+
+def p_scenes_save(n, b):
+    _hn, name, _hf, fade = scene_meta(b)
+    slot = next((s for s in range(SCENE_COUNT) if s not in DESK.saved), -1)
+    if slot < 0:
+        raise DeskRefusal(409, "all 8 scene slots are in use: remove one first")
+    n.scenes[slot] = list(n.web)
+    DESK.saved.add(slot)
+    DESK.scene_name[slot], DESK.scene_fade[slot] = name, fade
+    return 200, {"ok": True, "scene": scene_obj(n, views(n), slot)}
+
+
+def p_scenes_update(n, b):
+    slot = parse_id(b.get("id"), "s", SCENE_COUNT)
+    if slot < 0:
+        raise DeskRefusal(404, "no such scene")
+    has_name, name, has_fade, fade = scene_meta(b)
+    if slot not in DESK.saved:
+        raise DeskRefusal(404, "no such scene")
+    if truthy(b.get("restage")):
+        n.scenes[slot] = list(n.web)
+    if has_name:
+        DESK.scene_name[slot] = name
+    if has_fade:
+        DESK.scene_fade[slot] = fade
+    return 200, {"ok": True, "scene": scene_obj(n, views(n), slot)}
+
+
+def p_scenes_recall(n, b):
+    slot = parse_id(b.get("id"), "s", SCENE_COUNT)
+    if slot < 0:
+        raise DeskRefusal(404, "no such scene")
+    if b.get("fadeMs") is not None and not is_num(b["fadeMs"]):
+        raise DeskRefusal(400, "fadeMs must be a number")
+    if slot not in DESK.saved:
+        raise DeskRefusal(404, "no such scene")
+    fade = clamp_fade(b["fadeMs"]) if is_num(b.get("fadeMs")) else DESK.scene_fade[slot]
+    paused = n.cue["run"]
+    n.cue["run"] = False
+    start_fade(n, n.scenes[slot], fade)
+    DESK.active = slot
+    return 200, dict({"ok": True}, **({"chasePaused": True} if paused else {}))
+
+
+def p_scenes_remove(n, b):
+    slot = parse_id(b.get("id"), "s", SCENE_COUNT)
+    if slot >= 0 and slot in DESK.saved:
+        DESK.saved.discard(slot)
+        n.scenes[slot] = [0] * MAX_CH
+        DESK.scene_name[slot], DESK.scene_fade[slot] = "", 0
+        if DESK.active == slot:
+            DESK.active = -1
+        keep = [st for st in n.cue["steps"][:n.cue["count"]] if st["scene"] != slot]
+        n.cue["steps"][:len(keep)] = keep
+        n.cue["count"] = len(keep)
+        if n.cue["index"] >= n.cue["count"]:
+            n.cue["index"] = 0
+        if not keep:
+            n.cue["run"] = False
+    return 200, {"ok": True}
+
+
+def p_groups_add(n, b):
+    sel = id_set(b.get("ids")) if isinstance(b.get("ids"), list) else set()
+    fvs = views(n)
+    picked = [f for f in fvs if f["slot"] in sel and f["listed"]]
+    if not picked:
+        raise DeskRefusal(400, "select fixtures to group")
+    lo, hi = min(f["start"] for f in picked), max(end_of(f) for f in picked)
+    if any(f["listed"] and f["slot"] not in sel and in_range(f, lo, hi) for f in fvs):
+        raise DeskRefusal(400, "a node group is one channel range, and another fixture sits inside this selection's range")
+    slot = next((g for g in range(MAX_GROUPS) if not n.groups[g]["en"]), -1)
+    if slot < 0:
+        slot = next((g for g in range(MAX_GROUPS) if not group_listed(n, fvs, g)), -1)
+    if slot < 0:
+        raise DeskRefusal(400, "all 8 group slots are in use: remove one first")
+    name = clean_name(b.get("name"), 16) or "G%d" % (slot + 1)
+    n.groups[slot].update({"name": name, "start": lo, "end": hi, "en": True})
+    return 200, {"ok": True, "group": group_obj(n, fvs, slot)}
+
+
+def p_groups_remove(n, b):
+    g = parse_id(b.get("id"), "g", MAX_GROUPS)
+    if g < 0:
+        raise DeskRefusal(404, "no such group")
+    n.groups[g]["en"] = False
+    return 200, {"ok": True}
+
+
+def p_fx(n, b):
+    m = -1
+    if b.get("mode") is not None:
+        m = FX_NAMES.index(b["mode"]) if b["mode"] in FX_NAMES else -2
+        if m == -2:
+            raise DeskRefusal(400, "unknown fx mode: the node offers state.fxModes")
+    if b.get("spatial") is not None and b["spatial"] != "patch":
+        raise DeskRefusal(400, "the node's fx follow the patch order only (spatial: patch)")
+    if isinstance(b.get("exclude"), list) and b["exclude"]:
+        raise DeskRefusal(400, "fx exclude is not on this node")
+    for k in ("bpm", "depth"):
+        if b.get(k) is not None and not is_num(b[k]):
+            raise DeskRefusal(400, "bpm and depth must be numbers")
+    if m >= 0:
+        n.fx["mode"] = m
+    if is_num(b.get("bpm")):
+        n.fx["bpm"] = 20 if b["bpm"] < 20 else 240 if b["bpm"] > 240 else int(b["bpm"] + 0.5)
+    if is_num(b.get("depth")):
+        n.fx["depth"] = level(b["depth"])
+    if b.get("enabled") is not None:
+        n.fx["en"] = truthy(b["enabled"])
+    elif m >= 0:
+        n.fx["en"] = m != 0
+    if n.fx["mode"] == 0:
+        n.fx["en"] = False
+    return 200, {"ok": True, "fx": fx_obj(n)}
+
+
+def p_chase(n, b):
+    if isinstance(b.get("sync"), str) and b["sync"] != "clock":
+        raise DeskRefusal(400, "the node's cue runner has no beat clock: sync stays clock")
+    for k in ("holdMs", "fadeMs"):
+        if b.get(k) is not None and not is_num(b[k]):
+            raise DeskRefusal(400, "holdMs and fadeMs must be numbers")
+    cue = n.cue
+
+    def saved_steps():
+        return sum(1 for st in cue["steps"][:cue["count"]] if st["scene"] in DESK.saved)
+    was_empty = saved_steps() == 0
+    if isinstance(b.get("sceneIds"), list):
+        ids = [s for s in (parse_id(v, "s", SCENE_COUNT) for v in b["sceneIds"]) if s >= 0][:MAX_CUES]
+        d0 = cue["steps"][0]["dwell"] if cue["count"] else 1500
+        f0 = cue["steps"][0]["fade"] if cue["count"] else 500
+        keep = [{"scene": s, "dwell": d0, "fade": f0} for s in ids if s in DESK.saved]
+        cue["steps"][:len(keep)] = keep
+        cue["count"], cue["index"] = len(keep), 0
+    for st in cue["steps"][:cue["count"]]:
+        if is_num(b.get("holdMs")):
+            st["dwell"] = max(0, min(FADE_MAX_MS, int(b["holdMs"])))
+        if is_num(b.get("fadeMs")):
+            st["fade"] = clamp_fade(b["fadeMs"])
+        if st["fade"] + st["dwell"] < 50:
+            st["dwell"] = 50 - st["fade"]
+    want = cue["run"] if b.get("enabled") is None else truthy(b["enabled"])
+    if saved_steps() == 0:
+        want = False
+    elif was_empty and want and b.get("enabled") is not True:
+        want = False
+    start = want and not cue["run"]
+    cue["run"] = want
+    if start:
+        cue["index"] = 0
+        n._cue_at = time.time()
+        st = cue["steps"][0]
+        start_fade(n, n.scenes[st["scene"]], st["fade"])
+    return 200, {"ok": True, "chase": chase_obj(n)}
+
+
+def p_output(n, b):
+    if b.get("driver") is not None and b["driver"] != "artnet":
+        raise DeskRefusal(400, "this node sends Art-Net; its DMX cable is always driven")
+    if isinstance(b.get("serialPort"), str) and b["serialPort"]:
+        raise DeskRefusal(400, "no serial output on this node")
+    if b.get("refreshHz") is not None and not (is_num(b["refreshHz"]) and b["refreshHz"] == 1000 // 23):
+        raise DeskRefusal(400, "the node refreshes at a fixed 43 Hz")
+    mode = b.get("mode") if isinstance(b.get("mode"), str) else None
+    if mode or isinstance(b.get("targets"), list):
+        valid = [t for t in (b.get("targets") or []) if isinstance(t, str) and ipv4_ok(t)]
+        if len(valid) > 1:
+            raise DeskRefusal(400, "one unicast target on this node")
+        peer = valid[0] if valid else ""
+        if mode and mode != "unicast":
+            peer = ""
+        n.art_out_target = peer
+    if b.get("enabled") is not None:
+        n.art_out = truthy(b["enabled"])
+    return 200, {"ok": True, "output": output_obj(n), "serial": None, "error": None}
+
+
+def p_input(n, b):
+    for k in ("artnet", "sacn"):
+        if b.get(k) is not None and not truthy(b[k]):
+            raise DeskRefusal(400, "the node always listens to Art-Net and sACN")
+    if isinstance(b.get("name"), str) and b["name"] != n.name:
+        raise DeskRefusal(400, "rename the node in its node settings")
+    loss = None
+    if b.get("loss") is not None:
+        if b["loss"] not in ("release", "hold"):
+            raise DeskRefusal(400, "loss is release or hold on this node")
+        loss = b["loss"] == "release"
+    desk = None
+    for u in b.get("universes") if isinstance(b.get("universes"), list) else []:
+        if not isinstance(u, dict) or not is_num(u.get("universe")) or u["universe"] != n.uni15():
+            raise DeskRefusal(400, "the node listens on its own Art-Net port-address (sACN +1); change it in node settings")
+        if u.get("merge") is not None and u["merge"] != "htp":
+            raise DeskRefusal(400, "the node merges its sources HTP")
+        if isinstance(u.get("desk"), str):
+            desk = 1 if u["desk"] == "follow" else 2
+    nxt = n.mode
+    if b.get("enabled") is not None:
+        nxt = (2 if n.mode == 0 else n.mode) if truthy(b["enabled"]) else 0
+    if desk and nxt != 0:
+        nxt = desk
+    n.mode = nxt
+    if loss is not None:
+        n.artnet_fallback = loss
+    return 200, input_obj(n)
+
+
+def p_input_release(n, b):
+    DESK.hold_released = True
+    return 200, {"ok": True}
+
+
+DESK_POST = {
+    "/api/master": p_master, "/api/fixture": p_fixture, "/api/fixtures/all": p_fixtures_all, "/api/raw": p_raw,
+    "/api/fixtures/add": p_fixtures_add, "/api/fixtures/remove": p_fixtures_remove,
+    "/api/fixtures/move": p_fixtures_move, "/api/fixtures/readdress": p_fixtures_readdress,
+    "/api/fixtures/identify": p_fixtures_identify, "/api/scenes/save": p_scenes_save,
+    "/api/scenes/update": p_scenes_update, "/api/scenes/recall": p_scenes_recall,
+    "/api/scenes/remove": p_scenes_remove, "/api/groups/add": p_groups_add, "/api/groups/remove": p_groups_remove,
+    "/api/fx": p_fx, "/api/chase": p_chase, "/api/output": p_output, "/api/input": p_input,
+    "/api/input/release": p_input_release,
+}
+assert {p for p, (m, c) in DESK_API.items() if c == "a" and "POST" in m} == set(DESK_POST), "class-a POSTs"
 
 
 class BadArg(Exception):
@@ -547,6 +1377,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n) if n > 0 else b""
+        self._body = body
         extra = {}
         if body and (self.headers.get("Content-Type") or "").startswith("application/x-www-form-urlencoded"):
             extra = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
@@ -565,6 +1396,8 @@ class Handler(BaseHTTPRequestHandler):
         kind = ROUTES.get(p)
         if kind is None:
             return self._send(404, "Not found")
+        if kind == "DeskApi":
+            return self._desk(method, p)
         # Firmware route() gate (vizzz::gateRequest, audit 2-H2).
         allowed = ("GET",) if kind in ("GetLocal", "GetShared", "Static") else \
                   ("GET", "POST") if kind == "Operator" else ("POST",)
@@ -578,6 +1411,42 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle(p, q)
         except BadArg as e:
             return self._send(400, e.body, "application/json")
+
+    def _desk_json(self, code, obj):
+        DESK.replies += 1
+        self._send(code, json.dumps(obj, ensure_ascii=False, separators=(",", ":")), "application/json")
+
+    def _desk(self, method, p):
+        """Firmware route() for RouteKind::DeskApi: vizzz::desk::gateDesk, then the body
+        rules of deskParse(), then the handler (main.cpp api*)."""
+        methods = DESK_API[p][0]
+        if method not in methods:
+            allow = ", ".join(methods)
+            return self._send(405, json.dumps({"error": "method not allowed", "allow": allow}),
+                              "application/json", [("Allow", allow)])
+        b = {}
+        if method == "POST":
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                return self._send(415, '{"error":"send the body as Content-Type: application/json"}',
+                                  "application/json")
+            raw = getattr(self, "_body", b"")
+            if len(raw) > MAX_BODY:
+                return self._desk_json(413, {"error": "body over 2048 bytes"})
+            if not raw:
+                return self._desk_json(400, {"error": "invalid JSON: empty body"})
+            try:
+                b = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return self._desk_json(400, {"error": "invalid JSON"})
+            if not isinstance(b, dict):
+                return self._desk_json(400, {"error": "the body must be a JSON object"})
+        try:
+            with NODE.lock:
+                code, obj = desk_api(NODE, method, p, b)
+        except DeskRefusal as e:
+            code, obj = e.code, {"error": e.msg}
+        return self._desk_json(code, obj)
 
     def _handle(self, p, q):
         if p in REDIRECTS:   # firmware sendDeskRedirect()
@@ -663,7 +1532,9 @@ class Handler(BaseHTTPRequestHandler):
                     if v is not None:
                         n.art[k] = v
             elif p == "/scene/save":
-                n.scenes[num(q, "n", 0, SCENE_COUNT - 1, True)] = list(n.web)
+                slot = num(q, "n", 0, SCENE_COUNT - 1, True)
+                n.scenes[slot] = list(n.web)
+                DESK.saved.add(slot)                 # firmware saveScene() updates the cache
             elif p in ("/scene/recall", "/net/scene/recall"):
                 s = n.scenes[num(q, "n", 0, SCENE_COUNT - 1, True)]
                 f = num(q, "fade", 0, FADE_MAX_MS) or 0

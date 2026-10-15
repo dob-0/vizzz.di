@@ -407,6 +407,8 @@ struct NetIface {
   const char* netmask;
 };
 
+struct InputFacts;  // api/input facts, below
+
 // Everything the replies need, as pointers and values. A zeroed DeskFacts is
 // valid: every list is empty and every string falls back, so the shape holds.
 struct DeskFacts {
@@ -447,6 +449,9 @@ struct DeskFacts {
   uint32_t packetsSent;
   const char* lastError;              // nullptr → null
   const char* nodeName;
+  // V4 additions (both optional; a zeroed DeskFacts keeps the V3 meaning).
+  const uint32_t* sceneFades;         // per slot (NVS sN.fade); nullptr → sceneFadeMs for all
+  const InputFacts* input;     // api/input; nullptr → input off, nothing seen
 };
 
 // ── Replies ───────────────────────────────────────────────────────────────────
@@ -514,7 +519,7 @@ inline void scene(JsonWriter& w, const DeskFacts& d, uint8_t slot) {
     nm[at] = 0;
     w.str(nm);
   }
-  w.key("fadeMs"); w.u(d.sceneFadeMs);
+  w.key("fadeMs"); w.u(d.sceneFades ? d.sceneFades[slot] : d.sceneFadeMs);
   w.key("fixtures"); w.arr();
   for (uint8_t k = 0; d.fixtures && k < d.fixtureSlots; k++) {
     if (!fixtureListed(d.fixtures[k])) continue;
@@ -542,6 +547,64 @@ inline void show(JsonWriter& w, const DeskFacts& d) {
   w.endObj();
 }
 
+// A group is listed when its slot is enabled and at least one listed fixture
+// lies wholly inside its range: di never keeps a group with no members (it
+// drops them on fixtures/remove), so an empty range is not shown either.
+inline bool groupListed(const DeskFacts& d, uint8_t g) {
+  if (!d.groups || g >= d.groupSlots || !d.groups[g].enabled) return false;
+  for (uint8_t k = 0; d.fixtures && k < d.fixtureSlots; k++)
+    if (fixtureListed(d.fixtures[k]) && fixtureInRange(d.fixtures[k], d.groups[g].start, d.groups[g].end)) return true;
+  return false;
+}
+
+inline void group(JsonWriter& w, const DeskFacts& d, uint8_t g) {
+  const GroupRange& gr = d.groups[g];
+  w.obj();
+  w.key("id"); w.id('g', g + 1u);
+  w.key("name"); w.str(gr.name, sizeof(gr.name));
+  w.key("ids"); w.arr();
+  for (uint8_t k = 0; d.fixtures && k < d.fixtureSlots; k++)
+    if (fixtureListed(d.fixtures[k]) && fixtureInRange(d.fixtures[k], gr.start, gr.end)) w.id('f', k + 1u);
+  w.endArr();
+  w.endObj();
+}
+
+inline void chase(JsonWriter& w, const DeskFacts& d) {
+  w.obj();
+  w.key("enabled"); w.boolean(d.chaseRunning);
+  w.key("sceneIds"); w.arr();
+  for (uint8_t k = 0; d.chaseScenes && k < d.chaseCount; k++) w.id('s', d.chaseScenes[k] + 1u);
+  w.endArr();
+  w.key("holdMs"); w.u(d.chaseHoldMs);
+  w.key("fadeMs"); w.u(d.chaseFadeMs);
+  w.key("sync"); w.str("clock");
+  w.key("beats"); w.u(4);
+  w.endObj();
+}
+
+inline void fx(JsonWriter& w, const DeskFacts& d) {
+  w.obj();
+  w.key("mode"); w.str(orStr(d.fxMode, "none"));
+  w.key("bpm"); w.u(d.fxBpm);
+  w.key("depth"); w.u(d.fxDepth);
+  w.key("enabled"); w.boolean(d.fxEnabled);
+  w.key("spatial"); w.str("patch");
+  w.key("exclude"); w.rawValue("[]");
+  w.endObj();
+}
+
+inline void output(JsonWriter& w, const DeskFacts& d) {
+  w.obj();
+  w.key("driver"); w.str(orStr(d.outputDriver, "artnet"));
+  w.key("serialPort"); w.str("");
+  w.key("mode"); w.str(orStr(d.outputMode, "broadcast"));
+  w.key("targets"); strList(w, d.outputTargets, d.outputTargetCount);
+  w.key("enabled"); w.boolean(d.outputEnabled);
+  w.key("refreshHz"); w.u(d.refreshHz);
+  w.key("extra"); w.rawValue("[]");
+  w.endObj();
+}
+
 inline void cues(JsonWriter& w) {
   w.rawValue("{\"project\":null,\"list\":[],\"loop\":false,\"autoplay\":false,\"index\":-1,"
              "\"running\":false,\"nextAt\":null,\"missing\":[],\"n\":0,\"name\":null,\"nextInMs\":null}");
@@ -562,18 +625,8 @@ inline bool writeState(JsonWriter& w, const DeskFacts& d) {
   w.endArr();
 
   w.key("groups"); w.arr();
-  for (uint8_t g = 0; d.groups && g < d.groupSlots; g++) {
-    const GroupRange& gr = d.groups[g];
-    if (!gr.enabled) continue;
-    w.obj();
-    w.key("id"); w.id('g', g + 1u);
-    w.key("name"); w.str(gr.name, sizeof(gr.name));
-    w.key("ids"); w.arr();
-    for (uint8_t k = 0; d.fixtures && k < d.fixtureSlots; k++)
-      if (fixtureListed(d.fixtures[k]) && fixtureInRange(d.fixtures[k], gr.start, gr.end)) w.id('f', k + 1u);
-    w.endArr();
-    w.endObj();
-  }
+  for (uint8_t g = 0; d.groups && g < d.groupSlots; g++)
+    if (detail::groupListed(d, g)) detail::group(w, d, g);
   w.endArr();
 
   w.key("raw"); w.rawValue("{}");
@@ -587,25 +640,8 @@ inline bool writeState(JsonWriter& w, const DeskFacts& d) {
     w.id('s', uint32_t(d.activeScene) + 1u);
   else w.null();
 
-  w.key("chase"); w.obj();
-  w.key("enabled"); w.boolean(d.chaseRunning);
-  w.key("sceneIds"); w.arr();
-  for (uint8_t k = 0; d.chaseScenes && k < d.chaseCount; k++) w.id('s', d.chaseScenes[k] + 1u);
-  w.endArr();
-  w.key("holdMs"); w.u(d.chaseHoldMs);
-  w.key("fadeMs"); w.u(d.chaseFadeMs);
-  w.key("sync"); w.str("clock");
-  w.key("beats"); w.u(4);
-  w.endObj();
-
-  w.key("fx"); w.obj();
-  w.key("mode"); w.str(detail::orStr(d.fxMode, "none"));
-  w.key("bpm"); w.u(d.fxBpm);
-  w.key("depth"); w.u(d.fxDepth);
-  w.key("enabled"); w.boolean(d.fxEnabled);
-  w.key("spatial"); w.str("patch");
-  w.key("exclude"); w.rawValue("[]");
-  w.endObj();
+  w.key("chase"); detail::chase(w, d);
+  w.key("fx"); detail::fx(w, d);
   w.key("fxModes");
   if (d.fxModes && d.fxModeCount) detail::strList(w, d.fxModes, d.fxModeCount);
   else w.rawValue("[\"none\"]");
@@ -618,15 +654,7 @@ inline bool writeState(JsonWriter& w, const DeskFacts& d) {
   w.key("audioCfg");
   w.rawValue("{\"enabled\":false,\"mode\":\"level\",\"amount\":255,\"release\":300,\"useBeats\":true}");
 
-  w.key("output"); w.obj();
-  w.key("driver"); w.str(detail::orStr(d.outputDriver, "artnet"));
-  w.key("serialPort"); w.str("");
-  w.key("mode"); w.str(detail::orStr(d.outputMode, "broadcast"));
-  w.key("targets"); detail::strList(w, d.outputTargets, d.outputTargetCount);
-  w.key("enabled"); w.boolean(d.outputEnabled);
-  w.key("refreshHz"); w.u(d.refreshHz);
-  w.key("extra"); w.rawValue("[]");
-  w.endObj();
+  w.key("output"); detail::output(w, d);
 
   w.key("profiles"); w.obj();
   for (uint8_t p = 0; p < kProfileCount; p++) {
@@ -746,6 +774,553 @@ inline size_t pullWindow(ReplyFn fn, const DeskFacts& d, JsonWriter& w, uint8_t*
   if (maxLen == 0) return 0;
   w.begin(windowSink, &s);
   fn(w, d);
+  return s.written;
+}
+
+// ══ V4: the /api routes (docs/DESK_BRIDGE_CORE.md §4) ═════════════════════════
+// main.cpp parses the JSON body (ArduinoJson) and calls these; everything that
+// decides what a body means or what a reply says is here, pure and tested.
+
+// ── Route table ───────────────────────────────────────────────────────────────
+// One row per path of the contract (091a1a6), in its order. kRoutes has the
+// same paths as RouteKind::DeskApi (a native test holds the two and the
+// vendored contract together).
+constexpr uint8_t kGet = 1;
+constexpr uint8_t kPost = 2;
+enum class ApiClass : uint8_t { A, B, C };
+
+struct ApiRoute {
+  const char* path;
+  uint8_t methods;
+  ApiClass cls;
+};
+
+constexpr ApiRoute kDeskApi[] = {
+  {"/api/state", kGet, ApiClass::A},
+  {"/api/dmx", kGet, ApiClass::A},
+  {"/api/input", kGet | kPost, ApiClass::A},
+  {"/api/input/release", kPost, ApiClass::A},
+  {"/api/master", kPost, ApiClass::A},
+  {"/api/raw", kPost, ApiClass::A},
+  {"/api/fx", kPost, ApiClass::A},
+  {"/api/chase", kPost, ApiClass::A},
+  {"/api/output", kPost, ApiClass::A},
+  {"/api/fixtures/add", kPost, ApiClass::A},
+  {"/api/fixture", kPost, ApiClass::A},
+  {"/api/fixtures/all", kPost, ApiClass::A},
+  {"/api/fixtures/move", kPost, ApiClass::A},
+  {"/api/fixtures/readdress", kPost, ApiClass::A},
+  {"/api/fixtures/identify", kPost, ApiClass::A},
+  {"/api/groups/add", kPost, ApiClass::A},
+  {"/api/scenes/save", kPost, ApiClass::A},
+  {"/api/scenes/update", kPost, ApiClass::A},
+  {"/api/scenes/recall", kPost, ApiClass::A},
+  {"/api/scenes/remove", kPost, ApiClass::A},
+  {"/api/groups/remove", kPost, ApiClass::A},
+  {"/api/fixtures/remove", kPost, ApiClass::A},
+  {"/api/cues", kGet, ApiClass::B},
+  {"/api/cues/go", kPost, ApiClass::B},
+  {"/api/cues/back", kPost, ApiClass::B},
+  {"/api/cues/stop", kPost, ApiClass::B},
+  {"/api/cues/loop", kPost, ApiClass::B},
+  {"/api/show", kGet, ApiClass::B},
+  {"/api/looks", kGet, ApiClass::B},
+  {"/api/looks/add", kPost, ApiClass::B},
+  {"/api/looks/remove", kPost, ApiClass::B},
+  {"/api/looks/capture", kPost, ApiClass::B},
+  {"/api/looks/fire", kPost, ApiClass::B},
+  {"/api/layer", kPost, ApiClass::B},
+  {"/api/layers/add", kPost, ApiClass::B},
+  {"/api/layers/remove", kPost, ApiClass::B},
+  {"/api/lfos", kPost, ApiClass::B},
+  {"/api/sets", kPost, ApiClass::B},
+  {"/api/fan", kPost, ApiClass::B},
+  {"/api/fixtures/limits", kPost, ApiClass::B},
+  {"/api/profiles/add", kPost, ApiClass::B},
+  {"/api/profiles/remove", kPost, ApiClass::B},
+  {"/api/output/send", kPost, ApiClass::B},
+  {"/api/output/send/remove", kPost, ApiClass::B},
+  {"/api/nodes/add", kPost, ApiClass::B},
+  {"/api/nodes/remove", kPost, ApiClass::B},
+  {"/api/discover", kPost, ApiClass::B},
+  {"/api/serial/identify", kPost, ApiClass::B},
+  {"/api/audio", kPost, ApiClass::B},
+  {"/api/audiocfg", kPost, ApiClass::B},
+  {"/api/library", kGet, ApiClass::C},
+  {"/api/library/manufacturer", kGet, ApiClass::C},
+  {"/api/library/fixture", kGet, ApiClass::C},
+  {"/api/library/import", kPost, ApiClass::C},
+  {"/api/midi", kGet | kPost, ApiClass::C},
+  {"/api/show/open", kPost, ApiClass::C},
+  {"/api/show/copy-machine", kPost, ApiClass::C},
+};
+constexpr size_t kDeskApiCount = sizeof(kDeskApi) / sizeof(kDeskApi[0]);
+
+inline const ApiRoute* findDeskApi(const char* path) {
+  if (!path) return nullptr;
+  for (size_t i = 0; i < kDeskApiCount; i++)
+    if (strcmp(kDeskApi[i].path, path) == 0) return &kDeskApi[i];
+  return nullptr;
+}
+
+inline const char* deskMethods(uint8_t m) {
+  return m == kGet ? "GET" : (m == kPost ? "POST" : "GET, POST");
+}
+
+// The media type of a Content-Type value is application/json, compared
+// case-insensitively, optionally followed by parameters (RFC 9110 §8.3.1:
+// "application/json; charset=utf-8"). Nothing else counts, not +json types.
+inline bool isJsonContentType(const char* v) {
+  if (!v) return false;
+  while (*v == ' ' || *v == '\t') v++;
+  static const char kType[] = "application/json";
+  for (size_t i = 0; i < sizeof(kType) - 1; i++) {
+    char c = v[i];
+    if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+    if (c != kType[i]) return false;
+  }
+  const char* t = v + sizeof(kType) - 1;
+  while (*t == ' ' || *t == '\t') t++;
+  return *t == 0 || *t == ';';
+}
+
+// The DeskApi gate. OPTIONS: 403 without ACAO (the browser drops the request).
+// A method the path lacks: 405 + Allow. POST without application/json: 415.
+inline Gate gateDesk(uint8_t methods, HttpMethod m, bool jsonBody) {
+  switch (m) {
+    case HttpMethod::Options: return Gate::PreflightDenied;
+    case HttpMethod::Get: return (methods & kGet) ? Gate::Allow : Gate::NotAllowed;
+    case HttpMethod::Post:
+      if (!(methods & kPost)) return Gate::NotAllowed;
+      return jsonBody ? Gate::Allow : Gate::NeedJson;
+    default: return Gate::NotAllowed;
+  }
+}
+
+constexpr size_t kMaxBody = 2048;              // larger bodies answer 413
+constexpr uint32_t kMinFreeBlock = 32768;      // below this largest free block: 503 "node busy"
+constexpr const char* kNotOnNode = "not on this node";
+constexpr uint32_t kFadeMaxMs = 600000;        // = main.cpp FADE_MAX_MS
+constexpr uint8_t kSceneNameMax = 23;          // bytes, NVS sN.name holds at most this
+constexpr uint8_t kFixtureNameMax = 15;        // NodeFixture::name minus the NUL
+
+// ── Body rules ────────────────────────────────────────────────────────────────
+// An id the node printed: one prefix letter, then 1..max with no sign, no
+// leading zero, digits only ("f3" -> 2). Anything else is -1.
+inline int parseId(const char* s, char prefix, uint32_t max) {
+  if (!s || s[0] != prefix || s[1] < '1' || s[1] > '9') return -1;
+  uint32_t v = 0;
+  for (const char* p = s + 1; *p; p++) {
+    if (*p < '0' || *p > '9') return -1;
+    v = v * 10 + uint32_t(*p - '0');
+    if (v > max) return -1;
+  }
+  return int(v) - 1;
+}
+
+// A name from a body: ASCII control bytes dropped, spaces trimmed at both
+// ends, at most cap - 1 bytes kept and never half a UTF-8 sequence. Returns
+// the length; 0 means "no usable name" (the caller keeps its default).
+inline size_t cleanName(const char* in, char* out, size_t cap) {
+  if (!out || cap == 0) return 0;
+  size_t n = 0;
+  if (in) {
+    while (*in == ' ' || *in == '\t') in++;
+    for (; *in && n + 1 < cap; in++) {
+      unsigned char c = (unsigned char)*in;
+      if (c < 0x20 || c == 0x7f) continue;
+      out[n++] = char(c);
+    }
+  }
+  // Back off a cut multi-byte sequence at the end.
+  if (n) {
+    size_t j = n - 1;
+    while (j > 0 && ((unsigned char)out[j] & 0xC0) == 0x80) j--;
+    unsigned char lead = (unsigned char)out[j];
+    size_t need = lead < 0x80 ? 1 : (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : (lead >> 3) == 0x1E ? 4 : 1;
+    if (j + need > n) n = j;
+  }
+  while (n && (out[n - 1] == ' ' || out[n - 1] == '\t')) n--;
+  out[n] = 0;
+  return n;
+}
+
+// Numbers from a body. NaN and negatives go to 0; fades stop at kFadeMaxMs
+// (the node's fade engine limit), stage positions are di's 0..1.
+inline uint32_t clampFadeMs(double v) {
+  if (!(v > 0)) return 0;
+  if (v >= double(kFadeMaxMs)) return kFadeMaxMs;
+  return uint32_t(v + 0.5);
+}
+inline uint8_t unitToByte(double v) {
+  if (!(v > 0)) return 0;
+  if (v >= 1) return 255;
+  return posFromMilli(uint32_t(v * 1000 + 0.5));
+}
+inline int32_t levelFrom(double v) {
+  if (!(v > 0)) return 0;
+  if (v >= 255) return 255;
+  return int32_t(v + 0.5);
+}
+
+// The listed fixture (outside `ignore`, a slot bit mask) that shares a channel
+// with [start, start + width - 1], or -1.
+inline int overlapSlot(const NodeFixture* fx, uint8_t n, uint16_t start, uint8_t width, uint32_t ignore) {
+  if (!width) return -1;
+  uint32_t end = uint32_t(start) + width - 1;
+  for (uint8_t k = 0; fx && k < n; k++) {
+    if ((ignore >> k) & 1u) continue;
+    if (!fixtureListed(fx[k])) continue;
+    if (fx[k].start <= end && fixtureEnd(fx[k]) >= start) return k;
+  }
+  return -1;
+}
+
+// The lowest address where `width` channels fit inside 1..512 without touching
+// a listed fixture; 0 when the universe has no such gap.
+inline uint16_t nextFreeAddress(const NodeFixture* fx, uint8_t n, uint8_t width) {
+  if (!width || width > kChannels) return 0;
+  uint16_t a = 1;
+  while (uint32_t(a) + width - 1 <= kChannels) {
+    int hit = overlapSlot(fx, n, a, width, 0);
+    if (hit < 0) return a;
+    a = uint16_t(fixtureEnd(fx[hit]) + 1);
+  }
+  return 0;
+}
+
+// groups/add stores a channel range, and membership is read back as "listed
+// fixtures wholly inside the range" (rule 7). So a selection is storable only
+// when that rule gives back exactly the selection: the range is
+// [lowest start, highest end] of the selected fixtures, and it is refused when
+// any listed fixture outside the selection lies wholly inside it.
+enum class GroupFit : uint8_t { Ok, Empty, NotContiguous };
+inline GroupFit groupRangeFor(const NodeFixture* fx, uint8_t n, uint32_t selected, uint16_t* start, uint16_t* end) {
+  uint16_t lo = 0xFFFF, hi = 0;
+  for (uint8_t k = 0; fx && k < n; k++) {
+    if (!((selected >> k) & 1u) || !fixtureListed(fx[k])) continue;
+    if (fx[k].start < lo) lo = fx[k].start;
+    if (fixtureEnd(fx[k]) > hi) hi = fixtureEnd(fx[k]);
+  }
+  if (hi == 0) return GroupFit::Empty;
+  for (uint8_t k = 0; k < n; k++) {
+    if ((selected >> k) & 1u) continue;
+    if (fixtureListed(fx[k]) && fixtureInRange(fx[k], lo, hi)) return GroupFit::NotContiguous;
+  }
+  if (start) *start = lo;
+  if (end) *end = hi;
+  return GroupFit::Ok;
+}
+
+// Slot for a new group: the first disabled slot, else the first enabled slot
+// whose range holds no listed fixture (not shown, see groupListed); -1 = full.
+inline int freeGroupSlot(const DeskFacts& d) {
+  for (uint8_t g = 0; d.groups && g < d.groupSlots; g++)
+    if (!d.groups[g].enabled) return g;
+  for (uint8_t g = 0; d.groups && g < d.groupSlots; g++)
+    if (!detail::groupListed(d, g)) return g;
+  return -1;
+}
+
+// What identify flashes: the fixture's level and emitter roles (dimmer and
+// colour), so a fixture with no dimmer channel still lights. Returns the
+// count of 0-based channels written to out (at most kMaxProfileChannels).
+inline uint8_t identifyChannels(const NodeFixture& f, uint16_t* out) {
+  const Profile* p = profileAt(f.profile);
+  uint8_t n = 0;
+  for (uint8_t k = 0; p && k < p->count; k++) {
+    Kind kd = kRoles[uint8_t(p->roles[k])].kind;
+    if (kd != Kind::Level && kd != Kind::Emitter) continue;
+    int ch = roleChannel(f, p->roles[k]);
+    if (ch >= 0) out[n++] = uint16_t(ch);
+  }
+  return n;
+}
+
+// ── api/input facts ───────────────────────────────────────────────────────────
+// The node's source mode in di's words: input "enabled" = the network sources
+// (Art-Net, sACN, USB widget) are used at all; the universe line's "desk" is
+// follow (network only) or htp (merged with the web layer); "loss" release =
+// fall back to the web layer, hold = keep the last network frame.
+struct InputFacts {
+  uint8_t mode;              // 0 web only, 1 network only, 2 HTP (main.cpp Mode)
+  bool fallbackToWeb;
+  uint16_t universe;         // Art-Net port-address the node listens on
+  uint16_t sacnUniverse;     // = universe + 1 (E1.31 has no universe 0)
+  bool artActive, sacnActive, usbActive;
+  uint8_t artSources, sacnSources;
+  int32_t artAgeMs, sacnAgeMs, usbAgeMs;   // since the last frame; -1 = none since boot
+  bool held;                 // network only, no signal, holding the last frame
+  const char* name;          // node name (di's input "name")
+};
+
+namespace detail {
+
+inline void portAddressLabel(char* out, uint16_t pa) {   // di's "net:sub:uni"
+  unsigned net = (pa >> 8) & 0x7f, sub = (pa >> 4) & 0x0f, uni = pa & 0x0f;
+  size_t n = 0;
+  if (net >= 100) out[n++] = char('0' + net / 100);
+  if (net >= 10) out[n++] = char('0' + net / 10 % 10);
+  out[n++] = char('0' + net % 10);
+  out[n++] = ':';
+  if (sub >= 10) out[n++] = '1';
+  out[n++] = char('0' + sub % 10);
+  out[n++] = ':';
+  if (uni >= 10) out[n++] = '1';
+  out[n++] = char('0' + uni % 10);
+  out[n] = 0;
+}
+
+inline void inputSource(JsonWriter& w, const char* key, const char* protocol, const char* name, bool active,
+                        int32_t ageMs, uint8_t sources) {
+  w.obj();
+  w.key("key"); w.str(key);
+  w.key("protocol"); w.str(protocol);
+  w.key("name"); w.str(name);
+  w.key("ip"); w.str("");
+  w.key("priority"); w.u(100);
+  w.key("fps"); w.u(0);              // not counted on the node
+  w.key("ageMs"); w.u(uint32_t(ageMs));
+  w.key("packets"); w.u(0);
+  w.key("outOfSequence"); w.u(0);
+  w.key("sources"); w.u(sources);
+  w.key("winning"); w.boolean(active);
+  w.key("lost"); w.boolean(!active);
+  w.key("lostWhy"); w.null();
+  w.endObj();
+}
+
+inline const char* lineState(const InputFacts& in) {
+  if (in.artActive || in.sacnActive || in.usbActive) return "live";
+  if (in.held) return "held";
+  if (in.artAgeMs >= 0 || in.sacnAgeMs >= 0 || in.usbAgeMs >= 0) return "lost";
+  return "waiting";
+}
+
+}  // namespace detail
+
+// GET/POST api/input: di's input status (config, interfaces, listening, lines,
+// summary) built from the node's source facts.
+inline bool writeInput(JsonWriter& w, const DeskFacts& d) {
+  static const InputFacts kOff = {0, true, 0, 1, false, false, false, 0, 0, -1, -1, -1, false, nullptr};
+  const InputFacts& in = d.input ? *d.input : kOff;
+  const bool enabled = in.mode != 0;
+  const char* deskMode = in.mode == 1 ? "follow" : "htp";
+  const char* state = detail::lineState(in);
+  w.obj();
+  w.key("config"); w.obj();
+  w.key("enabled"); w.boolean(enabled);
+  w.key("artnet"); w.boolean(true);
+  w.key("sacn"); w.boolean(true);
+  w.key("interfaces"); w.arr();
+  for (uint8_t k = 0; d.interfaces && k < d.interfaceCount; k++) w.str(detail::orStr(d.interfaces[k].address, ""));
+  w.endArr();
+  w.key("universes"); w.arr();
+  w.obj(); w.key("universe"); w.u(in.universe); w.key("merge"); w.str("htp"); w.key("desk"); w.str(deskMode); w.endObj();
+  w.endArr();
+  w.key("loss"); w.str(in.fallbackToWeb ? "release" : "hold");
+  w.key("name"); w.str(detail::orStr(in.name, detail::orStr(d.nodeName, "node")));
+  w.endObj();
+
+  w.key("interfaces"); w.arr();
+  for (uint8_t k = 0; d.interfaces && k < d.interfaceCount; k++) {
+    w.obj();
+    w.key("iface"); w.str(detail::orStr(d.interfaces[k].iface, ""));
+    w.key("address"); w.str(detail::orStr(d.interfaces[k].address, ""));
+    w.key("internal"); w.boolean(false);
+    w.key("netmask"); w.str(detail::orStr(d.interfaces[k].netmask, ""));
+    w.endObj();
+  }
+  w.endArr();
+
+  // The node's sockets are bound in every mode; mode only decides whether the
+  // frames are used.
+  char group[20] = "239.255.";
+  {
+    size_t n = 8;
+    uint8_t hi = uint8_t(in.sacnUniverse >> 8), lo = uint8_t(in.sacnUniverse);
+    uint8_t parts[2] = {hi, lo};
+    for (uint8_t i = 0; i < 2; i++) {
+      uint8_t v = parts[i];
+      if (v >= 100) group[n++] = char('0' + v / 100);
+      if (v >= 10) group[n++] = char('0' + v / 10 % 10);
+      group[n++] = char('0' + v % 10);
+      if (i == 0) group[n++] = '.';
+    }
+    group[n] = 0;
+  }
+  w.key("listening"); w.arr();
+  w.obj();
+  w.key("protocol"); w.str("artnet"); w.key("address"); w.str("0.0.0.0"); w.key("port"); w.u(6454);
+  w.key("ok"); w.boolean(true); w.key("error"); w.null(); w.key("broadcast"); w.boolean(true);
+  w.endObj();
+  w.obj();
+  w.key("protocol"); w.str("sacn"); w.key("address"); w.str("0.0.0.0"); w.key("port"); w.u(5568);
+  w.key("ok"); w.boolean(true); w.key("error"); w.null();
+  w.key("groups"); w.arr(); w.str(group); w.endArr();
+  w.key("groupErrors"); w.rawValue("[]");
+  w.endObj();
+  w.endArr();
+
+  char label[12];
+  detail::portAddressLabel(label, in.universe);
+  int32_t age = -1;
+  const int32_t ages[3] = {in.artAgeMs, in.sacnAgeMs, in.usbAgeMs};
+  for (int32_t a : ages) if (a >= 0 && (age < 0 || a < age)) age = a;
+  w.key("lines"); w.arr();
+  w.obj();
+  w.key("universe"); w.u(in.universe);
+  w.key("merge"); w.str("htp");
+  w.key("desk"); w.str(deskMode);
+  w.key("artnet"); w.str(label);
+  w.key("sacn"); w.u(in.sacnUniverse);
+  w.key("state"); w.str(state);
+  w.key("lastAt"); w.null();
+  w.key("ageMs"); if (age >= 0) w.u(uint32_t(age)); else w.null();
+  w.key("sources"); w.arr();
+  if (in.artAgeMs >= 0) detail::inputSource(w, "artnet", "artnet", "Art-Net", in.artActive, in.artAgeMs, in.artSources);
+  if (in.sacnAgeMs >= 0) detail::inputSource(w, "sacn", "sacn", "sACN", in.sacnActive, in.sacnAgeMs, in.sacnSources);
+  if (in.usbAgeMs >= 0) detail::inputSource(w, "usb", "usb", "USB widget", in.usbActive, in.usbAgeMs, 1);
+  w.endArr();
+  w.key("exceeded"); w.null();
+  w.endObj();
+  w.endArr();
+  w.key("unlistened"); w.rawValue("[]");
+  w.key("stats"); w.rawValue("{}");
+  w.key("problems"); w.rawValue("[]");
+  w.key("foreign"); w.u(0);
+  w.key("polls"); w.null();
+
+  const bool live = !strcmp(state, "live");
+  w.key("summary"); w.obj();
+  w.key("enabled"); w.boolean(enabled);
+  if (!enabled) { w.key("text"); w.str("Input off"); }
+  else {
+    w.key("text");
+    if (live) {
+      char t[64] = "Following ";
+      size_t n = 10;
+      const char* names[3] = {in.artActive ? "Art-Net" : nullptr, in.sacnActive ? "sACN" : nullptr,
+                              in.usbActive ? "USB widget" : nullptr};
+      bool first = true;
+      for (const char* nm : names) {
+        if (!nm) continue;
+        if (!first) { t[n++] = ','; t[n++] = ' '; }
+        size_t l = strlen(nm);
+        memcpy(t + n, nm, l); n += l;
+        first = false;
+      }
+      memcpy(t + n, " on 1 of 1 universe", 20);
+      w.str(t);
+    } else if (!strcmp(state, "held")) w.str("No signal — holding the last look");
+    else if (!strcmp(state, "lost")) w.str("No signal — the desk has the rig");
+    else w.str("Listening — no signal yet");
+    w.key("level"); w.str(live ? "ok" : "warn");
+    w.key("live"); w.u(live ? 1 : 0);
+    w.key("universes"); w.u(1);
+  }
+  w.endObj();
+  w.key("lanAllowed"); w.boolean(true);
+  w.endObj();
+  return w.finish();
+}
+
+// ── POST replies ──────────────────────────────────────────────────────────────
+enum class Reply : uint8_t {
+  State, Dmx, Input, Cues, Show, Looks,      // GET
+  Ok, Error, CuesRefused,                    // {ok}, {error}, {error, cues}
+  Fixture, Added, Moved, Removed, Group, Scene, Chase, Fx, Output, Raw, Identify,
+};
+
+struct ReplyArgs {
+  Reply kind;
+  const char* error;    // Error, CuesRefused: the refusal text (a literal)
+  uint32_t slots;       // Added, Moved, Identify: fixture slot bits
+  uint8_t slot;         // Fixture, Group, Scene
+  uint8_t count;        // Removed
+  bool chasePaused;     // Ok after scenes/recall stopped the cue runner
+};
+
+inline bool writeReply(JsonWriter& w, const DeskFacts& d, const ReplyArgs& a) {
+  switch (a.kind) {
+    case Reply::State: return writeState(w, d);
+    case Reply::Dmx: return writeDmx(w, d);
+    case Reply::Input: return writeInput(w, d);
+    case Reply::Cues: return writeCues(w);
+    case Reply::Show: return writeShow(w, d);
+    case Reply::Looks: return writeLooks(w);
+    case Reply::Error:
+      w.obj(); w.key("error"); w.str(detail::orStr(a.error, "refused")); w.endObj();
+      return w.finish();
+    case Reply::CuesRefused:
+      w.obj(); w.key("error"); w.str(detail::orStr(a.error, kNotOnNode));
+      w.key("cues"); detail::cues(w); w.endObj();
+      return w.finish();
+    default: break;
+  }
+  w.obj();
+  w.key("ok"); w.boolean(true);
+  switch (a.kind) {
+    case Reply::Ok:
+      if (a.chasePaused) { w.key("chasePaused"); w.boolean(true); }
+      break;
+    case Reply::Fixture:
+      w.key("fixture");
+      if (d.fixtures && a.slot < d.fixtureSlots) detail::fixture(w, d.fixtures[a.slot], a.slot, d.web);
+      else w.null();
+      break;
+    case Reply::Added:
+    case Reply::Moved:
+    case Reply::Identify:
+      w.key(a.kind == Reply::Added ? "added" : a.kind == Reply::Moved ? "moved" : "identifying");
+      w.arr();
+      for (uint8_t k = 0; d.fixtures && k < d.fixtureSlots && k < 32; k++) {
+        if (!((a.slots >> k) & 1u)) continue;
+        if (a.kind == Reply::Added) detail::fixture(w, d.fixtures[k], k, d.web);
+        else if (a.kind == Reply::Identify) w.id('f', k + 1u);
+        else {
+          w.obj();
+          w.key("id"); w.id('f', k + 1u);
+          w.key("universe"); w.u(0);
+          w.key("address"); w.u(d.fixtures[k].start);
+          w.endObj();
+        }
+      }
+      w.endArr();
+      break;
+    case Reply::Removed:
+      w.key("removed"); w.u(a.count);
+      w.key("groupsRemoved"); w.rawValue("[]");
+      break;
+    case Reply::Group:
+      w.key("group");
+      if (d.groups && a.slot < d.groupSlots) detail::group(w, d, a.slot); else w.null();
+      break;
+    case Reply::Scene:
+      w.key("scene");
+      if (d.scenes && a.slot < d.sceneSlots && d.scenes[a.slot]) detail::scene(w, d, a.slot); else w.null();
+      break;
+    case Reply::Chase: w.key("chase"); detail::chase(w, d); break;
+    case Reply::Fx: w.key("fx"); detail::fx(w, d); break;
+    case Reply::Output:
+      w.key("output"); detail::output(w, d);
+      w.key("serial"); w.null();
+      w.key("error"); w.null();
+      break;
+    case Reply::Raw: w.key("raw"); w.rawValue("{}"); break;
+    default: break;
+  }
+  w.endObj();
+  return w.finish();
+}
+
+// One pull of any reply (the WindowSink re-run of pullWindow).
+inline size_t pullReply(const DeskFacts& d, const ReplyArgs& a, JsonWriter& w, uint8_t* buf, size_t maxLen,
+                        size_t index) {
+  WindowSink s = {reinterpret_cast<char*>(buf), maxLen, index, 0, 0};
+  if (maxLen == 0) return 0;
+  w.begin(windowSink, &s);
+  writeReply(w, d, a);
   return s.written;
 }
 
