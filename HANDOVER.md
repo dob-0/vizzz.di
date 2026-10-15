@@ -22,15 +22,18 @@ address the MIDI tab and Audio controls now hide (the browser refuses them there
 
 **Cloud routines on account b (env di.full; watch `cloud/` and `claude/` prefixes):**
 - DONE trig_01PpNJhoAnxtUDcRW9UNNxdU — D2 → di.iiii PR #941. DONE trig_01W3P7VxN1RJQkAkJTwqQuCz — V1 → vizzz.di PR #6 (merged).
-- RUNNING (fire 2026-10-15T00:30Z = 04:30 local) trig_01Br8msoAd6gvicQ3ieu5ubc — **V2** static serving (Sonnet) →
-  `cloud/desk-ui-static-2026-10-15`, draft PR to int/2026-10-15; removes APP_HTML, 301s for /control /patch /scenes /vj, kRoutes Static kind.
-- RUNNING (same fire) trig_01DGpJfhMQCZxQ3kgxV2MAPP — **V3** bridge core (Opus designs+builds) → `cloud/desk-bridge-core-2026-10-15`,
-  draft PR to int/2026-10-15; profiles, fixture<->web layer, scene derivation, streaming JSON writer, docs/DESK_BRIDGE_CORE.md,
-  vendored test/fixtures/api-contract.v1.json (di 091a1a6).
+- DONE trig_01Br8msoAd6gvicQ3ieu5ubc — V2 → PR #7 (merged). DONE trig_01DGpJfhMQCZxQ3kgxV2MAPP — V3 → PR #8 (merged).
+  int now: desk UI served from flash (7 files, ETag/304, 7 redirects), bridge core `include/vizzz_desk.h` + `docs/DESK_BRIDGE_CORE.md`.
+  Measured on aylmo: native 53/53; Flash 1,021,341 B (77.9 %); gate free 282,800 B PASS; routes 63/63/63; http 40/40 vs simulator.
+- RUNNING (fired 00:2xZ) trig_01GF9DfvZ9vGuFsNJ39tCAzx — **V4** /api routes (Opus) → `cloud/desk-api-routes-2026-10-15`, draft PR to
+  int/2026-10-15. Brief answers V3's 7 open questions (refuse on:false; sN.name/sN.fade NVS keys; api/dmx = outVals; freeze per request;
+  refuse non-contiguous groups; patching never writes the web layer; 503 JSON under 32 KB max block). ArduinoJson 7 pinned in lib_deps.
 The two earlier routines (trig_017au3…, trig_01WnJw…) belong to the info@ login and are not visible from account b.
 
-**Next (in order, plan §4):** review V2 + V3 (build on aylmo with the gate; V2 not flashed) → merge → dispatch **V4** (/api routes,
-ArduinoJson pinned; Sonnet + Opus review) → flash V2+V3+V4 together, prove on the node with di's `test-http.js --class a DESK_URL=http://<node>` → D3 + V5 (then re-run heap_probe with
+**Next (in order, plan §4):** review V4 (build on aylmo with the gate) → merge → **flash** (first time since 8168931) → prove on the node:
+di's `DESK_URL=http://192.168.88.66 node serverXR/src/lighting/tests/test-http.js --class a` from the di.iiii checkout on branch
+cloud/desk-api-contract-2026-10-15, `tools/heap_probe.mjs`, `check_http_api.sh`, `net_probe.py verify`; then `di-show http://192.168.88.66/`
+for the owner → dispatch D3 + V5 (stream) → D4 → D5 + V6 → V7 → D3 + V5 (then re-run heap_probe with
 1/3/5 clients on the stream, `heap_max_block` must stay > 64 KB) → D4 → D5 + V6 (fixtures 32) → V7 on the real node.
 Owner decisions still open: login/token on operator routes; DMX Out blackout = web-layer clear or /panic; N689 conversation.
 
