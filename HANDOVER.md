@@ -7,20 +7,30 @@ Flash 933,261 B (71.2 %). **V0 baseline measured** (`tools/heap_probe.mjs --node
 the Q3 decision in `docs/DI_DESK_UI_PLAN.md` §7: **MAX_FIXTURES 32, taken at V6 after V3** (streaming writer), never before.
 Still not proven: a real light on the DMX cable; the 1 h soak (N686).
 
-**PRs on dob-0/vizzz.di:** #1 #2 #3 #4 (plan) #5 (V0) all MERGED into `int/2026-10-15` (pushed).
+**PRs on dob-0/vizzz.di:** #1 #2 #3 #4 (plan) #5 (V0) #6 (V1) all MERGED into `int/2026-10-15` (pushed). V1 needed one fix:
+`tools/flash_gate.py` used `__file__`, undefined when PlatformIO exec()s an extra_script, so `pio run` FAILED; now `_root()` falls back
+to the cwd. Gate on aylmo: 939,856 of 1,310,720 B used, 370,864 B free, PASS; native 40/40; `fetch_desk_ui.py --check` PASS. Not flashed
+(no behaviour change). **Rule: the node is NOT flashed with V2 (static serving) until V4 (the /api bridge) is merged** — a V2-only node
+shows di's desk saying offline. The node stays on 8168931 until then.
+**di.iiii PR #941** (D2 API contract, draft to dev, built on #939): verified in a temp worktree — `lint:api-contract` ok (59 routes, 57
+distinct ui paths), test-http 123 ok, `--class a` 23 all passing, test.js 133 ok. Contract keys: `entries[]`, top-level `state_keys`
+{required, nested_required, optional}. Merge order on dev: #939 then #941 (owner; the classifier blocks my PR writes on di.iiii).
 **di.iiii PR #939** (D0 inventory + D1 honest render/caps, draft to dev): reviewed, code reads correct, suites verified locally in a temp
 worktree (test.js 133 ok, test-http 123 ok, test-wiring 22 ok, 0 fail). My PR comment and the ready flag were BLOCKED by the permission
 classifier (external write) — owner: look at the desk on dev after merge, or merge #939 yourself; note that on a plain-http non-localhost
 address the MIDI tab and Audio controls now hide (the browser refuses them there anyway).
 
-**Cloud routines on account b (fire 2026-10-14T23:46Z = 03:46 local, env di.full, Sonnet; watch `cloud/` and `claude/` prefixes):**
-- trig_01PpNJhoAnxtUDcRW9UNNxdU — di.iiii **D2** desk API contract → `cloud/desk-api-contract-2026-10-15`, draft PR to dev (builds on #939).
-- trig_01W3P7VxN1RJQkAkJTwqQuCz — vizzz.di **V1** build script (desk_ui.lock, fetch_desk_ui.py, desk_ui_gz.h, flash_gate.py) →
-  `cloud/desk-ui-build-2026-10-15`, draft PR to int/2026-10-15. The sandbox cannot run pio: the lead builds on aylmo before merging.
+**Cloud routines on account b (env di.full; watch `cloud/` and `claude/` prefixes):**
+- DONE trig_01PpNJhoAnxtUDcRW9UNNxdU — D2 → di.iiii PR #941. DONE trig_01W3P7VxN1RJQkAkJTwqQuCz — V1 → vizzz.di PR #6 (merged).
+- RUNNING (fire 2026-10-15T00:30Z = 04:30 local) trig_01Br8msoAd6gvicQ3ieu5ubc — **V2** static serving (Sonnet) →
+  `cloud/desk-ui-static-2026-10-15`, draft PR to int/2026-10-15; removes APP_HTML, 301s for /control /patch /scenes /vj, kRoutes Static kind.
+- RUNNING (same fire) trig_01DGpJfhMQCZxQ3kgxV2MAPP — **V3** bridge core (Opus designs+builds) → `cloud/desk-bridge-core-2026-10-15`,
+  draft PR to int/2026-10-15; profiles, fixture<->web layer, scene derivation, streaming JSON writer, docs/DESK_BRIDGE_CORE.md,
+  vendored test/fixtures/api-contract.v1.json (di 091a1a6).
 The two earlier routines (trig_017au3…, trig_01WnJw…) belong to the info@ login and are not visible from account b.
 
-**Next (in order, plan §4):** review D2 + V1 → merge V1 into int, `pio run -e esp32dev` with the gate, flash → dispatch **V2** (static
-serving, needs V1) and **V3** (bridge core; Opus designs, Sonnet builds; needs D2's contract) → V4 → D3 + V5 (then re-run heap_probe with
+**Next (in order, plan §4):** review V2 + V3 (build on aylmo with the gate; V2 not flashed) → merge → dispatch **V4** (/api routes,
+ArduinoJson pinned; Sonnet + Opus review) → flash V2+V3+V4 together, prove on the node with di's `test-http.js --class a DESK_URL=http://<node>` → D3 + V5 (then re-run heap_probe with
 1/3/5 clients on the stream, `heap_max_block` must stay > 64 KB) → D4 → D5 + V6 (fixtures 32) → V7 on the real node.
 Owner decisions still open: login/token on operator routes; DMX Out blackout = web-layer clear or /panic; N689 conversation.
 
