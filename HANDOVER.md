@@ -1,57 +1,27 @@
-# Lead hand-over — 2026-10-15 03:5x (account b, gevorg_aram1@; took over from info@ at 03:3x, ledger N691.4–.6)
+# Lead hand-over — 2026-10-15 14:2x (account b, fresh 5 h window; V4 landed and flashed)
 
-**Node BA6FCC (192.168.88.66, USB /dev/ttyUSB0, dob ACL until replug):** runs `int/2026-10-15` **8168931** = a03222b + V0
-(`heap_free`, `heap_max_block`, `ws_clients` in /status, the /ws push and /node/manifest). Native 38/38; esp32 RAM 57,748 B (17.6 %),
-Flash 933,261 B (71.2 %). **V0 baseline measured** (`tools/heap_probe.mjs --node http://192.168.88.66 --clients 3`): largest free block
-110,580 B idle (2 ws clients were already open), 98,292 B with 5 ws clients, fully recovered after; 0 of 45 polls failed. Numbers and
-the Q3 decision in `docs/DI_DESK_UI_PLAN.md` §7: **MAX_FIXTURES 32, taken at V6 after V3** (streaming writer), never before.
-Still not proven: a real light on the DMX cable; the 1 h soak (N686).
+**Node BA6FCC (192.168.88.66):** runs `int/2026-10-15` **defb77e** = V0–V4: di's desk UI served from flash at `/` (ETag/304), the
+/api bridge (23 class-a real, 28 static/refusing, 8 at 404 JSON; ArduinoJson 7.4.2; per-request frozen block; 503 under 32 KB max block).
+Proven on the node: check_http_api 61/61, di's `test-http.js --class a` 23/23, net_probe 13/13, /api/state 3,981 B in 48 ms, heap max
+block 94,196 B idle / 86,004 B with 3 ws clients. Shown to the owner with di-show. Not proven: a light on the DMX cable; the 1 h soak;
+the owner's phone; CPU cost of the windowed pull at 32 fixtures (V7).
 
-**PRs on dob-0/vizzz.di:** #1 #2 #3 #4 (plan) #5 (V0) #6 (V1) all MERGED into `int/2026-10-15` (pushed). V1 needed one fix:
-`tools/flash_gate.py` used `__file__`, undefined when PlatformIO exec()s an extra_script, so `pio run` FAILED; now `_root()` falls back
-to the cwd. Gate on aylmo: 939,856 of 1,310,720 B used, 370,864 B free, PASS; native 40/40; `fetch_desk_ui.py --check` PASS. Not flashed
-(no behaviour change). **Rule: the node is NOT flashed with V2 (static serving) until V4 (the /api bridge) is merged** — a V2-only node
-shows di's desk saying offline. The node stays on 8168931 until then.
-**di.iiii PR #941** (D2 API contract, draft to dev, built on #939): verified in a temp worktree — `lint:api-contract` ok (59 routes, 57
-distinct ui paths), test-http 123 ok, `--class a` 23 all passing, test.js 133 ok. Contract keys: `entries[]`, top-level `state_keys`
-{required, nested_required, optional}. Merge order on dev: #939 then #941 (owner; the classifier blocks my PR writes on di.iiii).
-**di.iiii PR #939** (D0 inventory + D1 honest render/caps, draft to dev): reviewed, code reads correct, suites verified locally in a temp
-worktree (test.js 133 ok, test-http 123 ok, test-wiring 22 ok, 0 fail). My PR comment and the ready flag were BLOCKED by the permission
-classifier (external write) — owner: look at the desk on dev after merge, or merge #939 yourself; note that on a plain-http non-localhost
-address the MIDI tab and Audio controls now hide (the browser refuses them there anyway).
+**Owed from V4's cloud run** (its sandbox died at the 5 h limit before the PR): DESK_BRIDGE_CORE.md §4 decision text, AGENTS.md
+DeskApi route rule; its reviewer verdict (lead reviewed instead). The branch is merged (no PR exists for V4).
 
-**Cloud routines on account b (env di.full; watch `cloud/` and `claude/` prefixes):**
-- DONE trig_01PpNJhoAnxtUDcRW9UNNxdU — D2 → di.iiii PR #941. DONE trig_01W3P7VxN1RJQkAkJTwqQuCz — V1 → vizzz.di PR #6 (merged).
-- DONE trig_01Br8msoAd6gvicQ3ieu5ubc — V2 → PR #7 (merged). DONE trig_01DGpJfhMQCZxQ3kgxV2MAPP — V3 → PR #8 (merged).
-  int now: desk UI served from flash (7 files, ETag/304, 7 redirects), bridge core `include/vizzz_desk.h` + `docs/DESK_BRIDGE_CORE.md`.
-  Measured on aylmo: native 53/53; Flash 1,021,341 B (77.9 %); gate free 282,800 B PASS; routes 63/63/63; http 40/40 vs simulator.
-- RUNNING (fired 00:2xZ) trig_01GF9DfvZ9vGuFsNJ39tCAzx — **V4** /api routes (Opus) → `cloud/desk-api-routes-2026-10-15`, draft PR to
-  int/2026-10-15. Brief answers V3's 7 open questions (refuse on:false; sN.name/sN.fade NVS keys; api/dmx = outVals; freeze per request;
-  refuse non-contiguous groups; patching never writes the web layer; 503 JSON under 32 KB max block). ArduinoJson 7 pinned in lib_deps.
-The two earlier routines (trig_017au3…, trig_01WnJw…) belong to the info@ login and are not visible from account b.
+**PRs:** vizzz.di #1–#8 merged. di.iiii #939 (D0+D1) and #941 (D2) wait for the owner's look and merge into dev (in that order).
 
-**LIMIT (owner 04:3x: move to the other, ping all, keep it auto):** account b is at 94 % of its 5 h window; info@ is at 1 %.
-The V4 cloud run continues on its own. Landing it (review, merge, build, flash, proof) is written as a brief:
-`docs/briefs/2026-10-15-v4-landing.md`. The permission classifier refused this session's attempt to arm a watcher that starts a
-headless executor with hardware access, so the landing starts by a lead on the info@ login, or by the owner with the one command
-at the end of the brief. Live sessions dob-f5, dob-2d, dob-e7, dob-6c were pinged (dob-eb refused by the classifier). After V4, a
-logged-in lead dispatches D3 + V5 (RemoteTrigger is OAuth-only).
-
-**Next (in order, plan §4):** review V4 (build on aylmo with the gate) → merge → **flash** (first time since 8168931) → prove on the node:
-di's `DESK_URL=http://192.168.88.66 node serverXR/src/lighting/tests/test-http.js --class a` from the di.iiii checkout on branch
-cloud/desk-api-contract-2026-10-15, `tools/heap_probe.mjs`, `check_http_api.sh`, `net_probe.py verify`; then `di-show http://192.168.88.66/`
-for the owner → dispatch D3 + V5 (stream) → D4 → D5 + V6 → V7 → D3 + V5 (then re-run heap_probe with
-1/3/5 clients on the stream, `heap_max_block` must stay > 64 KB) → D4 → D5 + V6 (fixtures 32) → V7 on the real node.
-Owner decisions still open: login/token on operator routes; DMX Out blackout = web-layer clear or /panic; N689 conversation.
+**Next (plan §4):** D3 (stream transport in di's UI, caps.stream) + V5 (SSE /api/dmx/stream, client cap, heap with 1/3/5 clients) →
+D4 (bundle export) → D5 (This node section) + V6 (MAX_FIXTURES 32, NVS v2) → V7 (simulator parity, phone, latency vs old console).
+A logged-in lead creates the cloud routines (RemoteTrigger is OAuth-only). Owner decisions open: login/token; DMX Out blackout mapping.
 
 ```bash
 cd ~/work/vizzz.di && git checkout int/2026-10-15 && git pull
-PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio test -e native      # 38 green
-PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio run -e esp32dev -t upload
-node tools/heap_probe.mjs --node http://192.168.88.66 --clients 3 --seconds 30   # heap idle / loaded / after
-python3 tools/net_probe.py verify --node 192.168.88.66 --ch 64; tools/check_http_api.sh http://192.168.88.66
+PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio run -e esp32dev -t upload   # gate prints used/free
+tools/check_http_api.sh http://192.168.88.66; node tools/heap_probe.mjs --node http://192.168.88.66 --clients 3
+di-show http://192.168.88.66/   # di's desk, served by the node
 ```
-Ledger rows: N668 N669 N671 N677 N680 N686 N689 N690 N691 (.4 .5 .6). Memory: reference_vizzz_node_ba6fcc.md.
+Ledger rows: N668 N669 N671 N677 N680 N686 N689 N690 N691 (.4–.11) N738. Memory: reference_vizzz_node_ba6fcc.md.
 
 ---
 
