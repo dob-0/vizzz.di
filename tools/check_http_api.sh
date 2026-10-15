@@ -132,6 +132,12 @@ jsonbody 200 'd["caps"]["stream"] is True' "/api/state says caps.stream" "$base/
 jsonbody 200 'isinstance(d["sse_clients"], int)' "/status has sse_clients" "$base/status"
 jsonbody 405 'd["allow"] == "GET"' "POST /api/dmx/stream" -X POST -H "$J" -d '{}' "$base/api/dmx/stream"
 has no 'access-control-allow-origin' "no ACAO on the stream" -m 1 "$base/api/dmx/stream"
+# A browser's EventSource always sends this header; the library types such a request RCT_EVENT and a
+# callback handler never matches it (404 on the node, 2026-10-15). Plain curl above does not catch it.
+stream_accept="$(curl -s -m 2 -o /dev/null -w '%{http_code} %{content_type}' -H 'Accept: text/event-stream' "$base/api/dmx/stream" || true)"
+if [[ "$stream_accept" == "200 text/event-stream"* ]]; then pass=$((pass+1)); echo "ok   GET /api/dmx/stream with Accept: text/event-stream -> 200 text/event-stream"
+else fail=$((fail+1)); echo "FAIL GET /api/dmx/stream with Accept: text/event-stream -> got '$stream_accept'"; fi
+has no 'access-control-allow-origin' "no ACAO on the stream with Accept: text/event-stream" -m 1 -H 'Accept: text/event-stream' "$base/api/dmx/stream"
 stream_out="$(python3 - "$base" <<'PY'
 import http.client, json, sys, time, urllib.parse
 u = urllib.parse.urlparse(sys.argv[1]); host, port = u.hostname, u.port or 80
