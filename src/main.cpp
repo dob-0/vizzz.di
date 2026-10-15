@@ -8,6 +8,7 @@
 
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include <AsyncEventSource.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
 
@@ -248,6 +249,10 @@ static void loadConfig() {
 // ── Runtime state ─────────────────────────────────────────────────────────────
 static AsyncWebServer server(80);
 static AsyncWebSocket ws("/ws");
+// GET /api/dmx/stream (plan step V5). Not added with addHandler(): route() gates
+// the request (heap floor, client cap) and calls sse.handleRequest(r), so a
+// plain `curl` without `Accept: text/event-stream` gets the stream too.
+static AsyncEventSource sse("/api/dmx/stream");
 static WiFiUDP        artInUdp;
 static WiFiUDP        artOutUdp;
 static WiFiUDP        sacnUdp;
@@ -429,6 +434,13 @@ static bool holdReleased = false;
 // with 503 "node busy" because the largest free block was under 32 KB.
 static std::atomic<uint32_t> apiReplies{0};
 static std::atomic<uint32_t> apiBusy{0};
+
+// The DMX stream's sender state. Owned by loop(); the connect callback (the
+// async_tcp task) only raises sseWantKey, so no lock is shared with it.
+static vizzz::desk::stream::Streamer sseStream;
+static char sseBuf[vizzz::desk::stream::kBufSize];
+static std::atomic<bool> sseWantKey{false};      // a client just joined: next event is a key frame
+static std::atomic<uint8_t> ssePending{0};       // accepted, not yet registered with sse (cap accounting)
 static volatile uint32_t artOutPackets = 0;   // Art-Net OUT frames sent (/api/state status.packetsSent)
 
 // Mutex guards webVals and all fade state across cores
@@ -1763,7 +1775,7 @@ static const char* resetReasonName(esp_reset_reason_t r) {
 // One snapshot of the health facts; /status, the /ws push and the manifest
 // all print it through vizzz::healthJsonFields.
 static vizzz::HealthFacts healthFacts() {
-  return vizzz::HealthFacts{ESP.getFreeHeap(), ESP.getMaxAllocHeap(), uint32_t(ws.count())};
+  return vizzz::HealthFacts{ESP.getFreeHeap(), ESP.getMaxAllocHeap(), uint32_t(ws.count()), uint32_t(sse.count())};
 }
 
 static size_t fillStatusJSON(char* buf, size_t n) {
@@ -1791,7 +1803,7 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     xSemaphoreGive(gLock);
   }
 
-  char healthFields[96];
+  char healthFields[128];
   vizzz::healthJsonFields(healthFields, sizeof(healthFields), healthFacts());
 
   int written = snprintf(buf, n,
@@ -2164,7 +2176,7 @@ static String nodeManifestJSON() {
     first = false;
   }
   const uint16_t pa = universe();
-  char healthFields[96];
+  char healthFields[128];
   vizzz::healthJsonFields(healthFields, sizeof(healthFields), healthFacts());
   snprintf(buf, sizeof(buf),
       "]},"
@@ -3421,6 +3433,24 @@ static void apiCuesRefused(AsyncWebServerRequest* r) {
   deskSendSmall(r, 200, a);
 }
 
+// GET /api/dmx/stream. The cap and the heap floor are answered here, with
+// JSON, before the library sends a 200. The frames are sent from loop()
+// (streamTick), never from this handler.
+static void ssePendingDone() {
+  uint8_t v = ssePending.load();
+  while (v && !ssePending.compare_exchange_weak(v, uint8_t(v - 1))) {}
+}
+
+static void apiDmxStream(AsyncWebServerRequest* r) {
+  if (vizzz::desk::stream::full(sse.count(), ssePending.load())) {
+    deskError(r, 503, vizzz::desk::stream::kFullError);
+    return;
+  }
+  ssePending.fetch_add(1);
+  r->onDisconnect(ssePendingDone);   // only fires if the client leaves before the library takes it over
+  sse.handleRequest(r);
+}
+
 static void apiAbsent(AsyncWebServerRequest* r) { deskError(r, 404, dk::kNotOnNode); }
 
 // The DeskApi gate (vizzz::desk::gateDesk), then decision 7's heap floor.
@@ -4246,6 +4276,12 @@ static void setupWeb() {
   // works, class b answers static shapes or {error:"not on this node"}, class c 404.
   route("/api/state", [](AsyncWebServerRequest* r){ deskRead(r, dk::Reply::State, true); });
   route("/api/dmx", [](AsyncWebServerRequest* r){ deskRead(r, dk::Reply::Dmx, false); });
+  route("/api/dmx/stream", apiDmxStream);
+  sse.onConnect([](AsyncEventSourceClient* c){
+    ssePendingDone();
+    sseWantKey.store(true);   // the next streamTick() sends everyone a key frame
+    c->send(nullptr, nullptr, 0, vizzz::desk::stream::kRetryMs);   // "retry: 1000" (dmxstream.js RETRY_MS)
+  });
   route("/api/input", [](AsyncWebServerRequest* r){ if (r->method() == HTTP_GET) apiInputGet(r); else apiInputPost(r); });
   route("/api/input/release", apiInputRelease);
   route("/api/master", apiMaster);
@@ -4454,6 +4490,33 @@ static void serviceStaJoin(uint32_t now) {
   staAttemptMs = now;
 }
 
+// GET /api/dmx/stream sender, called from loop(). A frame is copied under gLock
+// (2 ms at most) and gLock is released before the library is touched; the event
+// text is built in sseBuf, the one buffer. The library then makes one shared
+// copy for all clients (its own String; the only heap this path allocates).
+static void streamTick(uint32_t now) {
+  namespace st = vizzz::desk::stream;
+  if (sseStream.primed && !st::tickDue(now, sseStream.lastTick)) return;
+  if (sse.count() == 0 || ESP.getMaxAllocHeap() < dk::kMinFreeBlock) {
+    sseStream.forget();   // nobody to tell, or no room to build: whoever comes next gets a key frame
+    return;
+  }
+  uint8_t frame[MAX_CH];
+  st::Meta meta;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(2)) != pdTRUE) return;   // try again next pass
+  memcpy(frame, outVals, MAX_CH);
+  meta.master = masterDimmer;
+  meta.blackout = false;   // as /api/dmx: the node has no blackout flag
+  xSemaphoreGive(gLock);
+  const bool wantKey = sseWantKey.exchange(false);
+  const size_t n = sseStream.step(now, frame, meta, wantKey, sseBuf, sizeof(sseBuf));
+  if (!n) {
+    if (wantKey) sseWantKey.store(true);   // not sent yet: keep the request
+    return;
+  }
+  if (sse.send(sseBuf, vizzz::desk::stream::kEvent) == AsyncEventSource::DISCARDED) sseStream.forget();
+}
+
 void loop() {
   if (pendingReboot) { delay(150); ESP.restart(); }
 
@@ -4620,6 +4683,7 @@ void loop() {
   if (!webEnabled && !webStopped && millis() >= WEB_GRACE_MS) {
     webStopped = true;
     ws.closeAll();
+    sse.close();
     server.end();
     Serial.printf("Web disabled after %lu ms grace window\n", (unsigned long)WEB_GRACE_MS);
   }
@@ -4635,5 +4699,6 @@ void loop() {
       }
       ws.cleanupClients();
     }
+    streamTick(now);
   }
 }

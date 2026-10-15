@@ -69,11 +69,19 @@ def main() -> int:
     # V4 desk API: kRoutes DeskApi rows = kDeskApi rows = the vendored contract.
     desk_h = (ROOT / "include" / "vizzz_desk.h").read_text()
     mask = {"kGet": {"GET"}, "kPost": {"POST"}, "kGet | kPost": {"GET", "POST"}}
-    desk = {p: (mask[m], c.lower()) for p, m, c in
-            re.findall(r'\{"(/api/[^"]*)",\s*(kGet \| kPost|kGet|kPost),\s*ApiClass::(\w)\}', desk_h)}
+    row = r'\{"(/api/[^"]*)",\s*(kGet \| kPost|kGet|kPost),\s*ApiClass::(\w)\}'
+    # V5: kDeskExtra holds the desk paths that are not in the contract (the stream).
+    extra_m = re.search(r"kDeskExtra\[\] = \{(.*?)\};", desk_h, re.S)
+    extra = {p: (mask[m], c.lower()) for p, m, c in re.findall(row, extra_m.group(1) if extra_m else "")}
+    if extra_m:
+        desk_h = desk_h.replace(extra_m.group(0), "")
+    desk = {p: (mask[m], c.lower()) for p, m, c in re.findall(row, desk_h)}
     desk_kind = {p for p, k in table.items() if k == "DeskApi"}
-    for p in sorted(desk_kind ^ desk.keys()):
-        errors.append(f"{p}: DeskApi in kRoutes and vizzz::desk::kDeskApi disagree")
+    for p in sorted(desk_kind ^ (desk.keys() | extra.keys())):
+        errors.append(f"{p}: DeskApi in kRoutes and vizzz::desk::kDeskApi/kDeskExtra disagree")
+    for p in sorted(desk.keys() & extra.keys()):
+        errors.append(f"{p}: in both kDeskApi and kDeskExtra")
+    desk_all = {**desk, **extra}
     if "h.setFilter(" not in main_cpp:
         errors.append("route() no longer adds the exact-URL filter DeskApi routes rely on")
 
@@ -106,10 +114,10 @@ def main() -> int:
         if len(cells) == 4 and cells[1] in ("a", "b", "c") and cells[0] in ("GET", "POST", "GET/POST"):
             for p in re.findall(r"`(/api/[^`]*)`", cells[2]):
                 seen.add(p)
-                if p not in desk:
+                if p not in desk_all:
                     errors.append(f"README desk table lists {p}, not in kDeskApi")
-                elif (set(cells[0].split("/")), cells[1]) != desk[p]:
-                    errors.append(f"README {p}: {cells[0]} class {cells[1]} but kDeskApi {desk[p]}")
+                elif (set(cells[0].split("/")), cells[1]) != desk_all[p]:
+                    errors.append(f"README {p}: {cells[0]} class {cells[1]} but kDeskApi {desk_all[p]}")
             continue
         if len(cells) != 6 or cells[0] not in ("GET", "POST", "GET/POST"):
             continue
@@ -140,7 +148,8 @@ def main() -> int:
     print(f"static: {len(files)} files + {len(redirects)} redirects = {len(static)} Static routes")
     counts = {c: sum(len(m) for m, k in desk.values() if k == c) for c in "abc"}
     print(f"desk api: {len(desk)} paths, method+path calls: class a {counts['a']}, b {counts['b']}, c {counts['c']} "
-          f"= kRoutes DeskApi {len(desk_kind)} = {len(contracts)} contract file(s)")
+          f"+ {len(extra)} outside the contract ({' '.join(sorted(extra))}) = kRoutes DeskApi {len(desk_kind)}; "
+          f"the {len(desk)} = {len(contracts)} contract file(s)")
     print(f"routes: {len(table)} in table, {len(registered)} registered, "
           f"{len(seen)} in README -> {'FAIL' if errors else 'PASS'}")
     return 1 if errors else 0

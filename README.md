@@ -208,9 +208,9 @@ first lines (before the firmware starts) are at 115200 and look garbled at 25000
 `/status` adds `usb_active`, `usb_frames` (label-6 frames applied since boot) and
 `usb_baud`; the manifest has a `usb` protocol entry with the same facts.
 
-`/status` (and the `/ws` push) also carry `heap_free`, `heap_max_block` (largest allocatable block) and `ws_clients`; the manifest repeats them under `state`.
+`/status` (and the `/ws` push) also carry `heap_free`, `heap_max_block` (largest allocatable block), `ws_clients` and `sse_clients` (live `/api/dmx/stream` clients); the manifest repeats them under `state`.
 
-`tools/heap_probe.mjs --node http://<ip> [--clients 3] [--seconds 30]` samples those three keys at idle, with N extra `/ws` clients and after they close (min/max/last, largest-block drop and recovery). Node ≥ 22, no dependencies.
+`tools/heap_probe.mjs --node http://<ip> [--clients 3] [--sse 3] [--seconds 30]` samples those keys at idle, with N extra `/ws` clients and/or N `/api/dmx/stream` readers, and after they close (min/max/last, largest-block drop and recovery); it also counts the events each stream reader received. Node ≥ 22, no dependencies (Node has no `EventSource`: the probe reads the stream with `fetch`).
 Proof on hardware: `tools/usb_probe.js` (see HANDOVER "USB flash-and-verify");
 without hardware: `tools/widget_pty_harness.cpp` runs the firmware's parser on a
 pseudo-terminal that di's driver opens.
@@ -333,6 +333,7 @@ curl -X POST -H 'content-type: application/json' -d '{"master":200}' http://192.
 |---|---|---|---|
 | GET | a | `/api/state` | Whole desk state, streamed from one frozen copy: fixtures (values read from the web layer through each profile), saved scenes (read from their snapshots through today's patch), groups, chase, fx, output, status |
 | GET | a | `/api/dmx` | `outVals`, the 512 bytes on the cable (merged, mastered, slew-limited), as `dmx["0"]` |
+| GET | a | `/api/dmx/stream` | The same bytes pushed as server-sent events (V5, below); not in contract v1, advertised by `caps.stream` |
 | GET/POST | a | `/api/input` | GET: the source mode in di's words (input off = WEB, line desk `follow` = ARTNET, `htp` = HTP; loss `release`/`hold` = fallback). POST changes mode/fallback (saved); refuses `artnet:false`/`sacn:false`, another universe, LTP, a different name |
 | POST | a | `/api/input/release` | Lets go of a held network frame until a source is live again |
 | POST | a | `/api/master` | `master` = master dimmer; `blackout:true` = `/blackout` (web layer to 0, cue list and FX stop); `blackout:false` changes nothing (no blackout flag on the node) |
@@ -388,6 +389,40 @@ curl -X POST -H 'content-type: application/json' -d '{"master":200}' http://192.
 | GET/POST | c | `/api/midi` | 404 `{error:"not on this node"}` |
 | POST | c | `/api/show/open` | 404 `{error:"not on this node"}` |
 | POST | c | `/api/show/copy-machine` | 404 `{error:"not on this node"}` |
+
+### DMX stream (`GET /api/dmx/stream`, build step V5)
+
+`outVals` (what `/api/dmx` shows: on the cable) pushed as server-sent events, in the shape of di's `dmxstream.js`
+(`serverXR/src/lighting/dmxstream.js`, read by `useLightingMirror.js`):
+
+```text
+retry: 1000
+event: frame
+data: {"s":1,"t":48210,"k":1,"d":[[0,0,[0,0,...512 values]]],"m":{"master":255,"blackout":false,"looks":[],"cues":null}}
+
+event: frame
+data: {"s":2,"t":48260,"k":0,"d":[[0,63,[180,0,12]]]}
+```
+
+- `k:1` is a key frame (all 512 slots as one run, with `m`); `k:0` a delta: only the runs of slots that changed since the
+  frame before, runs closer than 6 slots joined (`dmxstream.js` `deltaRuns`). `m` rides on a delta only when it changed.
+- Rate: at most one event per 50 ms (20 Hz, `vizzz::desk::stream::kPeriodMs`), sent only when `outVals` or the master
+  changed. **Keepalive:** when nothing changed for 1 s the frame is sent again as a key frame (instead of di's 15 s comment line),
+  which also heals a client whose queue overflowed. A client that joins makes the next tick a key frame for everybody.
+- Differences from di's own stream, on purpose: one frame for every client, so `s` counts the node's events, not one client's;
+  `t` is the node's uptime in ms (no wall clock; only a look's `since` uses it and the node has no looks); no `?u=` filter
+  (one universe, 0).
+- **Client cap: 4** (`kMaxClients`). The 5th gets `503 {"error":"stream full"}` (a client still being accepted counts).
+  Under 32 KB of largest free block every `/api` route, this one included, answers `503 {"error":"node busy"}`.
+- The route is a plain GET (no `Accept` needed), same-origin, no CORS. `/api/state` says `caps.stream: true`; the vendored
+  contract (v1) does not list the path, so the route sits in `vizzz::desk::kDeskExtra` and `tools/check_routes.py` holds it apart.
+- Memory: the event JSON is written into one static 2,304 B buffer from `loop()` (`streamTick`), after copying the frame under
+  `gLock` and releasing it; the library then makes one shared copy of the event for all clients (its only allocation on this path).
+  `SSE_MAX_QUEUED_MESSAGES=8` (library default 32) bounds what a stalled client can hold. `tools/heap_probe.mjs --sse N` measures it.
+
+```bash
+curl -N http://192.168.4.1/api/dmx/stream
+```
 
 ## Node Manifest
 

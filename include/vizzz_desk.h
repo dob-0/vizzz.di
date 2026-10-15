@@ -695,7 +695,7 @@ inline bool writeState(JsonWriter& w, const DeskFacts& d) {
   w.key("caps");
   w.rawValue("{\"midi\":false,\"audio\":false,\"library\":false,\"looks\":false,\"layers\":false,"
              "\"lfos\":false,\"sets\":false,\"cues\":false,\"profilesEdit\":false,"
-             "\"multiUniverse\":false,\"node\":true}");
+             "\"multiUniverse\":false,\"stream\":true,\"node\":true}");
   w.key("show"); detail::show(w, d);
 
   w.key("status"); w.obj();
@@ -856,8 +856,19 @@ constexpr ApiRoute kDeskApi[] = {
 };
 constexpr size_t kDeskApiCount = sizeof(kDeskApi) / sizeof(kDeskApi[0]);
 
+// Paths served under the same gate that are NOT in the vendored contract (the
+// UI of contract v1 never calls them; plan step V5, caps.stream tells a newer
+// UI to). tools/check_routes.py holds them apart from kDeskApi so the contract
+// comparison stays exact.
+constexpr ApiRoute kDeskExtra[] = {
+  {"/api/dmx/stream", kGet, ApiClass::A},
+};
+constexpr size_t kDeskExtraCount = sizeof(kDeskExtra) / sizeof(kDeskExtra[0]);
+
 inline const ApiRoute* findDeskApi(const char* path) {
   if (!path) return nullptr;
+  for (size_t i = 0; i < kDeskExtraCount; i++)
+    if (strcmp(kDeskExtra[i].path, path) == 0) return &kDeskExtra[i];
   for (size_t i = 0; i < kDeskApiCount; i++)
     if (strcmp(kDeskApi[i].path, path) == 0) return &kDeskApi[i];
   return nullptr;

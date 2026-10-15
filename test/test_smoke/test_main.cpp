@@ -637,12 +637,12 @@ void test_merge_usb_obeys_modes_like_artnet() {
 }
 
 static void test_health_fields_key_list_and_values() {
-  const vizzz::HealthFacts h{123456u, 65536u, 3u};
+  const vizzz::HealthFacts h{123456u, 65536u, 3u, 2u};
   char buf[128];
   int n = vizzz::healthJsonFields(buf, sizeof(buf), h);
   TEST_ASSERT_TRUE(n > 0 && size_t(n) < sizeof(buf));
-  TEST_ASSERT_EQUAL_STRING("\"heap_free\":123456,\"heap_max_block\":65536,\"ws_clients\":3", buf);
-  TEST_ASSERT_EQUAL_UINT(3, vizzz::kHealthKeyCount);
+  TEST_ASSERT_EQUAL_STRING("\"heap_free\":123456,\"heap_max_block\":65536,\"ws_clients\":3,\"sse_clients\":2", buf);
+  TEST_ASSERT_EQUAL_UINT(4, vizzz::kHealthKeyCount);
   const char* at = buf;
   for (size_t i = 0; i < vizzz::kHealthKeyCount; i++) {
     char q[40];
@@ -655,10 +655,10 @@ static void test_health_fields_key_list_and_values() {
 }
 
 static void test_health_fields_truncation_reported() {
-  const vizzz::HealthFacts h{4294967295u, 4294967295u, 4294967295u};
+  const vizzz::HealthFacts h{4294967295u, 4294967295u, 4294967295u, 4294967295u};
   char small[16];
   TEST_ASSERT_TRUE(size_t(vizzz::healthJsonFields(small, sizeof(small), h)) >= sizeof(small));
-  char buf[96];
+  char buf[128];   // main.cpp healthFields
   TEST_ASSERT_TRUE(size_t(vizzz::healthJsonFields(buf, sizeof(buf), h)) < sizeof(buf));
 }
 
@@ -1411,6 +1411,7 @@ static void test_desk_state_matches_vendored_contract() {
   TEST_ASSERT_EQUAL_STRING_LEN("null", jr::at(s, "status.serial"), 4);
   TEST_ASSERT_EQUAL_STRING_LEN("[0]", jr::at(s, "status.universes"), 3);
   TEST_ASSERT_EQUAL_STRING_LEN("false", jr::at(s, "caps.midi"), 5);
+  TEST_ASSERT_EQUAL_STRING_LEN("true", jr::at(s, "caps.stream"), 4);   // V5: this node streams api/dmx/stream
   // Content: 32 fixtures, 7 groups, 6 saved scenes, all 13 profiles, the node's own fx modes.
   TEST_ASSERT_EQUAL_INT(32, jr::count(jr::at(s, "fixtures")));
   TEST_ASSERT_EQUAL_INT(7, jr::count(jr::at(s, "groups")));
@@ -1623,7 +1624,7 @@ static void test_desk_api_table_matches_contract_and_routes() {
       TEST_ASSERT_NOT_NULL_MESSAGE(dk::findDeskApi(vizzz::kRoutes[i].path), vizzz::kRoutes[i].path);
       TEST_ASSERT_FALSE(vizzz::routeSendsAcao(vizzz::kRoutes[i].kind));
     }
-  TEST_ASSERT_EQUAL_UINT(dk::kDeskApiCount, deskRows);
+  TEST_ASSERT_EQUAL_UINT(dk::kDeskApiCount + dk::kDeskExtraCount, deskRows);   // + the V5 stream
   TEST_ASSERT_EQUAL_STRING("GET, POST", dk::deskMethods(dk::findDeskApi("/api/input")->methods));
   TEST_ASSERT_EQUAL_STRING("POST", dk::deskMethods(dk::findDeskApi("/api/master")->methods));
   TEST_ASSERT_EQUAL_STRING("GET", dk::deskMethods(dk::findDeskApi("/api/state")->methods));
@@ -1898,6 +1899,240 @@ static void test_desk_state_hides_memberless_groups() {
     TEST_ASSERT_TRUE(jr::count(jr::member(jr::element(g, i), "ids")) > 0);
   TEST_ASSERT_TRUE(jr::count(g) < 7);
 }
+
+// ── V5: GET /api/dmx/stream (include/vizzz_stream.h) ──
+namespace st = vizzz::desk::stream;
+
+// What useLightingMirror.js applyFrame() does with one event's JSON: a key
+// frame starts from zeros, a delta from the frame before; every run writes its
+// values at its start. Returns false when the JSON is not the shape di reads.
+static bool applyLikeDi(const char* json, uint8_t* dmx, int* key, long* seq) {
+  if (!jr::valid(json)) return false;
+  const char* k = jr::member(json, "k");
+  const char* d = jr::member(json, "d");
+  if (!k || !d || !jr::member(json, "s") || !jr::member(json, "t")) return false;
+  if (strcmp(jr::typeOf(d), "array") != 0) return false;
+  *key = int(jr::num(k));
+  *seq = jr::num(jr::member(json, "s"));
+  if (*key) memset(dmx, 0, st::kSlots);
+  for (int i = 0; jr::element(d, i); i++) {
+    const char* run = jr::element(d, i);
+    if (jr::num(jr::element(run, 0)) != 0) return false;   // universe 0
+    const long start = jr::num(jr::element(run, 1));
+    const char* vals = jr::element(run, 2);
+    if (!vals || strcmp(jr::typeOf(vals), "array") != 0) return false;
+    for (int v = 0; jr::element(vals, v); v++)
+      if (start + v < st::kSlots) dmx[start + v] = uint8_t(jr::num(jr::element(vals, v)));
+  }
+  return true;
+}
+
+static void fillRamp(uint8_t* f, uint8_t base) {
+  for (int i = 0; i < st::kSlots; i++) f[i] = uint8_t(base + i * 7);
+}
+
+static void test_stream_key_frame_is_the_shape_di_reads() {
+  uint8_t f[st::kSlots];
+  fillRamp(f, 3);
+  static char buf[st::kBufSize];
+  const size_t n = st::formatKey(buf, sizeof(buf), 1, 12345, f, st::Meta{200, false});
+  TEST_ASSERT_TRUE(n > 0 && n == strlen(buf));
+  TEST_ASSERT_TRUE(jr::valid(buf));
+  TEST_ASSERT_EQUAL_INT(1, jr::num(jr::at(buf, "k")));
+  TEST_ASSERT_EQUAL_INT(1, jr::num(jr::at(buf, "s")));
+  TEST_ASSERT_EQUAL_INT(12345, jr::num(jr::at(buf, "t")));
+  TEST_ASSERT_EQUAL_INT(1, jr::count(jr::at(buf, "d")));          // one run: the whole universe
+  TEST_ASSERT_EQUAL_INT(0, jr::num(jr::at(buf, "d.0.0")));         // universe 0 (the desk's U1)
+  TEST_ASSERT_EQUAL_INT(0, jr::num(jr::at(buf, "d.0.1")));         // from slot 0
+  TEST_ASSERT_EQUAL_INT(512, jr::count(jr::at(buf, "d.0.2")));
+  TEST_ASSERT_EQUAL_INT(200, jr::num(jr::at(buf, "m.master")));
+  TEST_ASSERT_EQUAL_STRING_LEN("false", jr::at(buf, "m.blackout"), 5);
+  TEST_ASSERT_EQUAL_STRING("array", jr::typeOf(jr::at(buf, "m.looks")));
+  TEST_ASSERT_EQUAL_INT(0, jr::count(jr::at(buf, "m.looks")));
+  TEST_ASSERT_EQUAL_STRING_LEN("null", jr::at(buf, "m.cues"), 4);
+  uint8_t got[st::kSlots];
+  int key = 0; long seq = 0;
+  TEST_ASSERT_TRUE(applyLikeDi(buf, got, &key, &seq));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(f, got, st::kSlots);
+}
+
+static void test_stream_worst_case_key_frame_fits_the_buffer() {
+  uint8_t f[st::kSlots];
+  memset(f, 255, sizeof(f));
+  static char buf[st::kBufSize];
+  const size_t n = st::formatKey(buf, sizeof(buf), 4294967295u, 4294967295u, f, st::Meta{255, true});
+  TEST_ASSERT_TRUE(n > 0);
+  TEST_ASSERT_TRUE(n < st::kBufSize - 64);   // margin: the largest frame is not within 64 B of the buffer
+  // A buffer one byte short is refused whole, never cut.
+  TEST_ASSERT_EQUAL_UINT(0, st::formatKey(buf, n, 4294967295u, 4294967295u, f, st::Meta{255, true}));
+  TEST_ASSERT_EQUAL_UINT(n, st::formatKey(buf, n + 1, 4294967295u, 4294967295u, f, st::Meta{255, true}));
+}
+
+static void test_stream_delta_runs_follow_dmxstream_js() {
+  uint8_t a[st::kSlots] = {0}, b[st::kSlots] = {0};
+  char buf[st::kBufSize];
+  // Slots 3 and 5 changed: one run 3..5 (the unchanged slot 4 rides along).
+  b[3] = 10; b[5] = 30;
+  TEST_ASSERT_TRUE(st::formatDelta(buf, sizeof(buf), 7, 100, a, b, st::Meta{255, false}, false) > 0);
+  TEST_ASSERT_EQUAL_STRING("{\"s\":7,\"t\":100,\"k\":0,\"d\":[[0,3,[10,0,30]]]}", buf);
+  // kGap = 6: changed slots 10 and 16 are joined (16 - 10 <= 6), 10 and 17 are not.
+  memset(b, 0, sizeof(b)); b[10] = 1; b[16] = 2;
+  st::formatDelta(buf, sizeof(buf), 1, 1, a, b, st::Meta{255, false}, false);
+  TEST_ASSERT_EQUAL_INT(1, jr::count(jr::at(buf, "d")));
+  TEST_ASSERT_EQUAL_INT(7, jr::count(jr::at(buf, "d.0.2")));
+  memset(b, 0, sizeof(b)); b[10] = 1; b[17] = 2;
+  st::formatDelta(buf, sizeof(buf), 1, 1, a, b, st::Meta{255, false}, false);
+  TEST_ASSERT_EQUAL_INT(2, jr::count(jr::at(buf, "d")));
+  TEST_ASSERT_EQUAL_INT(10, jr::num(jr::at(buf, "d.0.1")));
+  TEST_ASSERT_EQUAL_INT(17, jr::num(jr::at(buf, "d.1.1")));
+  // The last slot, and the first.
+  memset(b, 0, sizeof(b)); b[0] = 9; b[511] = 8;
+  st::formatDelta(buf, sizeof(buf), 1, 1, a, b, st::Meta{255, false}, false);
+  TEST_ASSERT_EQUAL_INT(0, jr::num(jr::at(buf, "d.0.1")));
+  TEST_ASSERT_EQUAL_INT(511, jr::num(jr::at(buf, "d.1.1")));
+  // Meta only when asked; no change = an empty d.
+  memset(b, 0, sizeof(b));
+  st::formatDelta(buf, sizeof(buf), 2, 5, a, b, st::Meta{128, true}, true);
+  TEST_ASSERT_EQUAL_STRING("{\"s\":2,\"t\":5,\"k\":0,\"d\":[],\"m\":{\"master\":128,\"blackout\":true,\"looks\":[],\"cues\":null}}", buf);
+  // A buffer too small for the delta is refused whole.
+  b[100] = 1;
+  TEST_ASSERT_EQUAL_UINT(0, st::formatDelta(buf, 20, 1, 1, a, b, st::Meta{255, false}, false));
+}
+
+static void test_stream_deltas_rebuild_every_frame() {
+  st::Streamer s;
+  s.reset();
+  static char buf[st::kBufSize];
+  uint8_t frame[st::kSlots], seen[st::kSlots];
+  fillRamp(frame, 0);
+  uint32_t now = 1000;
+  uint32_t rng = 12345;
+  int keys = 0, deltas = 0;
+  for (int step = 0; step < 300; step++) {
+    // A few random edits per frame, sometimes a lot.
+    const int edits = (step % 37 == 0) ? 400 : 1 + int(rng % 6);
+    for (int e = 0; e < edits; e++) {
+      rng = rng * 1664525u + 1013904223u;
+      frame[(rng >> 8) % st::kSlots] = uint8_t(rng >> 24);
+    }
+    now += st::kPeriodMs;
+    const size_t n = s.step(now, frame, st::Meta{255, false}, false, buf, sizeof(buf));
+    if (!n) continue;
+    int key = 0; long seq = 0;
+    TEST_ASSERT_TRUE(applyLikeDi(buf, seen, &key, &seq));
+    key ? keys++ : deltas++;
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(frame, seen, st::kSlots);   // the client's picture is the node's
+  }
+  TEST_ASSERT_EQUAL_INT(1, keys);   // only the first event: a key frame every second is not due while frames change
+  TEST_ASSERT_TRUE(deltas > 250);
+}
+
+static void test_stream_rate_change_and_keepalive_rule() {
+  st::Streamer s;
+  s.reset();
+  char buf[st::kBufSize];
+  uint8_t f[st::kSlots] = {0};
+  const st::Meta m{255, false};
+  // The first call has nothing sent yet: a key frame.
+  TEST_ASSERT_TRUE(s.step(5000, f, m, false, buf, sizeof(buf)) > 0);
+  TEST_ASSERT_EQUAL_INT(1, jr::num(jr::at(buf, "k")));
+  TEST_ASSERT_EQUAL_INT(1, jr::num(jr::at(buf, "s")));
+  // A change before the next tick waits for it, and goes as a delta without the unchanged meta.
+  f[9] = 1;
+  TEST_ASSERT_EQUAL_UINT(0, s.step(5000 + st::kPeriodMs - 20, f, m, false, buf, sizeof(buf)));
+  TEST_ASSERT_TRUE(s.step(5000 + st::kPeriodMs, f, m, false, buf, sizeof(buf)) > 0);
+  TEST_ASSERT_EQUAL_INT(0, jr::num(jr::at(buf, "k")));
+  TEST_ASSERT_EQUAL_INT(2, jr::num(jr::at(buf, "s")));
+  TEST_ASSERT_NULL(jr::member(buf, "m"));
+  // Then quiet: nothing is sent, at any tick, until a key frame (the keepalive) once the last send is a second old, not before.
+  const uint32_t sent = 5000 + st::kPeriodMs;
+  for (uint32_t t = sent + st::kPeriodMs; t < sent + st::kKeepaliveMs; t += st::kPeriodMs)
+    TEST_ASSERT_EQUAL_UINT(0, s.step(t, f, m, false, buf, sizeof(buf)));
+  TEST_ASSERT_TRUE(s.step(sent + st::kKeepaliveMs, f, m, false, buf, sizeof(buf)) > 0);
+  TEST_ASSERT_EQUAL_INT(1, jr::num(jr::at(buf, "k")));
+  TEST_ASSERT_EQUAL_INT(3, jr::num(jr::at(buf, "s")));
+  TEST_ASSERT_EQUAL_INT(1, jr::num(jr::at(buf, "d.0.2.9")));   // the keepalive carries the whole frame
+}
+
+static void test_stream_meta_change_a_new_client_and_a_lost_frame() {
+  st::Streamer s;
+  s.reset();
+  char buf[st::kBufSize];
+  uint8_t f[st::kSlots] = {0};
+  uint32_t t = 100;
+  s.step(t, f, st::Meta{255, false}, false, buf, sizeof(buf));
+  // The master moves, no channel changed: a delta with an empty d and the meta.
+  t += st::kPeriodMs;
+  TEST_ASSERT_TRUE(s.step(t, f, st::Meta{90, false}, false, buf, sizeof(buf)) > 0);
+  TEST_ASSERT_EQUAL_INT(0, jr::num(jr::at(buf, "k")));
+  TEST_ASSERT_EQUAL_INT(0, jr::count(jr::at(buf, "d")));
+  TEST_ASSERT_EQUAL_INT(90, jr::num(jr::at(buf, "m.master")));
+  // A client joined: the next tick is a key frame carrying the meta, even with nothing changed.
+  t += st::kPeriodMs;
+  TEST_ASSERT_TRUE(s.step(t, f, st::Meta{90, false}, true, buf, sizeof(buf)) > 0);
+  TEST_ASSERT_EQUAL_INT(1, jr::num(jr::at(buf, "k")));
+  TEST_ASSERT_EQUAL_INT(90, jr::num(jr::at(buf, "m.master")));
+  // The library dropped the event (every queue full): forget, the next one is a key frame.
+  s.forget();
+  f[0] = 5;
+  t += st::kPeriodMs;
+  TEST_ASSERT_TRUE(s.step(t, f, st::Meta{90, false}, false, buf, sizeof(buf)) > 0);
+  TEST_ASSERT_EQUAL_INT(1, jr::num(jr::at(buf, "k")));
+  // A buffer too small for anything: nothing sent, the sequence does not move, the state is untouched.
+  const uint32_t seq = s.seq;
+  f[1] = 6;
+  t += st::kPeriodMs;
+  TEST_ASSERT_EQUAL_UINT(0, s.step(t, f, st::Meta{90, false}, false, buf, 8));
+  TEST_ASSERT_EQUAL_UINT32(seq, s.seq);
+  t += st::kPeriodMs;
+  TEST_ASSERT_TRUE(s.step(t, f, st::Meta{90, false}, false, buf, sizeof(buf)) > 0);
+  TEST_ASSERT_EQUAL_INT(0, jr::num(jr::at(buf, "k")));
+  TEST_ASSERT_EQUAL_UINT8(6, uint8_t(jr::num(jr::at(buf, "d.0.2.0"))));   // slots 0..1 ride in one run
+}
+
+static void test_stream_tick_survives_the_millis_wrap() {
+  TEST_ASSERT_FALSE(st::tickDue(0xFFFFFFF0u, 0xFFFFFFE0u));
+  TEST_ASSERT_TRUE(st::tickDue(0x00000020u, 0xFFFFFFE0u));   // 64 ms across the wrap
+  TEST_ASSERT_TRUE(st::decide(false, false, false, 0x00000010u, 0xFFFFFC00u) == st::Send::Key);   // > 1 s across the wrap
+  TEST_ASSERT_TRUE(st::decide(false, false, false, 0x00000010u, 0xFFFFFF00u) == st::Send::Nothing);
+  TEST_ASSERT_TRUE(st::decide(true, false, false, 100, 90) == st::Send::Delta);
+  TEST_ASSERT_TRUE(st::decide(false, true, false, 100, 90) == st::Send::Delta);
+  TEST_ASSERT_TRUE(st::decide(false, false, true, 100, 90) == st::Send::Key);
+}
+
+static void test_stream_client_cap() {
+  TEST_ASSERT_EQUAL_UINT8(4, st::kMaxClients);
+  for (size_t c = 0; c < 4; c++) TEST_ASSERT_FALSE(st::full(c, 0));   // 1st..4th are accepted
+  TEST_ASSERT_TRUE(st::full(4, 0));                                    // the 5th is refused
+  TEST_ASSERT_TRUE(st::full(3, 1));                                    // a 4th still being accepted counts
+  TEST_ASSERT_TRUE(st::full(0, 4));
+  TEST_ASSERT_EQUAL_STRING("stream full", st::kFullError);
+  // The 503 body, as the node writes every error.
+  dk::ReplyArgs a = {};
+  a.kind = dk::Reply::Error;
+  a.error = st::kFullError;
+  char out[96];
+  dk::MemorySink m = {out, sizeof(out) - 1, 0, false};
+  dk::JsonWriter w;
+  w.begin(dk::memorySink, &m);
+  dk::writeReply(w, dk::DeskFacts{}, a);
+  out[m.len] = 0;
+  TEST_ASSERT_EQUAL_STRING("{\"error\":\"stream full\"}", out);
+}
+
+static void test_stream_route_and_caps() {
+  const int ri = vizzz::findRoute("/api/dmx/stream");
+  TEST_ASSERT_TRUE(ri >= 0 && vizzz::kRoutes[ri].kind == vizzz::RouteKind::DeskApi);
+  const dk::ApiRoute* r = dk::findDeskApi("/api/dmx/stream");
+  TEST_ASSERT_NOT_NULL(r);
+  TEST_ASSERT_EQUAL_UINT8(dk::kGet, r->methods);
+  // It is not one of the contract's 57; /api/dmx stays its own exact route.
+  for (size_t i = 0; i < dk::kDeskApiCount; i++) TEST_ASSERT_TRUE(strcmp(dk::kDeskApi[i].path, "/api/dmx/stream") != 0);
+  TEST_ASSERT_EQUAL_UINT(1, dk::kDeskExtraCount);
+  TEST_ASSERT_EQUAL_STRING("/api/dmx", dk::findDeskApi("/api/dmx")->path);
+  TEST_ASSERT_TRUE(dk::gateDesk(r->methods, vizzz::HttpMethod::Get, false) == vizzz::Gate::Allow);
+  TEST_ASSERT_TRUE(dk::gateDesk(r->methods, vizzz::HttpMethod::Post, true) == vizzz::Gate::NotAllowed);
+}
 #endif
 
 static int runAll() {
@@ -1962,6 +2197,15 @@ static int runAll() {
   RUN_TEST(test_desk_patch_rules);
   RUN_TEST(test_desk_post_replies_match_vendored_contract);
   RUN_TEST(test_desk_state_hides_memberless_groups);
+  RUN_TEST(test_stream_key_frame_is_the_shape_di_reads);
+  RUN_TEST(test_stream_worst_case_key_frame_fits_the_buffer);
+  RUN_TEST(test_stream_delta_runs_follow_dmxstream_js);
+  RUN_TEST(test_stream_deltas_rebuild_every_frame);
+  RUN_TEST(test_stream_rate_change_and_keepalive_rule);
+  RUN_TEST(test_stream_meta_change_a_new_client_and_a_lost_frame);
+  RUN_TEST(test_stream_tick_survives_the_millis_wrap);
+  RUN_TEST(test_stream_client_cap);
+  RUN_TEST(test_stream_route_and_caps);
 #endif
   return UNITY_END();
 }
