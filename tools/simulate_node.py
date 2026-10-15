@@ -28,7 +28,7 @@ MAIN = os.path.join(ROOT, "src", "main.cpp")
 # The firmware's USB widget baud, read from main.cpp so the two never disagree.
 with open(MAIN, encoding="utf-8") as _f:
     USB_WIDGET_BAUD = int(re.search(r"USB_WIDGET_BAUD\s*=\s*(\d+)", _f.read()).group(1))
-MAX_CH, SCENE_COUNT, PAGE_SIZE, PAGE_COUNT, MAX_FIXTURES = 512, 8, 32, 16, 12
+MAX_CH, SCENE_COUNT, PAGE_SIZE, PAGE_COUNT, MAX_FIXTURES = 512, 8, 32, 16, 32  # 32 since V6
 SAFE_MAX_LEVEL, SAFE_SLEW_STEP = 245, 18
 BURN_SAFE_MAX_LEVEL, BURN_SAFE_SLEW_STEP = 96, 8
 # GET /api/dmx/stream (V5): the rate, keepalive, cap and gap are read from the firmware's header.
@@ -121,14 +121,15 @@ class Node:
                               for i in range(16)]}
         self.groups = [{"name": "GRP %d" % (i + 1), "start": i * 8 + 1,
                         "end": i * 8 + 8, "en": i < 2} for i in range(8)]
-        self.fixtures = [  # firmware initFixtureDefaults(), main.cpp:221
-            {"name": "F%d" % (i + 1), "start": st, "end": en, "x": x, "y": y,
+        v1_starts = [1, 4, 7, 10, 64, 67, 70, 73, 128, 131, 134, 137]
+        self.fixtures = [  # firmware initFixtureDefaults() = vizzz::desk::defaultFixture(), 3 wide each
+            {"name": "F%d" % (i + 1),
+             "start": v1_starts[i] if i < 12 else 140 + (i - 12) * 3,
+             "end": (v1_starts[i] if i < 12 else 140 + (i - 12) * 3) + 2,
+             "x": 32 + (i % 4) * 64,
+             "y": 32 + (i // 4) * 96 if i < 12 else 32 + ((i - 12) // 4) * 28,
              "en": i < 4}
-            for i, (st, en, x, y) in enumerate(zip(
-                [1, 4, 7, 10, 64, 67, 70, 73, 128, 131, 134, 137],
-                [3, 6, 9, 12, 66, 69, 72, 75, 130, 133, 136, 139],
-                [32, 96, 160, 224, 32, 96, 160, 224, 32, 96, 160, 224],
-                [32, 32, 32, 32, 128, 128, 128, 128, 224, 224, 224, 224]))]
+            for i in range(MAX_FIXTURES)]
         self.fixture_count = 4
         self.peers = [
             {"ip": "10.0.0.51", "name": "vizzz.di-u2", "mac": "24:6F:28:11:22:33",
@@ -235,6 +236,7 @@ class Node:
             "safe_ceiling": self.ceiling(), "safe_slew_step": self.slew_step(),
             # USB widget input exists only on hardware (no serial in the simulator).
             "usb_active": False, "usb_frames": 0, "usb_baud": USB_WIDGET_BAUD,
+            "fixtures_migrated": 0, "fixtures_unmapped": 0,
             "api_replies": DESK.replies, "api_busy": DESK.busy,
             "heap_free": 180000, "heap_max_block": 110000, "ws_clients": 0,
             "sse_clients": DESK.sse,

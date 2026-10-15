@@ -76,7 +76,7 @@ static constexpr uint8_t    DISC_PKT_BUDGET   = 4;
 static constexpr uint16_t PAGE_SIZE   = 32;
 static constexpr uint16_t PAGE_COUNT  = 16;
 static constexpr uint8_t  SCENE_COUNT = 8;
-static constexpr uint8_t  MAX_FIXTURES = 12;
+static constexpr uint8_t  MAX_FIXTURES = vizzz::desk::kMaxFixtures;   // 32 since V6 (12 before); the v2 store holds exactly this many
 static constexpr uint32_t FADE_MAX_MS  = 600000;  // 10 min; see startFade_locked
 static constexpr size_t   MAX_NAME_LEN = 31;      // keeps the 800-byte WS status JSON valid
 static constexpr size_t   MAX_PASS_LEN = 63;
@@ -313,53 +313,76 @@ static uint8_t fixtureCount = 4;
 // start..end (an edit through /fixture/set) is ignored. Guarded by gLock.
 static uint8_t fixtureProfile[MAX_FIXTURES];
 
-static void initFixtureDefaults() {
-  const uint16_t starts[MAX_FIXTURES] = {1, 4, 7, 10, 64, 67, 70, 73, 128, 131, 134, 137};
-  const uint16_t ends[MAX_FIXTURES]   = {3, 6, 9, 12, 66, 69, 72, 75, 130, 133, 136, 139};
-  const uint8_t xs[MAX_FIXTURES] = {32, 96, 160, 224, 32, 96, 160, 224, 32, 96, 160, 224};
-  const uint8_t ys[MAX_FIXTURES] = {32, 32, 32, 32, 128, 128, 128, 128, 224, 224, 224, 224};
-  fixtureCount = 4;
-  for (uint8_t i = 0; i < MAX_FIXTURES; i++) {
-    snprintf(fixtures[i].name, sizeof(fixtures[i].name), "F%u", i + 1);
-    fixtures[i].start = starts[i];
-    fixtures[i].end = ends[i];
-    fixtures[i].x = xs[i];
-    fixtures[i].y = ys[i];
-    fixtures[i].enabled = (i < fixtureCount);
-    fixtureProfile[i] = vizzz::desk::kNoProfile;
-  }
+// Boot facts of the V6 migration, read by /status. fixturesMigrated = slots
+// converted from the v1 blob on THIS boot (0 when v2 already existed or on a
+// fresh node); fixturesUnmapped = active v1 fixtures whose width has no profile
+// (kept at their start as a 1-channel `dimmer`).
+static uint8_t fixturesMigrated = 0;
+static uint8_t fixturesUnmapped = 0;
+static_assert(sizeof(FixtureDef) == sizeof(vizzz::desk::V1Fixture), "FixtureDef is the v1 blob record");
+
+// The run-time table keeps start..end (the console routes, fx lanes and the
+// DMX path all read it); the store is the profile-based NodeFixture. These two
+// convert. Call with gLock held (or at boot).
+static void fixtureFromNode(uint8_t i, const vizzz::desk::NodeFixture& nf) {
+  memcpy(fixtures[i].name, nf.name, sizeof(fixtures[i].name));
+  fixtures[i].name[sizeof(fixtures[i].name) - 1] = '\0';
+  fixtures[i].start = nf.start;
+  fixtures[i].end = vizzz::desk::fixtureEnd(nf);
+  fixtures[i].x = nf.x;
+  fixtures[i].y = nf.y;
+  fixtures[i].enabled = nf.enabled;
+  fixtureProfile[i] = nf.profile;
 }
 
-static void saveFixtures() {
-  prefs.begin("fixtures", false);
-  prefs.putUChar("count", fixtureCount);
-  prefs.putBytes("items", fixtures, sizeof(fixtures));
-  prefs.putBytes("prof", fixtureProfile, sizeof(fixtureProfile));
-  prefs.end();
+static void fixturesFromNodes(const vizzz::desk::NodeFixture* nf, uint8_t count) {
+  fixtureCount = count;
+  for (uint8_t i = 0; i < MAX_FIXTURES; i++) fixtureFromNode(i, nf[i]);
 }
+
+static void initFixtureDefaults() {
+  vizzz::desk::NodeFixture nf[MAX_FIXTURES];
+  uint8_t count = 0;
+  vizzz::desk::defaultFixtures(nf, &count);
+  fixturesFromNodes(nf, count);
+}
+
+static void saveFixtures();   // after deskFixtures_locked(): it needs gLock and the desk mapping
 
 static void loadFixtures() {
-  initFixtureDefaults();
+  using namespace vizzz::desk;
+  NodeFixture nf[MAX_FIXTURES];
+  uint8_t count = 4;
+  bool haveV2 = false, migrate = false;
   prefs.begin("fixtures", true);
-  uint8_t count = prefs.getUChar("count", fixtureCount);
-  size_t got = prefs.getBytes("items", fixtures, sizeof(fixtures));
-  size_t gotProf = prefs.getBytes("prof", fixtureProfile, sizeof(fixtureProfile));
-  prefs.end();
-  if (gotProf != sizeof(fixtureProfile)) memset(fixtureProfile, vizzz::desk::kNoProfile, sizeof(fixtureProfile));
-  for (uint8_t i = 0; i < MAX_FIXTURES; i++)
-    if (fixtureProfile[i] >= vizzz::desk::kProfileCount) fixtureProfile[i] = vizzz::desk::kNoProfile;
-  if (got == sizeof(fixtures)) {
-    fixtureCount = constrain(count, uint8_t(1), MAX_FIXTURES);
-    for (uint8_t i = 0; i < MAX_FIXTURES; i++) {
-      fixtures[i].enabled = (i < fixtureCount) ? fixtures[i].enabled : false;
-      // Repair what was read, as loadVj() does (1-L8): a corrupted blob of the
-      // right size must not make fixturesJSON over-read a name with %s or put
-      // an out-of-range channel into the output path.
-      fixtures[i].name[sizeof(fixtures[i].name) - 1] = '\0';
-      vizzz::clampChannelRange(fixtures[i].start, fixtures[i].end, MAX_CH);
-    }
+  if (prefs.getUChar("ver", 0) == kStoreVersion &&
+      prefs.getBytes("items2", nf, sizeof(nf)) == sizeof(nf)) {
+    count = prefs.getUChar("count2", 4);
+    haveV2 = true;
   } else {
-    initFixtureDefaults();
+    FixtureDef v1[kV1Slots];
+    uint8_t prof[kV1Slots];
+    if (prefs.getBytes("items", v1, sizeof(v1)) == sizeof(v1)) {
+      const uint8_t c = prefs.getUChar("count", 4);
+      if (prefs.getBytes("prof", prof, sizeof(prof)) != sizeof(prof)) memset(prof, kNoProfile, sizeof(prof));
+      V1Fixture raw[kV1Slots];
+      memcpy(raw, v1, sizeof(raw));
+      for (uint8_t i = 0; i < kV1Slots; i++) raw[i].name[sizeof(raw[i].name) - 1] = '\0';
+      count = c < 1 ? 1 : (c > kV1Slots ? kV1Slots : c);
+      const MigrateReport rep = migrateV1Blob(raw, prof, count, nf);
+      fixturesMigrated = rep.migrated;
+      fixturesUnmapped = rep.unmapped;
+      migrate = true;
+    }
+  }
+  prefs.end();
+  if (!haveV2 && !migrate) defaultFixtures(nf, &count);
+  count = repairV2(nf, count);
+  fixturesFromNodes(nf, count);
+  if (migrate) {
+    saveFixtures();   // v2 written; v1 left untouched
+    Serial.printf("fixtures: migrated v1 -> v2, %u slots, %u active without a profile (kept at start as dimmer)\n",
+                  (unsigned)fixturesMigrated, (unsigned)fixturesUnmapped);
   }
 }
 
@@ -1840,6 +1863,8 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     "\"usb_active\":%s,"
     "\"usb_frames\":%lu,"
     "\"usb_baud\":%lu,"
+    "\"fixtures_migrated\":%u,"
+    "\"fixtures_unmapped\":%u,"
     "\"rst\":\"%s\","
     "\"api_replies\":%lu,"
     "\"api_busy\":%lu,"
@@ -1874,6 +1899,8 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     usbActive() ? "true" : "false",
     (unsigned long)usbFrames,
     (unsigned long)USB_WIDGET_BAUD,
+    unsigned(fixturesMigrated),
+    unsigned(fixturesUnmapped),
     resetReasonName(esp_reset_reason()),
     (unsigned long)apiReplies.load(std::memory_order_relaxed),
     (unsigned long)apiBusy.load(std::memory_order_relaxed),
@@ -1997,28 +2024,33 @@ static String groupsJSON() {
 }
 
 static String fixturesJSON() {
-  char buf[1800];
-  FixtureDef snap[MAX_FIXTURES];
+  // 32 fixtures: the copy (768 B) and the text (worst case ~100 B per entry) are
+  // ~4 KB, taken from the heap for the duration of the call, not the stack.
+  constexpr size_t kBuf = 3400;
+  uint8_t* blk = static_cast<uint8_t*>(malloc(sizeof(FixtureDef) * MAX_FIXTURES + kBuf));
+  if (!blk) return String("{\"count\":0,\"fixtures\":[]}");
+  FixtureDef* snap = reinterpret_cast<FixtureDef*>(blk);
+  char* buf = reinterpret_cast<char*>(blk + sizeof(FixtureDef) * MAX_FIXTURES);
   uint8_t snapCount = 0;
   if (xSemaphoreTake(gLock, pdMS_TO_TICKS(10)) == pdTRUE) {
-    memcpy(snap, fixtures, sizeof(snap));
+    memcpy(snap, fixtures, sizeof(FixtureDef) * MAX_FIXTURES);
     snapCount = fixtureCount;
     xSemaphoreGive(gLock);
-  } else {
-    memset(snap, 0, sizeof(snap));
   }
   int pos = 0;
-  jsonAppend(buf, sizeof(buf), pos, "{\"count\":%u,\"fixtures\":[", snapCount);
+  jsonAppend(buf, kBuf, pos, "{\"count\":%u,\"fixtures\":[", snapCount);
   for (uint8_t i = 0; i < snapCount && i < MAX_FIXTURES; i++) {
-    if (i) jsonAppend(buf, sizeof(buf), pos, ",");
+    if (i) jsonAppend(buf, kBuf, pos, ",");
     char eName[24];
     jsonEsc(eName, sizeof(eName), snap[i].name);
-    jsonAppend(buf, sizeof(buf), pos,
+    jsonAppend(buf, kBuf, pos,
       "{\"id\":%u,\"name\":\"%s\",\"start\":%u,\"end\":%u,\"x\":%u,\"y\":%u,\"enabled\":%s}",
       i, eName, snap[i].start, snap[i].end, snap[i].x, snap[i].y, snap[i].enabled ? "true" : "false");
   }
-  jsonAppend(buf, sizeof(buf), pos, "]}");
-  return buf;
+  jsonAppend(buf, kBuf, pos, "]}");
+  String out(buf);
+  free(blk);
+  return out;
 }
 
 static const char* fxModeName(FxMode m) {
@@ -2366,6 +2398,27 @@ static dk::NodeFixture deskFixture_locked(uint8_t i) {
 
 static void deskFixtures_locked(dk::NodeFixture* out) {
   for (uint8_t i = 0; i < MAX_FIXTURES; i++) out[i] = deskFixture_locked(i);
+}
+
+static void saveFixtures() {
+  // v2 only: the v1 keys (items/count/prof) stay as the migration left them,
+  // so an older build still boots with the patch it had. A slot whose width
+  // has no profile (an edit through /fixture/set) is stored as the profile
+  // the desk shows for that width (deskFixture_locked).
+  dk::NodeFixture nf[MAX_FIXTURES];
+  uint8_t count;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(50)) != pdTRUE) {
+    Serial.println("fixtures: save skipped, lock busy");
+    return;
+  }
+  deskFixtures_locked(nf);
+  count = fixtureCount;
+  xSemaphoreGive(gLock);
+  prefs.begin("fixtures", false);
+  prefs.putBytes("items2", nf, sizeof(nf));
+  prefs.putUChar("count2", count);
+  prefs.putUChar("ver", vizzz::desk::kStoreVersion);
+  prefs.end();
 }
 
 // The facts that need no gLock (Wi-Fi, identity, the Art OUT peer). Call
