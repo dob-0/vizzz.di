@@ -10,3 +10,4 @@ __pycache__/
 .venv-pio
 src/secrets.h
 .platformio-core/
+tools/.desk_ui_cache/

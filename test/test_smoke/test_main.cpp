@@ -728,6 +728,52 @@ void test_desk_ui_table_has_exactly_the_locked_files() {
       TEST_ASSERT_NOT_EQUAL(0, strcmp(kDeskUiFiles[i].path, kDeskUiFiles[j].path));
   }
 }
+
+// V2: the Static routes are exactly the desk files ("/" is index.html) plus the 301s, and nothing else.
+void test_static_routes_are_the_desk_files_plus_the_redirects() {
+  size_t statics = 0;
+  for (size_t i = 0; i < vizzz::kRouteCount; i++)
+    if (vizzz::kRoutes[i].kind == vizzz::RouteKind::Static) statics++;
+  TEST_ASSERT_EQUAL_UINT32(kDeskUiFileCount + vizzz::kDeskRedirectCount, statics);
+  for (size_t i = 0; i < kDeskUiFileCount; i++) {
+    const char* route = strcmp(kDeskUiFiles[i].path, "/index.html") == 0 ? "/" : kDeskUiFiles[i].path;
+    int r = vizzz::findRoute(route);
+    TEST_ASSERT_TRUE_MESSAGE(r >= 0, route);
+    TEST_ASSERT_TRUE_MESSAGE(vizzz::kRoutes[r].kind == vizzz::RouteKind::Static, route);
+    TEST_ASSERT_EQUAL_STRING(kDeskUiFiles[i].path, vizzz::deskFilePath(route));
+    TEST_ASSERT_NULL_MESSAGE(vizzz::redirectTarget(route), route);  // a file is never also a redirect
+  }
+  for (size_t i = 0; i < vizzz::kDeskRedirectCount; i++) {
+    const char* p = vizzz::kDeskRedirects[i].path;
+    int r = vizzz::findRoute(p);
+    TEST_ASSERT_TRUE_MESSAGE(r >= 0, p);
+    TEST_ASSERT_TRUE_MESSAGE(vizzz::kRoutes[r].kind == vizzz::RouteKind::Static, p);
+    TEST_ASSERT_EQUAL_STRING(vizzz::kDeskRedirects[i].location, vizzz::redirectTarget(p));
+    TEST_ASSERT_EQUAL_CHAR('/', vizzz::kDeskRedirects[i].location[0]);
+  }
+  TEST_ASSERT_EQUAL_STRING("/#control", vizzz::redirectTarget("/control"));
+  TEST_ASSERT_EQUAL_STRING("/", vizzz::redirectTarget("/vj"));
+  // the gate: Static is GET only, no preflight allowance
+  TEST_ASSERT_TRUE(vizzz::gateRequest(vizzz::RouteKind::Static, vizzz::HttpMethod::Get, false) == vizzz::Gate::Allow);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(vizzz::RouteKind::Static, vizzz::HttpMethod::Post, true) == vizzz::Gate::NotAllowed);
+  TEST_ASSERT_TRUE(vizzz::gateRequest(vizzz::RouteKind::Static, vizzz::HttpMethod::Options, false) == vizzz::Gate::PreflightDenied);
+  TEST_ASSERT_FALSE(vizzz::routeSendsAcao(vizzz::RouteKind::Static));
+  TEST_ASSERT_EQUAL_STRING("GET", vizzz::routeMethods(vizzz::RouteKind::Static));
+}
+
+void test_etag_matches_if_none_match() {
+  const char* e = "fa53e15aae85b83b";
+  TEST_ASSERT_TRUE(vizzz::etagMatches("\"fa53e15aae85b83b\"", e));
+  TEST_ASSERT_TRUE(vizzz::etagMatches("W/\"fa53e15aae85b83b\"", e));
+  TEST_ASSERT_TRUE(vizzz::etagMatches("\"0000\", \"fa53e15aae85b83b\"", e));
+  TEST_ASSERT_TRUE(vizzz::etagMatches("*", e));
+  TEST_ASSERT_FALSE(vizzz::etagMatches("fa53e15aae85b83b", e));          // unquoted is not an entity-tag
+  TEST_ASSERT_FALSE(vizzz::etagMatches("\"fa53e15aae85b83\"", e));       // prefix
+  TEST_ASSERT_FALSE(vizzz::etagMatches("\"fa53e15aae85b83bb\"", e));     // longer
+  TEST_ASSERT_FALSE(vizzz::etagMatches("", e));
+  TEST_ASSERT_FALSE(vizzz::etagMatches(nullptr, e));
+  TEST_ASSERT_FALSE(vizzz::etagMatches("\"fa53e15aae85b83b\"", ""));
+}
 #endif
 
 static int runAll() {
@@ -773,6 +819,8 @@ static int runAll() {
 #if !defined(ARDUINO)
   RUN_TEST(test_desk_ui_header_matches_lock);
   RUN_TEST(test_desk_ui_table_has_exactly_the_locked_files);
+  RUN_TEST(test_static_routes_are_the_desk_files_plus_the_redirects);
+  RUN_TEST(test_etag_matches_if_none_match);
 #endif
   return UNITY_END();
 }

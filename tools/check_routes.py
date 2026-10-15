@@ -22,6 +22,7 @@ EXPECT = {  # kind -> (README method, header, cors)
     "GetShared": ("GET", "-", "yes"),
     "Operator": ("GET/POST", "-", "-"),
     "Console": ("POST", "yes", "-"),
+    "Static": ("GET", "-", "-"),
 }
 
 
@@ -44,6 +45,19 @@ def main() -> int:
         for q in table:
             if p != "/" and q.startswith(p + "/"):
                 errors.append(f"{q} would be served by the {p} handler (prefix match); rename one")
+    # Static kind (V2): one entry per file in desk_ui_gz.h ("/" = index.html) plus
+    # every kDeskRedirects path, and nothing else.
+    gz = (ROOT / "include" / "desk_ui_gz.h").read_text()
+    files = {"/" if p == "/index.html" else p
+             for p in re.findall(r'^\s*\{"(/[^"]+)", "[^"]+", \w+_gz, ', gz, re.M)}
+    redirects = set(re.findall(r'\{"(/[^"]*)", "/[^"]*"\}', core[core.index("kDeskRedirects"):]))
+    static = {p for p, k in table.items() if k == "Static"}
+    if not files:
+        errors.append("no kDeskUiFiles entries found in include/desk_ui_gz.h")
+    for p in sorted(static - files - redirects):
+        errors.append(f"{p} is Static but neither a desk file nor a redirect")
+    for p in sorted((files | redirects) - static):
+        errors.append(f"{p} is a desk file or redirect but not a Static route")
     if len(re.findall(r"\bserver\.on\(", main_cpp)) != 1:
         errors.append("server.on() used outside route(): register through the table")
 
@@ -77,6 +91,7 @@ def main() -> int:
 
     for e in errors:
         print("FAIL", e)
+    print(f"static: {len(files)} files + {len(redirects)} redirects = {len(static)} Static routes")
     print(f"routes: {len(table)} in table, {len(registered)} registered, "
           f"{len(seen)} in README -> {'FAIL' if errors else 'PASS'}")
     return 1 if errors else 0
