@@ -101,7 +101,7 @@ python3 tools/flash_gate.py esp32dev                # used/free of the app slot;
 
 ### How the node serves it (V2)
 
-- `/` is `index.html`; `/app.js`, `/style.css`, `/qr.js`, `/from.js`, `/show.js`, `/caps.js` are their files. Each is sent
+- `/` is `index.html`; `/app.js`, `/style.css`, `/qr.js`, `/from.js`, `/show.js`, `/caps.js`, `/dmxfeed.js` are their files. Each is sent
   from PROGMEM (`beginResponse_P`, no heap copy), already gzipped: `Content-Encoding: gzip`, `Content-Type` from the table in
   `desk_ui_gz.h`, `ETag: "<first 16 hex of the raw file's sha256>"`, `Cache-Control: no-cache`.
 - **304 rule:** a request whose `If-None-Match` lists that ETag (or `*`; a `W/` prefix is accepted) gets `304` with the ETag and
@@ -323,7 +323,7 @@ curl 'http://192.168.4.1/set?ch=1&v=255'                                     # o
 | GET | - | yes | `/node/manifest` | - | Firmware node manifest (routes generated from the route table) |
 | GET | - | yes | `/manifest.json` | - | Same firmware node manifest |
 | GET | - | - | `/wifi/scan` | - | JSON SSID scan (same origin only) |
-| GET | - | - | `/` `/app.js` `/style.css` `/qr.js` `/from.js` `/show.js` `/caps.js` | - | di's desk UI files from flash (gzip, ETag, 304) |
+| GET | - | - | `/` `/app.js` `/style.css` `/qr.js` `/from.js` `/show.js` `/caps.js` `/dmxfeed.js` | - | di's desk UI files from flash (gzip, ETag, 304) |
 | GET | - | - | `/control` `/patch` `/scenes` `/vj` `/network` `/system` `/performance` | - | 301 to the desk (`/#control` or `/`) |
 | WS | - | - | `/ws` | - | Status push every ~400 ms; refuses a foreign `Origin` |
 

@@ -64,9 +64,9 @@ a=[p for p in m["protocols"] if p["id"]=="artnet"][0]; s=[p for p in m["protocol
 assert s["universe"]==a["universe"]+1 and a["universe"]==(a["net"]<<8|a["subnet"]<<4|a["uni"])
 print(len(t))' >/dev/null 2>&1; then pass=$((pass+1)); echo "ok   manifest route_table + net/sub/uni + sACN = PA+1"
 else fail=$((fail+1)); echo "FAIL manifest route_table / universe fields"; fi
-# V2 desk UI served from flash: 7 files (200, gzip, Content-Type, ETag), 304, 301s
+# V2 desk UI served from flash: 8 files (200, gzip, Content-Type, ETag), 304, 301s
 for spec in "/|text/html" "/app.js|application/javascript" "/style.css|text/css" "/qr.js|application/javascript" \
-            "/from.js|application/javascript" "/show.js|application/javascript" "/caps.js|application/javascript"; do
+            "/from.js|application/javascript" "/show.js|application/javascript" "/caps.js|application/javascript" "/dmxfeed.js|application/javascript"; do
   path="${spec%%|*}"; mime="${spec##*|}"
   h="$(hdr "$base$path")"
   if grep -q '^HTTP/[0-9.]* 200' <<<"$h" && grep -qi '^content-encoding: gzip' <<<"$h" \
