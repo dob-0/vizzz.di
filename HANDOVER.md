@@ -3,7 +3,7 @@
 **Node BA6FCC (192.168.88.66):** runs `int/2026-10-15` **defb77e** = V0–V4: di's desk UI served from flash at `/` (ETag/304), the
 /api bridge (23 class-a real, 28 static/refusing, 8 at 404 JSON; ArduinoJson 7.4.2; per-request frozen block; 503 under 32 KB max block).
 Proven on the node: check_http_api 61/61, di's `test-http.js --class a` 23/23, net_probe 13/13, /api/state 3,981 B in 48 ms, heap max
-block 94,196 B idle / 86,004 B with 3 ws clients. Shown to the owner with di-show. Not proven: a light on the DMX cable; the 1 h soak;
+block 94,196 B idle / 86,004 B with 3 ws clients. USB re-proven (usb_probe 8/8). Shown to the owner with di-show. CAUTION: di's class-a suite removes fixtures on hardware (README 'Testing rule'); an open desk page polls ~6 req/s and the largest free block then sits at 65–82 KB (D3+V5 fix the poll). Not proven: a light on the DMX cable; the 1 h soak;
 the owner's phone; CPU cost of the windowed pull at 32 fixtures (V7).
 
 **Owed from V4's cloud run** (its sandbox died at the 5 h limit before the PR): DESK_BRIDGE_CORE.md §4 decision text, AGENTS.md

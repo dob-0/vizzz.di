@@ -301,6 +301,8 @@ curl 'http://192.168.4.1/set?ch=1&v=255'                                     # o
 
 ### Desk API (`/api/*`, build step V4)
 
+**Testing rule:** di's `test-http.js --class a` adds and REMOVES fixtures and groups; run it against `tools/simulate_node.py`. On a real node only with `curl http://<node>/api/state > patch-before.json` first and a restore afterwards (measured 2026-10-15: two runs left the node with 0 fixtures).
+
 di's desk page at `/` talks to these. They are di's own desk API, held to di's
 `serverXR/src/lighting/api-contract.json` (vendored as
 `test/fixtures/api-contract.v1.json`, commit 091a1a6): **23 class-a routes really
