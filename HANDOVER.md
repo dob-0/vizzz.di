@@ -1,45 +1,19 @@
-# Lead hand-over — 2026-10-15 14:2x (account b, fresh 5 h window; V4 landed and flashed)
+# Lead hand-over — 2026-10-15 16:3x (account b stopped at its usage limit; node on fw 3f8998b = V0–V6)
 
-**Node BA6FCC (192.168.88.66):** runs `int/2026-10-15` **defb77e** = V0–V4: di's desk UI served from flash at `/` (ETag/304), the
-/api bridge (23 class-a real, 28 static/refusing, 8 at 404 JSON; ArduinoJson 7.4.2; per-request frozen block; 503 under 32 KB max block).
-Proven on the node: check_http_api 61/61, di's `test-http.js --class a` 23/23, net_probe 13/13, /api/state 3,981 B in 48 ms, heap max
-block 94,196 B idle / 86,004 B with 3 ws clients. USB re-proven (usb_probe 8/8). Shown to the owner with di-show. CAUTION: di's class-a suite removes fixtures on hardware (README 'Testing rule'); an open desk page polls ~6 req/s and the largest free block then sits at 65–82 KB (D3+V5 fix the poll). Not proven: a light on the DMX cable; the 1 h soak;
-the owner's phone; CPU cost of the windowed pull at 32 fixtures (V7).
-
-**Owed from V4's cloud run** (its sandbox died at the 5 h limit before the PR): DESK_BRIDGE_CORE.md §4 decision text, AGENTS.md
-DeskApi route rule; its reviewer verdict (lead reviewed instead). The branch is merged (no PR exists for V4).
-
-**PRs:** vizzz.di #1–#8 merged. di.iiii #939 (D0+D1) and #941 (D2) wait for the owner's look and merge into dev (in that order).
-
-**DONE 11:2xZ:** D3 → di.iiii PR #976 (verified: dmxfeed 8/8, class-a ok, lint 60 routes); D4 → di.iiii PR #975 (bundle hashes = desk_ui.lock 7/7
-with `--gz python`); V5 → vizzz.di PR #9 MERGED into int (68/68, gate 231,376 B free, http 70/70). V5 NOT flashed yet: the 60 min soak on
-defb77e runs until ~12:25Z; then flash + `heap_probe --sse 1|3|5`. di.iiii merge order on dev: #939 → #941 → #976 → #975 (owner).
-**12:0xZ:** V6 → vizzz.di PR #10 MERGED into int (73/73, gate 231,248 B free, http 70/70; flash with V5 after the soak). D5 → di.iiii
-PR #977 (screens looked right: six rectangle groups under Setup, hidden on a machine). **di.iiii batch PR #980** (land/batch-2026-10-15-desk)
-merges #939 #941 #976 #975 #977 into dev in order; push gates passed on aylmo; D5's Playwright test needs the CI browser; the owner
-presses Merge when CI is green (the classifier refuses a self-merge from this session).
-**Earlier (fired 11:27Z, account b cloud):** trig_01N3ZajwWnZrjjgJ66yZ891F — **V6** fixtures v2 + MAX_FIXTURES 32 (Sonnet) →
-`cloud/desk-fixtures-v2-2026-10-15`; trig_012wMM8UEQEjbaXo4Yn8y3rx — **D5** 'This node' section (Opus) → `cloud/desk-node-section-2026-10-15`.
-**Lamp:** a Cameo Thunder Wash 100 RGB at A001 in mode 6Ch2 (intensity, strobe, duration, R, G, B per Open Fixture Library); the node
-holds ch1-6 = 245,0,0,245,0,0 (red); owner plugs the DMX cable; light not yet seen.
-**Earlier runs (fired 11:07Z; schedules disabled after the fire):**
-- trig_01NTfnWaVxo5TMUzXL4gTupN — di.iiii **D3** stream transport → `cloud/desk-stream-transport-2026-10-15`, draft PR to dev.
-- trig_01QLNGej9w36PCeEkZGgSNht — vizzz.di **V5** SSE /api/dmx/stream → `cloud/desk-dmx-stream-2026-10-15`, draft PR to int.
-- trig_01R9apNzZYHtPp5qf6DefTNH — di.iiii **D4** bundle export → `cloud/desk-bundle-export-2026-10-15`, draft PR to dev.
-A watcher on aylmo wakes the lead when all three PRs exist. Trap: a cloud run that hits its 5 h limit pushes its branch and never
-opens the PR (check `list_runs` → `get_run_log`, last line `rate_limit: rejected (five_hour)`); merge the branch by hand then.
-
-**Next (plan §4):** D3 (stream transport in di's UI, caps.stream) + V5 (SSE /api/dmx/stream, client cap, heap with 1/3/5 clients) →
-D4 (bundle export) → D5 (This node section) + V6 (MAX_FIXTURES 32, NVS v2) → V7 (simulator parity, phone, latency vs old console).
-A logged-in lead creates the cloud routines (RemoteTrigger is OAuth-only). Owner decisions open: login/token; DMX Out blackout mapping.
-
-```bash
-cd ~/work/vizzz.di && git checkout int/2026-10-15 && git pull
-PLATFORMIO_CORE_DIR=$PWD/.platformio-core ~/.local/bin/pio run -e esp32dev -t upload   # gate prints used/free
-tools/check_http_api.sh http://192.168.88.66; node tools/heap_probe.mjs --node http://192.168.88.66 --clients 3
-di-show http://192.168.88.66/   # di's desk, served by the node
-```
-Ledger rows: N668 N669 N671 N677 N680 N686 N689 N690 N691 (.4–.11) N738. Memory: reference_vizzz_node_ba6fcc.md.
+**Node BA6FCC (192.168.88.66):** fw **3f8998b** (V0–V6: di desk served, /api bridge, SSE stream, fixtures v2 with 32 slots). Proven: migration
+(4 rgb back, 12 slots converted, 0 unmapped), 13 fixtures add/remove, http 70/70, net 13/13, 60 min soak on defb77e (0 failures, 0 reboots,
+max block 47–90 KB under a polling desk tab), blackout-vs-cue, USB 8/8 (on defb77e).
+**OPEN BUG (first thing for the next lead):** `GET /api/dmx/stream` answers **404** when the request carries `Accept: text/event-stream`
+(curl -H 'accept: text/event-stream' → 404; plain curl → 200 with frames). Browsers' EventSource always sends that header, so di's desk on
+the node falls back to polling; `tools/heap_probe.mjs --sse N` fails the same way, so the 1/3/5-client heap numbers are NOT measured.
+Look at the DeskApi route gate in main.cpp (route("/api/dmx/stream", apiDmxStream) + AsyncEventSource sse) and vizzz_core.h's Accept
+handling; fix, native test with that header, flash, then heap_probe --sse 1/3/5 (rule: max block > 64 KB) and the desk in a browser.
+**Lamp:** Cameo Thunder Wash 100 RGB at A001, mode 6Ch2; node holds ch1-6 = 245,0,0,245,0,0 (red); the owner has not yet said whether the
+cable is in and the lamp lights (ledger N827). No proper profile for intensity/strobe/duration/R/G/B (owed).
+**di.iiii:** batch PR #980 MERGED into dev = D1–D5 landed (#939 closed, #941 #976 #975 #977 merged). Owed: the session-note fold
+(`npm run land` on dev through a land PR; the local `dev` branch sits in another job's worktree .claude/worktrees/cloud-dev); the look at
+dev.diiii.xyz/light; aylmo `di update`. V7 (simulator parity, phone, latency vs the old console) not started.
+Owner decisions open: login/token on operator routes; DMX Out blackout mapping. Ledger: N691 N807 N824 N826 N827 N840 N841 N686 N671.
 
 ---
 
