@@ -13,6 +13,8 @@
 
 #include <math.h>
 #include <atomic>
+#include <memory>
+#include <ArduinoJson.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 
@@ -300,6 +302,11 @@ struct FixtureDef {
 };
 static FixtureDef fixtures[MAX_FIXTURES];
 static uint8_t fixtureCount = 4;
+// The desk profile per fixture slot (V4): an index into vizzz::desk::kProfiles,
+// or kNoProfile = "pick by width" (profileForWidth). NVS fixtures/prof, beside
+// the unchanged FixtureDef blob; a profile whose width no longer matches
+// start..end (an edit through /fixture/set) is ignored. Guarded by gLock.
+static uint8_t fixtureProfile[MAX_FIXTURES];
 
 static void initFixtureDefaults() {
   const uint16_t starts[MAX_FIXTURES] = {1, 4, 7, 10, 64, 67, 70, 73, 128, 131, 134, 137};
@@ -314,6 +321,7 @@ static void initFixtureDefaults() {
     fixtures[i].x = xs[i];
     fixtures[i].y = ys[i];
     fixtures[i].enabled = (i < fixtureCount);
+    fixtureProfile[i] = vizzz::desk::kNoProfile;
   }
 }
 
@@ -321,6 +329,7 @@ static void saveFixtures() {
   prefs.begin("fixtures", false);
   prefs.putUChar("count", fixtureCount);
   prefs.putBytes("items", fixtures, sizeof(fixtures));
+  prefs.putBytes("prof", fixtureProfile, sizeof(fixtureProfile));
   prefs.end();
 }
 
@@ -329,7 +338,11 @@ static void loadFixtures() {
   prefs.begin("fixtures", true);
   uint8_t count = prefs.getUChar("count", fixtureCount);
   size_t got = prefs.getBytes("items", fixtures, sizeof(fixtures));
+  size_t gotProf = prefs.getBytes("prof", fixtureProfile, sizeof(fixtureProfile));
   prefs.end();
+  if (gotProf != sizeof(fixtureProfile)) memset(fixtureProfile, vizzz::desk::kNoProfile, sizeof(fixtureProfile));
+  for (uint8_t i = 0; i < MAX_FIXTURES; i++)
+    if (fixtureProfile[i] >= vizzz::desk::kProfileCount) fixtureProfile[i] = vizzz::desk::kNoProfile;
   if (got == sizeof(fixtures)) {
     fixtureCount = constrain(count, uint8_t(1), MAX_FIXTURES);
     for (uint8_t i = 0; i < MAX_FIXTURES; i++) {
@@ -396,6 +409,27 @@ static uint32_t fadeStartMs = 0;
 static uint32_t fadeTimeMs  = 1000;
 static uint8_t  fadeFrom[MAX_CH];
 static uint8_t  fadeTo  [MAX_CH];
+
+// Identify (V4 api/fixtures/identify): the flashed channels' web-layer values
+// are kept here and written back when the timer ends. A fade start or a
+// blackout drops the saved values without restoring them, so a recall made
+// during identify is never overwritten by the restore. Guarded by gLock.
+static uint8_t  identSaved[MAX_CH];
+static uint8_t  identMask[MAX_CH / 8];
+static bool     identActive  = false;
+static uint32_t identStartMs = 0;
+static uint32_t identDurMs   = 0;
+static uint32_t identSlots   = 0;   // fixture slot bits being flashed (for the reply)
+
+// api/input/release: the held network frame is let go of (network-only mode,
+// fallback off) until a network source is live again. Guarded by gLock.
+static bool holdReleased = false;
+
+// /status counters for the /api routes (V4): replies sent, and replies refused
+// with 503 "node busy" because the largest free block was under 32 KB.
+static std::atomic<uint32_t> apiReplies{0};
+static std::atomic<uint32_t> apiBusy{0};
+static volatile uint32_t artOutPackets = 0;   // Art-Net OUT frames sent (/api/state status.packetsSent)
 
 // Mutex guards webVals and all fade state across cores
 static SemaphoreHandle_t gLock;
@@ -882,7 +916,60 @@ static void refreshSacnSocket() {
 }
 
 // ── Scenes ────────────────────────────────────────────────────────────────────
+// NVS scenes/sN (512 B) stays the store. V4 keeps a RAM copy of all 8 slots
+// (plan §3: /api/state must not read NVS per poll), loaded at boot and updated
+// on every save; sN.name and sN.fade (V4, decision 2) carry di's scene name
+// and per-scene fade. All of it is guarded by gLock.
+static uint8_t  sceneCache[SCENE_COUNT][MAX_CH];
+static uint8_t  sceneSaved = 0;                  // bit n: slot n holds a scene
+static char     sceneName[SCENE_COUNT][vizzz::desk::kSceneNameMax + 1];  // "" = "Scene N"
+static uint32_t sceneFade[SCENE_COUNT];          // default fade of a desk recall, ms
+static int8_t   deskActiveScene = -1;            // last slot recalled through /api
+static volatile bool pendingSceneReload = false; // a save could not reach the cache: loop() reloads
+
+static void sceneKey(char* key, size_t n, uint8_t slot, const char* suffix) {
+  snprintf(key, n, "s%u%s", slot, suffix);
+}
+
+// Reads every slot from NVS into the cache. Boot, and loop() after a save that
+// found gLock busy.
+static void loadSceneCache() {
+  static uint8_t buf[MAX_CH];          // loop()/setup() only
+  for (uint8_t n = 0; n < SCENE_COUNT; n++) {
+    char key[12];
+    char name[vizzz::desk::kSceneNameMax + 1] = "";
+    sceneKey(key, sizeof(key), n, "");
+    prefs.begin("scenes", true);
+    size_t got = prefs.getBytes(key, buf, MAX_CH);
+    sceneKey(key, sizeof(key), n, ".name");
+    if (got == MAX_CH && prefs.isKey(key)) prefs.getString(key, name, sizeof(name));
+    sceneKey(key, sizeof(key), n, ".fade");
+    uint32_t fade = got == MAX_CH ? prefs.getULong(key, 0) : 0;
+    prefs.end();
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(100)) != pdTRUE) { pendingSceneReload = true; return; }
+    if (got == MAX_CH) {
+      memcpy(sceneCache[n], buf, MAX_CH);
+      sceneSaved |= uint8_t(1u << n);
+    } else {
+      memset(sceneCache[n], 0, MAX_CH);
+      sceneSaved &= uint8_t(~(1u << n));
+    }
+    char clean[vizzz::desk::kSceneNameMax + 1];
+    vizzz::desk::cleanName(name, clean, sizeof(clean));
+    memcpy(sceneName[n], clean, sizeof(clean));
+    sceneFade[n] = fade > vizzz::desk::kFadeMaxMs ? vizzz::desk::kFadeMaxMs : fade;
+    xSemaphoreGive(gLock);
+  }
+}
+
 static void loadScene(uint8_t n, uint8_t* dst) {
+  if (n < SCENE_COUNT && xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
+    if ((sceneSaved >> n) & 1u) memcpy(dst, sceneCache[n], MAX_CH);
+    else memset(dst, 0, MAX_CH);
+    xSemaphoreGive(gLock);
+    return;
+  }
+  // Lock busy: the NVS copy, which is what this always read before V4.
   char key[4];
   snprintf(key, sizeof(key), "s%u", n);
   prefs.begin("scenes", true);
@@ -896,6 +983,36 @@ static void saveScene(uint8_t n, const uint8_t* src) {
   snprintf(key, sizeof(key), "s%u", n);
   prefs.begin("scenes", false);
   prefs.putBytes(key, src, MAX_CH);
+  prefs.end();
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) {
+    memcpy(sceneCache[n], src, MAX_CH);
+    sceneSaved |= uint8_t(1u << n);
+    xSemaphoreGive(gLock);
+  } else {
+    pendingSceneReload = true;
+  }
+}
+
+// The name and default fade of a slot (NVS sN.name, sN.fade). Call without gLock.
+static void saveSceneMeta(uint8_t n, const char* name, uint32_t fadeMs) {
+  char key[12];
+  prefs.begin("scenes", false);
+  sceneKey(key, sizeof(key), n, ".name");
+  if (name && name[0]) prefs.putString(key, name); else prefs.remove(key);
+  sceneKey(key, sizeof(key), n, ".fade");
+  prefs.putULong(key, fadeMs);
+  prefs.end();
+}
+
+static void removeSceneNvs(uint8_t n) {
+  char key[12];
+  prefs.begin("scenes", false);
+  sceneKey(key, sizeof(key), n, "");
+  prefs.remove(key);
+  sceneKey(key, sizeof(key), n, ".name");
+  prefs.remove(key);
+  sceneKey(key, sizeof(key), n, ".fade");
+  prefs.remove(key);
   prefs.end();
 }
 
@@ -938,7 +1055,21 @@ static void loadVj() {
 }
 
 // ── Fade (call with gLock held) ───────────────────────────────────────────────
+static void identifyDrop_locked() {
+  identActive = false;
+  identSlots = 0;
+  memset(identMask, 0, sizeof(identMask));
+}
+
+// Writes the saved values back over the flashed channels.
+static void identifyRestore_locked() {
+  for (uint16_t ch = 0; ch < MAX_CH; ch++)
+    if (identMask[ch >> 3] & (1u << (ch & 7))) webVals[ch] = identSaved[ch];
+  identifyDrop_locked();
+}
+
 static void startFade_locked(const uint8_t* target, uint32_t ms) {
+  identifyDrop_locked();
   memcpy(fadeFrom, webVals, MAX_CH);
   memcpy(fadeTo,   target,  MAX_CH);
   fadeStartMs = millis();
@@ -1037,6 +1168,7 @@ static void tickCueEngine(uint32_t now) {
 // tickCueEngine fires the next step within fade+dwell and fades the rig back
 // up by itself (audit 2026-10-15 1-H2). Call with gLock held.
 static void applyBlackout_locked() {
+  identifyDrop_locked();
   memset(webVals, 0, MAX_CH);
   fadeActive = false;
   cueRunning = false;
@@ -1340,13 +1472,15 @@ static void pollOsc() {
 // falls back to web when all are idle), MERGE_HTP takes max(web, network).
 static void computeOutput_locked(bool aActive, bool sActive, bool uActive, uint32_t nowMs) {
   bool netActive = aActive || sActive || uActive;
+  if (netActive) holdReleased = false;    // a live source ends an api/input/release
+  const bool fallback = artnetFallbackToWeb || holdReleased;
   uint8_t ceiling = effectiveSafeMaxLevel();
   uint8_t slewStep = effectiveSafeSlewStep();
 
   for (int i = 0; i < MAX_CH; i++) {
     uint8_t netIn = vizzz::merge::networkIn(aActive, artVals[i], sActive, sacnVals[i], uActive, usbVals[i]);
     uint8_t v = vizzz::merge::forMode(uint8_t(mode), netActive, netIn, webVals[i], outVals[i],
-                                      artnetFallbackToWeb);
+                                      fallback);
 
     if (masterDimmer < 255) v = vizzz::applyMaster(v, masterDimmer);
     v = vizzz::clampLevel(v, ceiling);
@@ -1383,7 +1517,7 @@ static void sendArtNetOut() {
   lastSentMs = now;
   artOutUdp.beginPacket(artOutTarget(), ARTNET_PORT);
   artOutUdp.write(pkt, sizeof(pkt));
-  artOutUdp.endPacket();
+  if (artOutUdp.endPacket()) artOutPackets = artOutPackets + 1;
 }
 
 // ── Art-Net IN ────────────────────────────────────────────────────────────────
@@ -1695,6 +1829,8 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     "\"usb_frames\":%lu,"
     "\"usb_baud\":%lu,"
     "\"rst\":\"%s\","
+    "\"api_replies\":%lu,"
+    "\"api_busy\":%lu,"
     "%s,"
     "\"fw\":\"%s\""
     "}",
@@ -1727,6 +1863,8 @@ static size_t fillStatusJSON(char* buf, size_t n) {
     (unsigned long)usbFrames,
     (unsigned long)USB_WIDGET_BAUD,
     resetReasonName(esp_reset_reason()),
+    (unsigned long)apiReplies.load(std::memory_order_relaxed),
+    (unsigned long)apiBusy.load(std::memory_order_relaxed),
     healthFields,
     FW_BUILD
   );
@@ -2004,24 +2142,33 @@ static String nodeManifestJSON() {
     DMX_TX, DMX_DIR, MAX_CH, (unsigned long)DMX_PERIOD_MS,
     vizzz::CONSOLE_HEADER);
   out += buf;
+  // The /api/* desk routes are listed as their own protocol entry below (one
+  // line, not 57): the manifest stays the size it was before V4.
+  bool first = true;
   for (size_t i = 0; i < vizzz::kRouteCount; i++) {
-    if (i) out += ',';
+    if (vizzz::kRoutes[i].kind == vizzz::RouteKind::DeskApi) continue;
+    if (!first) out += ',';
+    first = false;
     out += '"'; out += vizzz::kRoutes[i].path; out += '"';
   }
   out += "],\"route_table\":[";
+  first = true;
   for (size_t i = 0; i < vizzz::kRouteCount; i++) {
     const vizzz::RouteKind k = vizzz::kRoutes[i].kind;
+    if (k == vizzz::RouteKind::DeskApi) continue;
     snprintf(buf, sizeof(buf), "%s{\"path\":\"%s\",\"methods\":\"%s\",\"console_header\":%s,\"cors\":%s}",
-             i ? "," : "", vizzz::kRoutes[i].path, vizzz::routeMethods(k),
+             first ? "" : ",", vizzz::kRoutes[i].path, vizzz::routeMethods(k),
              k == vizzz::RouteKind::Console ? "true" : "false",
              vizzz::routeSendsAcao(k) ? "true" : "false");
     out += buf;
+    first = false;
   }
   const uint16_t pa = universe();
   char healthFields[96];
   vizzz::healthJsonFields(healthFields, sizeof(healthFields), healthFacts());
   snprintf(buf, sizeof(buf),
       "]},"
+      "{\"id\":\"desk-api\",\"role\":\"control\",\"prefix\":\"/api/\",\"paths\":%u,\"contract_version\":%d,\"post_content_type\":\"application/json\",\"max_body\":%u},"
       "{\"id\":\"websocket\",\"role\":\"live-status\",\"endpoint\":\"/ws\",\"push_ms\":400},"
       "{\"id\":\"artnet\",\"role\":\"input-output\",\"port\":%u,\"universe\":%u,\"net\":%u,\"subnet\":%u,\"uni\":%u,\"output_target\":\"%s\",\"output_enabled\":%s},"
       "{\"id\":\"sacn\",\"role\":\"input\",\"port\":%u,\"universe\":%u,\"universe_rule\":\"artnet port-address + 1\"},"
@@ -2032,6 +2179,7 @@ static String nodeManifestJSON() {
     "\"state\":{\"output_mode\":\"%s\",\"master\":%u,\"artnet_active\":%s,\"sacn_active\":%s,\"web_enabled\":%s,\"fx_mode\":\"%s\",\"fx_enabled\":%s,\"color_enabled\":%s,\"burn_safe\":%s,\"safe_ceiling\":%u,\"safe_slew_step\":%u,%s},"
     "\"sync\":{\"source\":\"firmware\",\"live_status\":\"/ws\",\"durable_config\":\"ESP32 Preferences NVS\",\"git_policy\":\"verify, commit, push origin/main\"}"
     "}",
+    unsigned(vizzz::desk::kDeskApiCount), DESK_UI_CONTRACT_VERSION, unsigned(vizzz::desk::kMaxBody),
     ARTNET_PORT, pa, unsigned(pa >> 8) & 0x7f, unsigned(pa >> 4) & 0x0f, unsigned(pa) & 0x0f,
     outTarget.c_str(), artOutEnabled ? "true" : "false",
     SACN_PORT, sacnUniverse(),
@@ -2143,6 +2291,1158 @@ static void sendGateRefusal(AsyncWebServerRequest* r, vizzz::RouteKind kind, viz
   r->send(res);
 }
 
+// ── Desk API (/api/*, plan step V4) ───────────────────────────────────────────
+// di's desk page (served at /) talks to these. Shapes and mapping rules live in
+// include/vizzz_desk.h (pure, tested); this is the glue: parse the body
+// (ArduinoJson), change the node's state under gLock exactly as the console
+// routes do, freeze the facts a reply reads, and stream the reply through the
+// V3 writer. docs/DESK_BRIDGE_CORE.md §4 has the decisions.
+namespace dk = vizzz::desk;
+
+static const char* const kFxModeNames[] = {"none", "strobe", "chase", "pulse", "sine",
+                                           "sparkle", "comet", "bars", "glitch", "radar"};
+static constexpr uint8_t kFxModeCount = sizeof(kFxModeNames) / sizeof(kFxModeNames[0]);
+static_assert(kFxModeCount == uint8_t(FX_RADAR) + 1, "kFxModeNames follows enum FxMode");
+
+// One per reply: every fact the writer reads, copied once (decision 4). The
+// pull adaptor re-runs the writer for every TCP chunk, so a fact that changed
+// between pulls would cut the JSON; these copies never change. Allocated with
+// the saved scene snapshots the reply lists appended (snapCap x 512 B), freed
+// when the response is destroyed (the shared_ptr in the filler).
+struct DeskBlock {
+  dk::JsonWriter w;
+  dk::DeskFacts f;
+  dk::ReplyArgs a;
+  dk::InputFacts in;
+  uint8_t web[MAX_CH];
+  uint8_t out[MAX_CH];
+  dk::NodeFixture fx[MAX_FIXTURES];
+  dk::GroupRange gr[MAX_GROUPS];
+  const uint8_t* scenePtr[SCENE_COUNT];
+  const char* sceneNamePtr[SCENE_COUNT];
+  char sceneNameBuf[SCENE_COUNT][dk::kSceneNameMax + 1];
+  uint32_t sceneFadeBuf[SCENE_COUNT];
+  uint8_t chase[MAX_CUES];
+  dk::NetIface ifs[2];
+  char ifAddr[2][16], ifMask[2][16], bcastBuf[2][16], target[16];
+  const char* bcast[2];
+  const char* targets[1];
+  char nodeName[MAX_NAME_LEN + 1];
+  uint8_t snapCap;
+  uint8_t* snap(uint8_t k) { return reinterpret_cast<uint8_t*>(this + 1) + size_t(k) * MAX_CH; }
+};
+
+static uint8_t popcount8(uint8_t v) { uint8_t n = 0; while (v) { n += v & 1u; v >>= 1; } return n; }
+
+// A fixture slot as the desk sees it. Call with gLock held.
+static dk::NodeFixture deskFixture_locked(uint8_t i) {
+  dk::NodeFixture nf;
+  memset(&nf, 0, sizeof(nf));
+  memcpy(nf.name, fixtures[i].name, sizeof(nf.name));
+  nf.name[sizeof(nf.name) - 1] = 0;
+  nf.start = fixtures[i].start;
+  const uint16_t width = fixtures[i].end >= fixtures[i].start ? uint16_t(fixtures[i].end - fixtures[i].start + 1) : 1;
+  const uint8_t p = fixtureProfile[i];
+  nf.profile = (p < dk::kProfileCount && dk::kProfiles[p].count == width) ? p : dk::profileForWidth(width, nullptr);
+  nf.x = fixtures[i].x;
+  nf.y = fixtures[i].y;
+  nf.enabled = fixtures[i].enabled && i < fixtureCount;
+  return nf;
+}
+
+static void deskFixtures_locked(dk::NodeFixture* out) {
+  for (uint8_t i = 0; i < MAX_FIXTURES; i++) out[i] = deskFixture_locked(i);
+}
+
+// The facts that need no gLock (Wi-Fi, identity, the Art OUT peer). Call
+// BEFORE taking gLock: snapIdentity() takes it itself.
+static void deskPre(DeskBlock* b) {
+  IdentitySnap id;
+  snapIdentity(id);
+  strlcpy(b->nodeName, id.name, sizeof(b->nodeName));
+  uint8_t n = 0;
+  IPAddress ap = WiFi.softAPIP();
+  if (uint32_t(ap) != 0) {
+    ipToCStr(b->ifAddr[n], sizeof(b->ifAddr[n]), ap);
+    strlcpy(b->ifMask[n], "255.255.255.0", sizeof(b->ifMask[n]));   // startSoftAP()'s mask
+    ipToCStr(b->bcastBuf[n], sizeof(b->bcastBuf[n]), IPAddress(ap[0], ap[1], ap[2], 255));
+    b->ifs[n] = {"ap", b->ifAddr[n], b->ifMask[n]};
+    n++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    IPAddress ip = WiFi.localIP(), mask = WiFi.subnetMask();
+    ipToCStr(b->ifAddr[n], sizeof(b->ifAddr[n]), ip);
+    ipToCStr(b->ifMask[n], sizeof(b->ifMask[n]), mask);
+    ipToCStr(b->bcastBuf[n], sizeof(b->bcastBuf[n]), IPAddress(uint32_t(ip) | ~uint32_t(mask)));
+    b->ifs[n] = {"sta", b->ifAddr[n], b->ifMask[n]};
+    n++;
+  }
+  for (uint8_t k = 0; k < n; k++) b->bcast[k] = b->bcastBuf[k];
+  b->f.interfaceCount = n;
+  b->f.broadcastCount = n;
+  const uint32_t peer = artOutPeerAddr.load(std::memory_order_relaxed);
+  b->f.outputTargetCount = 0;
+  b->f.outputMode = "broadcast";
+  if (peer) {
+    ipToCStr(b->target, sizeof(b->target), IPAddress(peer));
+    b->targets[0] = b->target;
+    b->f.outputTargetCount = 1;
+    b->f.outputMode = "unicast";
+  }
+}
+
+// Copies what the reply reads. sceneMask: the saved slots whose snapshots it
+// lists (at most snapCap of them are copied). Call with gLock held.
+static void deskFreeze_locked(DeskBlock* b, uint8_t sceneMask) {
+  dk::DeskFacts& f = b->f;
+  memcpy(b->web, webVals, MAX_CH);
+  memcpy(b->out, outVals, MAX_CH);
+  deskFixtures_locked(b->fx);
+  for (uint8_t g = 0; g < MAX_GROUPS; g++) {
+    memcpy(b->gr[g].name, groups[g].name, sizeof(b->gr[g].name));
+    b->gr[g].name[sizeof(b->gr[g].name) - 1] = 0;
+    b->gr[g].start = groups[g].start;
+    b->gr[g].end = groups[g].end;
+    b->gr[g].enabled = groups[g].enabled;
+  }
+  uint8_t k = 0;
+  for (uint8_t s = 0; s < SCENE_COUNT; s++) {
+    b->scenePtr[s] = nullptr;
+    if (((sceneMask & sceneSaved) >> s) & 1u && k < b->snapCap) {
+      memcpy(b->snap(k), sceneCache[s], MAX_CH);
+      b->scenePtr[s] = b->snap(k++);
+    }
+    memcpy(b->sceneNameBuf[s], sceneName[s], sizeof(b->sceneNameBuf[s]));
+    b->sceneNamePtr[s] = b->sceneNameBuf[s][0] ? b->sceneNameBuf[s] : nullptr;
+    b->sceneFadeBuf[s] = sceneFade[s];
+  }
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < cueCount && i < MAX_CUES; i++)
+    if ((sceneSaved >> cueList[i].scene) & 1u) b->chase[n++] = cueList[i].scene;
+  f.chaseCount = n;
+  f.chaseRunning = cueRunning;
+  f.chaseHoldMs = cueCount ? cueList[0].dwellMs : 0;
+  f.chaseFadeMs = cueCount ? cueList[0].fadeMs : 0;
+  f.activeScene = (deskActiveScene >= 0 && ((sceneSaved >> deskActiveScene) & 1u)) ? deskActiveScene : -1;
+  f.master = masterDimmer;
+  f.blackout = false;   // the node has no blackout flag: /blackout clears the web layer
+  f.fxMode = fxModeName(fxMode);
+  f.fxBpm = fxBpm;
+  f.fxDepth = fxDepth;
+  f.fxEnabled = fxEnabled;
+  f.outputEnabled = artOutEnabled;
+  f.packetsSent = artOutPackets;
+
+  const uint32_t now = millis();
+  dk::InputFacts& in = b->in;
+  in.mode = uint8_t(mode);
+  in.fallbackToWeb = artnetFallbackToWeb;
+  in.universe = universe();
+  in.sacnUniverse = sacnUniverse();
+  in.artActive = artnetActive();
+  in.sacnActive = sacnActive();
+  in.usbActive = usbActive();
+  in.artSources = artSourceCount;
+  in.sacnSources = in.sacnActive ? 1 : 0;   // the receiver belongs to loop(); not read here
+  const uint32_t la = lastArtnetMs, ls = lastSacnMs, lu = lastUsbMs;
+  in.artAgeMs = la ? int32_t(now - la) : -1;
+  in.sacnAgeMs = ls ? int32_t(now - ls) : -1;
+  in.usbAgeMs = lu ? int32_t(now - lu) : -1;
+  in.held = mode == MODE_ARTNET && !artnetFallbackToWeb && !holdReleased &&
+            !(in.artActive || in.sacnActive || in.usbActive) && (la || ls || lu);
+}
+
+// Points the DeskFacts at the block's own copies.
+static void deskWire(DeskBlock* b) {
+  dk::DeskFacts& f = b->f;
+  f.web = b->web;
+  f.dmxOut = b->out;                       // decision 3: api/dmx is what is on the cable
+  f.fixtures = b->fx; f.fixtureSlots = MAX_FIXTURES;
+  f.groups = b->gr; f.groupSlots = MAX_GROUPS;
+  f.scenes = b->scenePtr; f.sceneNames = b->sceneNamePtr; f.sceneSlots = SCENE_COUNT;
+  f.sceneFades = b->sceneFadeBuf;
+  f.fxModes = kFxModeNames; f.fxModeCount = kFxModeCount;
+  f.chaseScenes = b->chase;
+  f.outputDriver = "artnet";
+  f.outputTargets = b->targets;
+  f.refreshHz = uint16_t(1000 / DMX_PERIOD_MS);
+  f.interfaces = b->ifs;
+  f.broadcast = b->bcast;
+  f.lastError = nullptr;
+  f.nodeName = b->nodeName;
+  f.input = &b->in;
+}
+
+static void deskSendSmall(AsyncWebServerRequest* r, int code, const dk::ReplyArgs& a) {
+  static const dk::DeskFacts kNoFacts = {};
+  char buf[384];
+  dk::MemorySink m = {buf, sizeof(buf) - 1, 0, false};
+  dk::JsonWriter w;
+  w.begin(dk::memorySink, &m);
+  dk::writeReply(w, kNoFacts, a);
+  buf[m.overflow ? 0 : m.len] = 0;
+  AsyncWebServerResponse* res = r->beginResponse(code, "application/json", buf);
+  res->addHeader("Cache-Control", "no-store");
+  r->send(res);
+  apiReplies.fetch_add(1, std::memory_order_relaxed);
+}
+
+static void deskError(AsyncWebServerRequest* r, int code, const char* msg) {
+  dk::ReplyArgs a = {};
+  a.kind = dk::Reply::Error;
+  a.error = msg;
+  deskSendSmall(r, code, a);
+}
+
+static void deskOk(AsyncWebServerRequest* r, bool chasePaused = false) {
+  dk::ReplyArgs a = {};
+  a.kind = dk::Reply::Ok;
+  a.chasePaused = chasePaused;
+  deskSendSmall(r, 200, a);
+}
+
+static void deskBusy(AsyncWebServerRequest* r) {
+  apiBusy.fetch_add(1, std::memory_order_relaxed);
+  deskError(r, 503, "node busy");
+}
+
+// Decision 7: under kMinFreeBlock of largest free block, answer 503 instead
+// of allocating. nullptr means the 503 has been sent.
+static DeskBlock* deskAlloc(AsyncWebServerRequest* r, uint8_t snaps) {
+  if (ESP.getMaxAllocHeap() < dk::kMinFreeBlock) { deskBusy(r); return nullptr; }
+  DeskBlock* b = static_cast<DeskBlock*>(calloc(1, sizeof(DeskBlock) + size_t(snaps) * MAX_CH));
+  if (!b) { deskBusy(r); return nullptr; }
+  b->snapCap = snaps;
+  return b;
+}
+
+// Streams the reply from the frozen block, chunk by chunk (the V3 writer and
+// its WindowSink pull adaptor); the block is freed with the response.
+static void deskSend(AsyncWebServerRequest* r, DeskBlock* b, int code = 200) {
+  deskWire(b);
+  std::shared_ptr<DeskBlock> sp(b, free);
+  AsyncWebServerResponse* res = r->beginChunkedResponse("application/json",
+      [sp](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
+        return dk::pullReply(sp->f, sp->a, sp->w, buf, maxLen, index);
+      });
+  res->setCode(code);
+  res->addHeader("Cache-Control", "no-store");
+  r->send(res);
+  apiReplies.fetch_add(1, std::memory_order_relaxed);
+}
+
+static bool deskLock(AsyncWebServerRequest* r, DeskBlock* b) {
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) == pdTRUE) return true;
+  free(b);
+  deskError(r, 503, "busy");
+  return false;
+}
+
+// A reply that only reads (GETs, and the POSTs that change nothing first).
+static void deskRead(AsyncWebServerRequest* r, dk::Reply kind, bool scenes) {
+  for (uint8_t attempt = 0; attempt < 2; attempt++) {
+    const uint8_t want = scenes ? popcount8(sceneSaved) : 0;   // a byte read; re-checked under the lock
+    DeskBlock* b = deskAlloc(r, want);
+    if (!b) return;
+    deskPre(b);
+    if (!deskLock(r, b)) return;
+    if (scenes && popcount8(sceneSaved) > want) {   // a save landed in between: size again
+      xSemaphoreGive(gLock);
+      free(b);
+      continue;
+    }
+    deskFreeze_locked(b, scenes ? 0xFF : 0);
+    xSemaphoreGive(gLock);
+    b->a.kind = kind;
+    deskSend(r, b);
+    return;
+  }
+  deskBusy(r);
+}
+
+// ── Bodies ──
+// Body bytes of a DeskApi POST, collected in request->_tempObject (the library
+// free()s it with the request). Over kMaxBody the bytes are dropped and the
+// handler answers 413.
+struct DeskBody {
+  uint16_t len;
+  uint16_t cap;
+  bool tooBig;
+  char data[1];
+};
+
+static void deskBodyChunk(AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t index, size_t total) {
+  if (!vizzz::desk::isJsonContentType(r->contentType().c_str())) return;   // the gate answers 415
+  if (index == 0 && !r->_tempObject) {
+    const bool big = total > dk::kMaxBody;
+    const size_t cap = big ? 0 : (total ? total : dk::kMaxBody);
+    DeskBody* b = static_cast<DeskBody*>(malloc(sizeof(DeskBody) + cap));
+    if (!b) return;                                   // the handler answers 503
+    b->len = 0; b->cap = uint16_t(cap); b->tooBig = big;
+    r->_tempObject = b;
+  }
+  DeskBody* b = static_cast<DeskBody*>(r->_tempObject);
+  if (!b || b->tooBig) return;
+  if (index != b->len || index + len > b->cap) { b->tooBig = true; return; }
+  memcpy(b->data + index, data, len);
+  b->len = uint16_t(b->len + len);
+}
+
+// Parses the body into doc. False when it has answered: 413 too big, 503 no
+// memory for it, 400 not JSON or not an object.
+static bool deskParse(AsyncWebServerRequest* r, JsonDocument& doc) {
+  DeskBody* b = static_cast<DeskBody*>(r->_tempObject);
+  if ((b && b->tooBig) || r->contentLength() > dk::kMaxBody) { deskError(r, 413, "body over 2048 bytes"); return false; }
+  if (!b) {
+    if (r->contentLength()) deskBusy(r);
+    else deskError(r, 400, "invalid JSON: empty body");
+    return false;
+  }
+  DeserializationError e = deserializeJson(doc, b->data, b->len);
+  if (e == DeserializationError::NoMemory) { deskBusy(r); return false; }
+  if (e) { deskError(r, 400, "invalid JSON"); return false; }
+  if (!doc.is<JsonObjectConst>()) { deskError(r, 400, "the body must be a JSON object"); return false; }
+  return true;
+}
+
+// JavaScript truthiness of a body value (di reads `!!body.x`).
+static bool truthy(JsonVariantConst v) {
+  if (v.isNull()) return false;
+  if (v.is<bool>()) return v.as<bool>();
+  if (v.is<double>()) return v.as<double>() != 0;
+  if (v.is<const char*>()) return v.as<const char*>()[0] != 0;
+  return true;
+}
+
+static int idArg(JsonVariantConst v, char prefix, uint32_t max) {
+  return v.is<const char*>() ? dk::parseId(v.as<const char*>(), prefix, max) : -1;
+}
+
+// Bits of the listed fixtures an id list names (unknown ids are skipped, as di does).
+static uint32_t idMask(JsonVariantConst list, JsonVariantConst one) {
+  uint32_t m = 0;
+  if (list.is<JsonArrayConst>()) {
+    for (JsonVariantConst v : list.as<JsonArrayConst>()) {
+      int s = idArg(v, 'f', MAX_FIXTURES);
+      if (s >= 0) m |= 1u << s;
+    }
+  } else {
+    int s = idArg(one, 'f', MAX_FIXTURES);
+    if (s >= 0) m |= 1u << s;
+  }
+  return m;
+}
+
+// {role: number} -> RoleValue list; roles no node profile has are skipped.
+static uint8_t roleValues(JsonVariantConst values, dk::RoleValue* out, uint8_t cap) {
+  uint8_t n = 0;
+  if (!values.is<JsonObjectConst>()) return 0;
+  for (JsonPairConst kv : values.as<JsonObjectConst>()) {
+    int role = dk::roleIndex(kv.key().c_str());
+    if (role < 0 || !kv.value().is<double>() || n >= cap) continue;
+    out[n++] = {dk::Role(role), dk::levelFrom(kv.value().as<double>())};
+  }
+  return n;
+}
+
+static bool universeZero(JsonVariantConst v) { return v.isNull() || (v.is<double>() && v.as<double>() == 0); }
+
+// ── Class a ──
+static void apiMaster(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  JsonVariantConst m = doc["master"], bo = doc["blackout"];
+  if (!m.isNull() && !m.is<double>()) { deskError(r, 400, "master must be a number 0..255"); return; }
+  const bool blackout = truthy(bo);
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) {
+    // A blackout is never dropped (as /blackout): loop() runs it.
+    if (blackout) { pendingBlackout = true; deskOk(r); return; }
+    deskError(r, 503, "busy");
+    return;
+  }
+  if (!m.isNull()) masterDimmer = uint8_t(dk::levelFrom(m.as<double>()));
+  if (blackout) { applyBlackout_locked(); deskActiveScene = -1; }
+  xSemaphoreGive(gLock);
+  deskOk(r);   // blackout:false has nothing to undo: the node keeps no blackout flag
+}
+
+static void apiFixture(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  const int slot = idArg(doc["id"], 'f', MAX_FIXTURES);
+  if (slot < 0) { deskError(r, 404, "no such fixture"); return; }
+  if (!doc["on"].isNull() && !truthy(doc["on"])) {
+    deskError(r, 400, "on:false is not stored on this node (no mute mask yet): set the levels to 0");
+    return;
+  }
+  for (const char* k : {"address", "universe", "profile", "index", "limits"})
+    if (!doc[k].isNull()) { deskError(r, 400, "api/fixture changes values, name and x/y here: re-patch with fixtures/readdress"); return; }
+  if (!doc["values"].isNull() && !doc["values"].is<JsonObjectConst>()) { deskError(r, 400, "values must be an object"); return; }
+  dk::RoleValue vals[16];
+  const uint8_t nv = roleValues(doc["values"], vals, 16);
+  char name[dk::kFixtureNameMax + 1];
+  const bool hasName = doc["name"].is<const char*>() && dk::cleanName(doc["name"].as<const char*>(), name, sizeof(name));
+  const bool hasX = doc["x"].is<double>(), hasY = doc["y"].is<double>();
+  DeskBlock* b = deskAlloc(r, 0);
+  if (!b) return;
+  deskPre(b);
+  if (!deskLock(r, b)) return;
+  const dk::NodeFixture f = deskFixture_locked(uint8_t(slot));
+  if (!dk::fixtureListed(f)) { xSemaphoreGive(gLock); free(b); deskError(r, 404, "no such fixture"); return; }
+  if (nv) {
+    dk::writeValues(webVals, f, vals, nv);
+    fadeActive = false;          // a fader move takes the rig over, as in di (engine.cancelFade)
+    deskActiveScene = -1;
+  }
+  if (hasName) strlcpy(fixtures[slot].name, name, sizeof(fixtures[slot].name));
+  if (hasX) fixtures[slot].x = dk::unitToByte(doc["x"].as<double>());
+  if (hasY) fixtures[slot].y = dk::unitToByte(doc["y"].as<double>());
+  deskFreeze_locked(b, 0);
+  xSemaphoreGive(gLock);
+  if (hasName || hasX || hasY) saveFixtures();
+  b->a.kind = dk::Reply::Fixture;
+  b->a.slot = uint8_t(slot);
+  deskSend(r, b);
+}
+
+static void apiFixturesAll(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  if (!doc["on"].isNull() && !truthy(doc["on"])) {
+    deskError(r, 400, "on:false is not stored on this node (no mute mask yet): set the levels to 0");
+    return;
+  }
+  dk::RoleValue vals[16];
+  const uint8_t nv = roleValues(doc["values"], vals, 16);
+  if (nv) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { deskError(r, 503, "busy"); return; }
+    for (uint8_t i = 0; i < MAX_FIXTURES; i++) {
+      const dk::NodeFixture f = deskFixture_locked(i);
+      if (dk::fixtureListed(f)) dk::writeValues(webVals, f, vals, nv);
+    }
+    fadeActive = false;
+    deskActiveScene = -1;
+    xSemaphoreGive(gLock);
+  }
+  deskOk(r);
+}
+
+static void apiRaw(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  dk::ReplyArgs ok = {};
+  ok.kind = dk::Reply::Raw;
+  // One web layer: there are no held channels to release, so clear and a null
+  // or negative value change nothing.
+  if (truthy(doc["clear"])) { deskSendSmall(r, 200, ok); return; }
+  struct Set { uint16_t ch; uint8_t v; };
+  Set sets[64];
+  uint8_t n = 0;
+  auto take = [&](JsonVariantConst c) -> const char* {
+    if (!universeZero(c["universe"])) return "only universe 0 on this node";
+    JsonVariantConst ch = c["channel"], v = c["value"];
+    if (!ch.is<double>() || ch.as<double>() < 1 || ch.as<double>() > MAX_CH || ch.as<double>() != double(ch.as<int>()))
+      return "channel must be 1..512";
+    if (v.isNull() || (v.is<double>() && v.as<double>() < 0)) return nullptr;   // release: nothing held
+    if (!v.is<double>()) return "value must be a number 0..255";
+    if (n >= 64) return "at most 64 channels per request";
+    sets[n++] = {uint16_t(ch.as<int>() - 1), uint8_t(dk::levelFrom(v.as<double>()))};
+    return nullptr;
+  };
+  if (doc["channels"].is<JsonArrayConst>()) {
+    for (JsonVariantConst c : doc["channels"].as<JsonArrayConst>()) {
+      const char* why = take(c);
+      if (why) { deskError(r, 400, why); return; }
+    }
+  } else if (!doc["channel"].isNull()) {
+    const char* why = take(doc.as<JsonVariantConst>());
+    if (why) { deskError(r, 400, why); return; }
+  }
+  if (n) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { deskError(r, 503, "busy"); return; }
+    for (uint8_t k = 0; k < n; k++) webVals[sets[k].ch] = sets[k].v;
+    fadeActive = false;
+    deskActiveScene = -1;
+    xSemaphoreGive(gLock);
+  }
+  deskSendSmall(r, 200, ok);
+}
+
+static void apiFixturesAdd(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  int prof = dk::profileIndex("rgb");                       // di's default profile
+  if (!doc["profile"].isNull()) {
+    prof = doc["profile"].is<const char*>() ? dk::profileIndex(doc["profile"].as<const char*>()) : -1;
+    if (prof < 0) { deskError(r, 400, "unknown profile: the node patches its built-in profiles only (state.profiles)"); return; }
+  }
+  if (!universeZero(doc["universe"])) { deskError(r, 400, "only universe 0 on this node"); return; }
+  const uint8_t width = dk::kProfiles[prof].count;
+  uint32_t count = 1;
+  if (doc["count"].is<double>()) count = doc["count"].as<double>() < 1 ? 1 : uint32_t(doc["count"].as<double>());
+  if (count > MAX_FIXTURES) count = MAX_FIXTURES;
+  uint16_t address = 0;
+  if (!doc["address"].isNull() && !(doc["address"].is<double>() && doc["address"].as<double>() == 0)) {
+    const double a = doc["address"].is<double>() ? doc["address"].as<double>() : -1;
+    if (a < 1 || a > MAX_CH || a != double(int(a))) { deskError(r, 400, "address must be 1..512"); return; }
+    address = uint16_t(a);
+  }
+  char name[dk::kFixtureNameMax + 1];
+  if (!doc["name"].is<const char*>() || !dk::cleanName(doc["name"].as<const char*>(), name, sizeof(name)))
+    strlcpy(name, dk::kProfiles[prof].name, sizeof(name));
+  const bool force = truthy(doc["force"]);
+  DeskBlock* b = deskAlloc(r, 0);
+  if (!b) return;
+  deskPre(b);
+  if (!deskLock(r, b)) return;
+  dk::NodeFixture live[MAX_FIXTURES];
+  deskFixtures_locked(live);
+  if (address && !force) {   // an address typed in must not land on a patched fixture (di: 409)
+    for (uint32_t i = 0; i < count; i++) {
+      const uint32_t start = address + i * width;
+      if (start + width - 1 > MAX_CH) break;
+      const int hit = dk::overlapSlot(live, MAX_FIXTURES, uint16_t(start), width, 0);
+      if (hit >= 0) {
+        xSemaphoreGive(gLock);
+        free(b);
+        deskError(r, 409, "those channels are taken by a patched fixture: patch somewhere else, or send force to stack them");
+        return;
+      }
+    }
+  }
+  uint32_t added = 0;
+  uint16_t at = address ? address : dk::nextFreeAddress(live, MAX_FIXTURES, width);
+  for (uint32_t i = 0; i < count; i++) {
+    int slot = -1;
+    for (uint8_t k = 0; k < MAX_FIXTURES && slot < 0; k++) if (!dk::fixtureListed(live[k])) slot = k;
+    if (slot < 0 || at == 0 || uint32_t(at) + width - 1 > MAX_CH) break;
+    FixtureDef& fd = fixtures[slot];
+    strlcpy(fd.name, name, sizeof(fd.name));
+    fd.start = at;
+    fd.end = uint16_t(at + width - 1);
+    fd.x = dk::unitToByte(0.06 + (slot % 12) * 0.075);   // di lays new fixtures out left to right
+    fd.y = dk::unitToByte(0.28 + (slot / 12) * 0.16);
+    fd.enabled = true;
+    fixtureProfile[slot] = uint8_t(prof);
+    if (slot >= fixtureCount) fixtureCount = uint8_t(slot + 1);
+    live[slot] = deskFixture_locked(uint8_t(slot));
+    added |= 1u << slot;
+    at = address ? uint16_t(at + width) : dk::nextFreeAddress(live, MAX_FIXTURES, width);
+  }
+  // Decision 6: patching never writes the web layer (di's ROLE_DEFAULTS would
+  // light the rig the moment it is patched).
+  if (!added) {
+    xSemaphoreGive(gLock);
+    free(b);
+    deskError(r, 409, "no room: every fixture slot is used, or no free channels fit this profile");
+    return;
+  }
+  deskFreeze_locked(b, 0);
+  xSemaphoreGive(gLock);
+  saveFixtures();
+  b->a.kind = dk::Reply::Added;
+  b->a.slots = added;
+  deskSend(r, b);
+}
+
+static void apiFixturesRemove(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  if (doc["ids"].isNull() && doc["id"].isNull()) { deskError(r, 400, "nothing to remove"); return; }
+  const uint32_t mask = idMask(doc["ids"], doc["id"]);
+  uint8_t removed = 0;
+  if (mask) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { deskError(r, 503, "busy"); return; }
+    for (uint8_t i = 0; i < MAX_FIXTURES; i++)
+      if (((mask >> i) & 1u) && dk::fixtureListed(deskFixture_locked(i))) { fixtures[i].enabled = false; removed++; }
+    xSemaphoreGive(gLock);
+    if (removed) saveFixtures();
+  }
+  // A group whose range now holds no fixture is no longer listed (groupListed),
+  // which is di's "drop any group left with none".
+  dk::ReplyArgs a = {};
+  a.kind = dk::Reply::Removed;
+  a.count = removed;
+  deskSendSmall(r, 200, a);
+}
+
+static void apiFixturesMove(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  if (!doc["moves"].is<JsonArrayConst>()) { deskOk(r); return; }
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { deskError(r, 503, "busy"); return; }
+  bool changed = false;
+  for (JsonVariantConst m : doc["moves"].as<JsonArrayConst>()) {
+    const int s = idArg(m["id"], 'f', MAX_FIXTURES);
+    if (s < 0 || !dk::fixtureListed(deskFixture_locked(uint8_t(s)))) continue;
+    if (m["x"].is<double>()) { fixtures[s].x = dk::unitToByte(m["x"].as<double>()); changed = true; }
+    if (m["y"].is<double>()) { fixtures[s].y = dk::unitToByte(m["y"].as<double>()); changed = true; }
+  }
+  xSemaphoreGive(gLock);
+  if (changed) saveFixtures();
+  deskOk(r);
+}
+
+static void apiFixturesReaddress(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  struct Move { uint8_t slot; double address; };
+  Move moves[MAX_FIXTURES];
+  uint8_t n = 0;
+  auto add = [&](JsonVariantConst m) -> const char* {
+    const int s = idArg(m["id"], 'f', MAX_FIXTURES);
+    if (s < 0) return "no such fixture";
+    if (!universeZero(m["universe"])) return "only universe 0 on this node";
+    if (!m["address"].isNull() && !m["address"].is<double>()) return "address must be 1..512";
+    if (n >= MAX_FIXTURES) return "too many moves";
+    moves[n++] = {uint8_t(s), m["address"].is<double>() ? m["address"].as<double>() : -1};
+    return nullptr;
+  };
+  if (doc["moves"].is<JsonArrayConst>()) {
+    for (JsonVariantConst m : doc["moves"].as<JsonArrayConst>()) {
+      const char* why = add(m);
+      if (why) { deskError(r, strcmp(why, "no such fixture") ? 400 : 404, why); return; }
+    }
+  } else if (!doc["id"].isNull()) {
+    const char* why = add(doc.as<JsonVariantConst>());
+    if (why) { deskError(r, strcmp(why, "no such fixture") ? 400 : 404, why); return; }
+  }
+  if (!n) { deskError(r, 400, "nothing to move"); return; }
+  const bool force = truthy(doc["force"]);
+  DeskBlock* b = deskAlloc(r, 0);
+  if (!b) return;
+  deskPre(b);
+  if (!deskLock(r, b)) return;
+  dk::NodeFixture live[MAX_FIXTURES];
+  deskFixtures_locked(live);
+  uint32_t moving = 0;
+  uint16_t to[MAX_FIXTURES];
+  const char* refuse = nullptr;
+  int code = 409;
+  for (uint8_t k = 0; k < n && !refuse; k++) {
+    const dk::NodeFixture& f = live[moves[k].slot];
+    if (!dk::fixtureListed(f)) { refuse = "no such fixture"; code = 404; break; }
+    const double a = moves[k].address < 0 ? f.start : moves[k].address;
+    const uint16_t addr = uint16_t(a < 1 ? 1 : (a > MAX_CH ? MAX_CH : a));
+    if (!dk::fixtureFits(addr, f.profile)) refuse = "the fixture runs off the end of the universe there";
+    to[k] = addr;
+    moving |= 1u << moves[k].slot;
+  }
+  if (!refuse && !force) {   // atomic, as di: if any lands on another, nothing moves
+    dk::NodeFixture planned[MAX_FIXTURES];
+    memcpy(planned, live, sizeof(planned));
+    for (uint8_t k = 0; k < n; k++) planned[moves[k].slot].start = to[k];
+    for (uint8_t k = 0; k < n && !refuse; k++) {
+      const dk::NodeFixture& f = planned[moves[k].slot];
+      if (dk::overlapSlot(planned, MAX_FIXTURES, f.start, dk::fixtureWidth(f), 1u << moves[k].slot) >= 0)
+        refuse = "those channels are taken by a patched fixture: send force to stack them";
+    }
+  }
+  if (refuse) { xSemaphoreGive(gLock); free(b); deskError(r, code, refuse); return; }
+  for (uint8_t k = 0; k < n; k++) {
+    FixtureDef& fd = fixtures[moves[k].slot];
+    fd.start = to[k];
+    fd.end = uint16_t(to[k] + dk::fixtureWidth(live[moves[k].slot]) - 1);
+  }
+  deskActiveScene = -1;
+  deskFreeze_locked(b, 0);
+  xSemaphoreGive(gLock);
+  saveFixtures();
+  b->a.kind = dk::Reply::Moved;
+  b->a.slots = moving;
+  deskSend(r, b);
+}
+
+// Identify: flash the fixtures' level and emitter roles full for `seconds`
+// (1..10, default 2), then write the saved values back (loop()).
+static void apiFixturesIdentify(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  const bool off = truthy(doc["off"]);
+  const uint32_t mask = off ? 0 : idMask(doc["ids"], JsonVariantConst());
+  if (!off && !mask) { deskError(r, 400, "select a fixture to find"); return; }
+  uint32_t seconds = 2;
+  if (doc["seconds"].is<double>()) {
+    const double s = doc["seconds"].as<double>();
+    seconds = s < 1 ? 1 : (s > 10 ? 10 : uint32_t(s + 0.5));
+  }
+  DeskBlock* b = deskAlloc(r, 0);
+  if (!b) return;
+  deskPre(b);
+  if (!deskLock(r, b)) return;
+  if (off) {
+    if (identActive) identifyRestore_locked();
+  } else {
+    if (fadeActive) {   // the fade would overwrite the flash, and the restore the fade
+      xSemaphoreGive(gLock);
+      free(b);
+      deskError(r, 409, "a fade is running: identify once it has landed");
+      return;
+    }
+    for (uint8_t i = 0; i < MAX_FIXTURES; i++) {
+      if (!((mask >> i) & 1u)) continue;
+      const dk::NodeFixture f = deskFixture_locked(i);
+      if (!dk::fixtureListed(f)) continue;
+      uint16_t chans[dk::kMaxProfileChannels];
+      const uint8_t nc = dk::identifyChannels(f, chans);
+      for (uint8_t c = 0; c < nc; c++) {
+        const uint16_t ch = chans[c];
+        if (!(identMask[ch >> 3] & (1u << (ch & 7)))) {
+          identSaved[ch] = webVals[ch];
+          identMask[ch >> 3] |= uint8_t(1u << (ch & 7));
+        }
+        webVals[ch] = 255;
+      }
+      identSlots |= 1u << i;
+    }
+    if (!identSlots) {
+      xSemaphoreGive(gLock);
+      free(b);
+      deskError(r, 400, "select a fixture to find");
+      return;
+    }
+    identActive = true;
+    identStartMs = millis();
+    identDurMs = seconds * 1000;
+  }
+  const uint32_t flashing = identActive ? identSlots : 0;
+  deskFreeze_locked(b, 0);
+  xSemaphoreGive(gLock);
+  b->a.kind = dk::Reply::Identify;
+  b->a.slots = flashing;
+  deskSend(r, b);
+}
+
+// Scenes: the 8 NVS slots (decision 2: sN.name and sN.fade carry di's name and fade).
+static bool sceneMetaArgs(JsonDocument& doc, AsyncWebServerRequest* r, bool& hasName, char* name, bool& hasFade,
+                          uint32_t& fade) {
+  for (const char* k : {"fx", "lfos", "audioCfg"})
+    if (!doc[k].isNull()) { deskError(r, 400, "node scenes hold levels only (no fx, lfos or audio)"); return false; }
+  hasName = !doc["name"].isNull();
+  name[0] = 0;
+  if (hasName && doc["name"].is<const char*>()) dk::cleanName(doc["name"].as<const char*>(), name, dk::kSceneNameMax + 1);
+  hasFade = !doc["fadeMs"].isNull();
+  if (hasFade && !doc["fadeMs"].is<double>()) { deskError(r, 400, "fadeMs must be a number"); return false; }
+  fade = hasFade ? dk::clampFadeMs(doc["fadeMs"].as<double>()) : 0;
+  return true;
+}
+
+static void apiScenesSave(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  bool hasName, hasFade;
+  char name[dk::kSceneNameMax + 1];
+  uint32_t fade;
+  if (!sceneMetaArgs(doc, r, hasName, name, hasFade, fade)) return;
+  DeskBlock* b = deskAlloc(r, 1);
+  if (!b) return;
+  deskPre(b);
+  if (!deskLock(r, b)) return;
+  int slot = -1;
+  for (uint8_t s = 0; s < SCENE_COUNT && slot < 0; s++) if (!((sceneSaved >> s) & 1u)) slot = s;
+  if (slot < 0) { xSemaphoreGive(gLock); free(b); deskError(r, 409, "all 8 scene slots are in use: remove one first"); return; }
+  static uint8_t snapBuf[MAX_CH];   // async_tcp task only, filled and used under this request
+  memcpy(sceneCache[slot], webVals, MAX_CH);
+  memcpy(snapBuf, webVals, MAX_CH);
+  sceneSaved |= uint8_t(1u << slot);   // reserved now, so a second save picks another slot
+  memcpy(sceneName[slot], name, sizeof(sceneName[slot]));
+  sceneFade[slot] = fade;
+  deskFreeze_locked(b, uint8_t(1u << slot));
+  xSemaphoreGive(gLock);
+  char key[4];
+  snprintf(key, sizeof(key), "s%u", unsigned(slot));
+  prefs.begin("scenes", false);
+  prefs.putBytes(key, snapBuf, MAX_CH);
+  prefs.end();
+  saveSceneMeta(uint8_t(slot), name, fade);
+  b->a.kind = dk::Reply::Scene;
+  b->a.slot = uint8_t(slot);
+  deskSend(r, b);
+}
+
+static void apiScenesUpdate(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  const int slot = idArg(doc["id"], 's', SCENE_COUNT);
+  if (slot < 0) { deskError(r, 404, "no such scene"); return; }
+  bool hasName, hasFade;
+  char name[dk::kSceneNameMax + 1];
+  uint32_t fade;
+  if (!sceneMetaArgs(doc, r, hasName, name, hasFade, fade)) return;
+  const bool restage = truthy(doc["restage"]);
+  DeskBlock* b = deskAlloc(r, 1);
+  if (!b) return;
+  deskPre(b);
+  if (!deskLock(r, b)) return;
+  if (!((sceneSaved >> slot) & 1u)) { xSemaphoreGive(gLock); free(b); deskError(r, 404, "no such scene"); return; }
+  static uint8_t snapBuf[MAX_CH];
+  if (restage) { memcpy(sceneCache[slot], webVals, MAX_CH); memcpy(snapBuf, webVals, MAX_CH); }
+  if (hasName) memcpy(sceneName[slot], name, sizeof(sceneName[slot]));
+  if (hasFade) sceneFade[slot] = fade;
+  char keepName[dk::kSceneNameMax + 1];
+  memcpy(keepName, sceneName[slot], sizeof(keepName));
+  const uint32_t keepFade = sceneFade[slot];
+  deskFreeze_locked(b, uint8_t(1u << slot));
+  xSemaphoreGive(gLock);
+  if (restage) {
+    char key[4];
+    snprintf(key, sizeof(key), "s%u", unsigned(slot));
+    prefs.begin("scenes", false);
+    prefs.putBytes(key, snapBuf, MAX_CH);
+    prefs.end();
+  }
+  if (hasName || hasFade) saveSceneMeta(uint8_t(slot), keepName, keepFade);
+  b->a.kind = dk::Reply::Scene;
+  b->a.slot = uint8_t(slot);
+  deskSend(r, b);
+}
+
+static void apiScenesRecall(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  const int slot = idArg(doc["id"], 's', SCENE_COUNT);
+  if (slot < 0) { deskError(r, 404, "no such scene"); return; }
+  if (!doc["fadeMs"].isNull() && !doc["fadeMs"].is<double>()) { deskError(r, 400, "fadeMs must be a number"); return; }
+  // `quantize` (wait for the beat) is not on the node: the recall runs now.
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { deskError(r, 503, "busy"); return; }
+  if (!((sceneSaved >> slot) & 1u)) { xSemaphoreGive(gLock); deskError(r, 404, "no such scene"); return; }
+  const uint32_t fade = doc["fadeMs"].is<double>() ? dk::clampFadeMs(doc["fadeMs"].as<double>()) : sceneFade[slot];
+  const bool paused = cueRunning;   // a manual recall takes the rig over (di pauses its chase)
+  cueRunning = false;
+  startFade_locked(sceneCache[slot], fade);
+  deskActiveScene = int8_t(slot);
+  xSemaphoreGive(gLock);
+  deskOk(r, paused);
+}
+
+static void apiScenesRemove(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  const int slot = idArg(doc["id"], 's', SCENE_COUNT);
+  if (slot < 0) { deskOk(r); return; }   // di: removing an unknown id is a no-op
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { deskError(r, 503, "busy"); return; }
+  const bool was = (sceneSaved >> slot) & 1u;
+  bool cuesChanged = false;
+  if (was) {
+    sceneSaved &= uint8_t(~(1u << slot));
+    memset(sceneCache[slot], 0, MAX_CH);
+    sceneName[slot][0] = 0;
+    sceneFade[slot] = 0;
+    if (deskActiveScene == slot) deskActiveScene = -1;
+    // The chase loses the scene's steps, as in di; an empty chase is never left running.
+    uint8_t w = 0;
+    for (uint8_t i = 0; i < cueCount; i++)
+      if (cueList[i].scene != slot) cueList[w++] = cueList[i];
+    cuesChanged = w != cueCount;
+    cueCount = w;
+    if (cueIndex >= cueCount) cueIndex = 0;
+    if (!cueCount) cueRunning = false;
+  }
+  xSemaphoreGive(gLock);
+  if (was) removeSceneNvs(uint8_t(slot));
+  if (cuesChanged) saveVj();
+  deskOk(r);
+}
+
+static void apiGroupsAdd(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  const uint32_t mask = idMask(doc["ids"], JsonVariantConst());
+  char name[16];
+  const bool hasName = doc["name"].is<const char*>() && dk::cleanName(doc["name"].as<const char*>(), name, sizeof(name));
+  DeskBlock* b = deskAlloc(r, 0);
+  if (!b) return;
+  deskPre(b);
+  if (!deskLock(r, b)) return;
+  deskFreeze_locked(b, 0);
+  deskWire(b);
+  uint16_t start = 0, end = 0;
+  const dk::GroupFit fit = dk::groupRangeFor(b->fx, MAX_FIXTURES, mask, &start, &end);
+  const int slot = dk::freeGroupSlot(b->f);
+  const char* refuse = fit == dk::GroupFit::Empty ? "select fixtures to group"
+                     : fit == dk::GroupFit::NotContiguous
+                         ? "a node group is one channel range, and another fixture sits inside this selection's range"
+                     : slot < 0 ? "all 8 group slots are in use: remove one first" : nullptr;
+  if (refuse) { xSemaphoreGive(gLock); free(b); deskError(r, 400, refuse); return; }
+  GroupDef& g = groups[slot];
+  if (hasName) strlcpy(g.name, name, sizeof(g.name));
+  else snprintf(g.name, sizeof(g.name), "G%u", unsigned(slot + 1));
+  g.start = start;
+  g.end = end;
+  g.enabled = true;
+  deskFreeze_locked(b, 0);
+  xSemaphoreGive(gLock);
+  saveVj();
+  b->a.kind = dk::Reply::Group;
+  b->a.slot = uint8_t(slot);
+  deskSend(r, b);
+}
+
+static void apiGroupsRemove(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  const int g = idArg(doc["id"], 'g', MAX_GROUPS);
+  if (g < 0) { deskError(r, 404, "no such group"); return; }
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { deskError(r, 503, "busy"); return; }
+  groups[g].enabled = false;
+  xSemaphoreGive(gLock);
+  saveVj();
+  deskOk(r);
+}
+
+static void apiFx(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  int m = -1;
+  if (!doc["mode"].isNull()) {
+    const char* want = doc["mode"].is<const char*>() ? doc["mode"].as<const char*>() : "";
+    for (uint8_t k = 0; k < kFxModeCount; k++) if (!strcmp(want, kFxModeNames[k])) m = k;
+    if (m < 0) { deskError(r, 400, "unknown fx mode: the node offers state.fxModes"); return; }
+  }
+  if (!doc["spatial"].isNull() && !(doc["spatial"].is<const char*>() && !strcmp(doc["spatial"].as<const char*>(), "patch"))) {
+    deskError(r, 400, "the node's fx follow the patch order only (spatial: patch)");
+    return;
+  }
+  if (doc["exclude"].is<JsonArrayConst>() && doc["exclude"].size()) { deskError(r, 400, "fx exclude is not on this node"); return; }
+  for (const char* k : {"bpm", "depth"})
+    if (!doc[k].isNull() && !doc[k].is<double>()) { deskError(r, 400, "bpm and depth must be numbers"); return; }
+  DeskBlock* b = deskAlloc(r, 0);
+  if (!b) return;
+  deskPre(b);
+  if (!deskLock(r, b)) return;
+  if (m >= 0) fxMode = FxMode(m);
+  if (doc["bpm"].is<double>()) { const double v = doc["bpm"].as<double>(); fxBpm = uint16_t(v < 20 ? 20 : (v > 240 ? 240 : v + 0.5)); }
+  if (doc["depth"].is<double>()) fxDepth = uint8_t(dk::levelFrom(doc["depth"].as<double>()));
+  if (!doc["enabled"].isNull()) fxEnabled = truthy(doc["enabled"]);
+  else if (m >= 0) fxEnabled = m != FX_NONE;   // di: choosing a mode arms it, "none" disarms
+  if (fxMode == FX_NONE) fxEnabled = false;
+  deskFreeze_locked(b, 0);
+  xSemaphoreGive(gLock);
+  b->a.kind = dk::Reply::Fx;
+  deskSend(r, b);
+}
+
+// Chase = the cue runner: sceneIds become the steps, holdMs each step's dwell,
+// fadeMs each step's fade (state shows step 0's).
+static void apiChase(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  if (doc["sync"].is<const char*>() && strcmp(doc["sync"].as<const char*>(), "clock")) {
+    deskError(r, 400, "the node's cue runner has no beat clock: sync stays clock");
+    return;
+  }
+  for (const char* k : {"holdMs", "fadeMs"})
+    if (!doc[k].isNull() && !doc[k].is<double>()) { deskError(r, 400, "holdMs and fadeMs must be numbers"); return; }
+  const bool hasIds = doc["sceneIds"].is<JsonArrayConst>();
+  uint8_t ids[MAX_CUES];
+  uint8_t nIds = 0;
+  if (hasIds)
+    for (JsonVariantConst v : doc["sceneIds"].as<JsonArrayConst>()) {
+      const int s = idArg(v, 's', SCENE_COUNT);
+      if (s >= 0 && nIds < MAX_CUES) ids[nIds++] = uint8_t(s);
+    }
+  const bool hasHold = doc["holdMs"].is<double>(), hasFade = doc["fadeMs"].is<double>();
+  const uint32_t hold = hasHold ? vizzz::clampCueTimeMs(long(doc["holdMs"].as<double>()), FADE_MAX_MS) : 0;
+  const uint32_t fade = hasFade ? dk::clampFadeMs(doc["fadeMs"].as<double>()) : 0;
+  DeskBlock* b = deskAlloc(r, 0);
+  if (!b) return;
+  deskPre(b);
+  if (!deskLock(r, b)) return;
+  auto savedSteps = [] {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < cueCount; i++) if ((sceneSaved >> cueList[i].scene) & 1u) n++;
+    return n;
+  };
+  const bool wasEmpty = savedSteps() == 0;
+  bool changed = false;
+  if (hasIds) {
+    const uint32_t dwell0 = cueCount ? cueList[0].dwellMs : 1500, fade0 = cueCount ? cueList[0].fadeMs : 500;
+    uint8_t w = 0;
+    for (uint8_t k = 0; k < nIds; k++) {
+      if (!((sceneSaved >> ids[k]) & 1u)) continue;   // di keeps only scenes that exist
+      cueList[w].scene = ids[k];
+      cueList[w].dwellMs = dwell0;
+      cueList[w].fadeMs = fade0;
+      w++;
+    }
+    cueCount = w;
+    cueIndex = 0;
+    changed = true;
+  }
+  for (uint8_t i = 0; i < cueCount && (hasHold || hasFade); i++) {
+    if (hasHold) cueList[i].dwellMs = hold;
+    if (hasFade) cueList[i].fadeMs = fade;
+    changed = true;
+  }
+  for (uint8_t i = 0; i < cueCount; i++)   // the step floor of /cue/set (1-M1)
+    if (cueList[i].fadeMs + cueList[i].dwellMs < vizzz::CUE_MIN_STEP_MS)
+      cueList[i].dwellMs = vizzz::CUE_MIN_STEP_MS - cueList[i].fadeMs;
+  bool want = doc["enabled"].isNull() ? cueRunning : truthy(doc["enabled"]);
+  // di: an empty chase is never armed, and adding the first step never starts
+  // it unless this request said enabled:true.
+  if (savedSteps() == 0) want = false;
+  else if (wasEmpty && want && !(doc["enabled"].is<bool>() && doc["enabled"].as<bool>())) want = false;
+  const bool start = want && !cueRunning;
+  cueRunning = want;
+  if (start) cueIndex = 0;
+  deskFreeze_locked(b, 0);
+  xSemaphoreGive(gLock);
+  if (start) triggerCueStep(0);   // as /cue/run: loads step 0 and starts its fade
+  if (changed) saveVj();
+  b->a.kind = dk::Reply::Chase;
+  deskSend(r, b);
+}
+
+// Output = Art-Net OUT: enabled, and broadcast or one unicast peer.
+static void apiOutput(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  if (!doc["driver"].isNull() && !(doc["driver"].is<const char*>() && !strcmp(doc["driver"].as<const char*>(), "artnet"))) {
+    deskError(r, 400, "this node sends Art-Net; its DMX cable is always driven");
+    return;
+  }
+  if (doc["serialPort"].is<const char*>() && doc["serialPort"].as<const char*>()[0]) {
+    deskError(r, 400, "no serial output on this node");
+    return;
+  }
+  if (!doc["refreshHz"].isNull() && !(doc["refreshHz"].is<double>() && doc["refreshHz"].as<double>() == double(1000 / DMX_PERIOD_MS))) {
+    deskError(r, 400, "the node refreshes at a fixed 43 Hz");
+    return;
+  }
+  bool setPeer = false;
+  uint32_t peer = 0;
+  const char* mode = doc["mode"].is<const char*>() ? doc["mode"].as<const char*>() : nullptr;
+  if (mode || doc["targets"].is<JsonArrayConst>()) {
+    uint8_t valid = 0;
+    if (doc["targets"].is<JsonArrayConst>())
+      for (JsonVariantConst t : doc["targets"].as<JsonArrayConst>()) {
+        uint8_t ip[4];
+        if (t.is<const char*>() && vizzz::parseIpv4(t.as<const char*>(), ip)) {
+          if (++valid > 1) { deskError(r, 400, "one unicast target on this node"); return; }
+          peer = uint32_t(IPAddress(ip[0], ip[1], ip[2], ip[3]));
+        }
+      }
+    // unicast with no address left falls back to broadcast, as in di
+    if (mode && strcmp(mode, "unicast")) peer = 0;
+    setPeer = true;
+  }
+  const bool hasEn = !doc["enabled"].isNull();
+  DeskBlock* b = deskAlloc(r, 0);
+  if (!b) return;
+  if (setPeer) artOutPeerAddr.store(peer, std::memory_order_relaxed);
+  if (hasEn) {
+    if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { free(b); deskError(r, 503, "busy"); return; }
+    artOutEnabled = truthy(doc["enabled"]);
+    xSemaphoreGive(gLock);
+    saveConfig();
+  }
+  deskPre(b);
+  if (!deskLock(r, b)) return;
+  deskFreeze_locked(b, 0);
+  xSemaphoreGive(gLock);
+  b->a.kind = dk::Reply::Output;
+  deskSend(r, b);
+}
+
+static void apiInputGet(AsyncWebServerRequest* r) { deskRead(r, dk::Reply::Input, false); }
+
+// Input = the source mode: enabled false = WEB only; a universe line's desk
+// "follow" = network only (ARTNET), "htp" = merged (HTP); loss release/hold =
+// the fallback to the web layer.
+static void apiInputPost(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  for (const char* k : {"artnet", "sacn"})
+    if (!doc[k].isNull() && !truthy(doc[k])) { deskError(r, 400, "the node always listens to Art-Net and sACN"); return; }
+  if (doc["name"].is<const char*>()) {
+    IdentitySnap id;
+    snapIdentity(id);
+    if (strcmp(doc["name"].as<const char*>(), id.name)) { deskError(r, 400, "rename the node in its node settings"); return; }
+  }
+  int loss = -1;   // 1 release, 0 hold
+  if (!doc["loss"].isNull()) {
+    const char* l = doc["loss"].is<const char*>() ? doc["loss"].as<const char*>() : "";
+    loss = !strcmp(l, "release") ? 1 : !strcmp(l, "hold") ? 0 : -2;
+    if (loss == -2) { deskError(r, 400, "loss is release or hold on this node"); return; }
+  }
+  int desk = -1;   // 1 follow, 2 htp
+  if (doc["universes"].is<JsonArrayConst>()) {
+    for (JsonVariantConst u : doc["universes"].as<JsonArrayConst>()) {
+      if (!u["universe"].is<double>() || u["universe"].as<double>() != double(universe())) {
+        deskError(r, 400, "the node listens on its own Art-Net port-address (sACN +1); change it in node settings");
+        return;
+      }
+      if (!u["merge"].isNull() && !(u["merge"].is<const char*>() && !strcmp(u["merge"].as<const char*>(), "htp"))) {
+        deskError(r, 400, "the node merges its sources HTP");
+        return;
+      }
+      if (u["desk"].is<const char*>()) desk = !strcmp(u["desk"].as<const char*>(), "follow") ? 1 : 2;
+    }
+  }
+  // `interfaces` is accepted and ignored: the node listens on every interface.
+  bool changed = false;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { deskError(r, 503, "busy"); return; }
+  Mode next = mode;
+  if (!doc["enabled"].isNull()) next = truthy(doc["enabled"]) ? (mode == MODE_WEB ? MODE_HTP : mode) : MODE_WEB;
+  if (desk > 0 && next != MODE_WEB) next = desk == 1 ? MODE_ARTNET : MODE_HTP;
+  if (next != mode) { mode = next; changed = true; }
+  if (loss >= 0 && (loss == 1) != artnetFallbackToWeb) { artnetFallbackToWeb = loss == 1; changed = true; }
+  xSemaphoreGive(gLock);
+  if (changed) saveConfig();
+  deskRead(r, dk::Reply::Input, false);
+}
+
+static void apiInputRelease(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  if (xSemaphoreTake(gLock, pdMS_TO_TICKS(20)) != pdTRUE) { deskError(r, 503, "busy"); return; }
+  holdReleased = true;   // computeOutput_locked falls back to the web layer until a source is live
+  xSemaphoreGive(gLock);
+  deskOk(r);
+}
+
+// ── Class b (static or refusing) and c (404) ──
+static void apiNotOnNode(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;   // a refused write still gets the same body checks
+  deskError(r, 200, dk::kNotOnNode);
+}
+
+static void apiCuesRefused(AsyncWebServerRequest* r) {
+  JsonDocument doc;
+  if (!deskParse(r, doc)) return;
+  dk::ReplyArgs a = {};
+  a.kind = dk::Reply::CuesRefused;
+  a.error = dk::kNotOnNode;
+  deskSendSmall(r, 200, a);
+}
+
+static void apiAbsent(AsyncWebServerRequest* r) { deskError(r, 404, dk::kNotOnNode); }
+
+// The DeskApi gate (vizzz::desk::gateDesk), then decision 7's heap floor.
+static bool deskGate(AsyncWebServerRequest* r, const dk::ApiRoute* api) {
+  const vizzz::Gate g = dk::gateDesk(api->methods, httpMethodOf(r), dk::isJsonContentType(r->contentType().c_str()));
+  switch (g) {
+    case vizzz::Gate::Allow: break;
+    case vizzz::Gate::NotAllowed: {
+      char body[80];
+      snprintf(body, sizeof(body), "{\"error\":\"method not allowed\",\"allow\":\"%s\"}", dk::deskMethods(api->methods));
+      AsyncWebServerResponse* res = r->beginResponse(405, "application/json", body);
+      res->addHeader("Allow", dk::deskMethods(api->methods));
+      r->send(res);
+      return false;
+    }
+    case vizzz::Gate::NeedJson:
+      r->send(415, "application/json", "{\"error\":\"send the body as Content-Type: application/json\"}");
+      return false;
+    default:
+      r->send(403, "application/json", "{\"error\":\"no cross-origin access\"}");
+      return false;
+  }
+  if (ESP.getMaxAllocHeap() < dk::kMinFreeBlock) { deskBusy(r); return false; }
+  return true;
+}
+
 // 2-M5: strict numeric arguments. need()/opt() parse with vizzz::parseUintArg
 // (digits only, in range) and answer 400 with a short JSON error on the first
 // missing or bad value; a handler checks ok before it touches any state.
@@ -2176,15 +3476,29 @@ static void route(const char* path, ArRequestHandlerFunction fn) {
     Serial.printf("[web] route %s is not in vizzz::kRoutes, not served\n", path);
     return;
   }
-  routeRegistered[i] = true;
   const vizzz::RouteKind kind = vizzz::kRoutes[i].kind;
-  server.on(path, HTTP_ANY, [kind, fn](AsyncWebServerRequest* r){
+  // DeskApi (V4): per-path methods from vizzz::desk::kDeskApi, the JSON gate,
+  // a body handler, and an exact-URL filter so /api/input does not take
+  // /api/input/release (AsyncCallbackWebHandler also matches "<uri>/...").
+  const vizzz::desk::ApiRoute* api =
+      kind == vizzz::RouteKind::DeskApi ? vizzz::desk::findDeskApi(path) : nullptr;
+  if (kind == vizzz::RouteKind::DeskApi && !api) {
+    Serial.printf("[web] desk route %s is not in vizzz::desk::kDeskApi, not served\n", path);
+    return;
+  }
+  routeRegistered[i] = true;
+  AsyncCallbackWebHandler& h = server.on(path, HTTP_ANY, [kind, api, fn](AsyncWebServerRequest* r){
+    if (api) {
+      if (deskGate(r, api)) fn(r);
+      return;
+    }
     bool hdr = r->hasHeader(vizzz::CONSOLE_HEADER) &&
                vizzz::isConsoleHeaderValue(r->header(vizzz::CONSOLE_HEADER).c_str());
     vizzz::Gate g = vizzz::gateRequest(kind, httpMethodOf(r), hdr);
     if (g != vizzz::Gate::Allow) { sendGateRefusal(r, kind, g); return; }
     fn(r);
-  });
+  }, nullptr, api ? ArBodyHandlerFunction(deskBodyChunk) : ArBodyHandlerFunction(nullptr));
+  if (api) h.setFilter([path](AsyncWebServerRequest* r){ return r->url() == path; });
 }
 
 // ── Web routes ────────────────────────────────────────────────────────────────
@@ -2924,6 +4238,66 @@ static void setupWeb() {
   };
   route("/net/scene/recall", routeNetSceneRecall);
 
+  // ── Desk API (V4): every path of di's api-contract.json. Class a really
+  // works, class b answers static shapes or {error:"not on this node"}, class c 404.
+  route("/api/state", [](AsyncWebServerRequest* r){ deskRead(r, dk::Reply::State, true); });
+  route("/api/dmx", [](AsyncWebServerRequest* r){ deskRead(r, dk::Reply::Dmx, false); });
+  route("/api/input", [](AsyncWebServerRequest* r){ if (r->method() == HTTP_GET) apiInputGet(r); else apiInputPost(r); });
+  route("/api/input/release", apiInputRelease);
+  route("/api/master", apiMaster);
+  route("/api/raw", apiRaw);
+  route("/api/fx", apiFx);
+  route("/api/chase", apiChase);
+  route("/api/output", apiOutput);
+  route("/api/fixtures/add", apiFixturesAdd);
+  route("/api/fixture", apiFixture);
+  route("/api/fixtures/all", apiFixturesAll);
+  route("/api/fixtures/move", apiFixturesMove);
+  route("/api/fixtures/readdress", apiFixturesReaddress);
+  route("/api/fixtures/identify", apiFixturesIdentify);
+  route("/api/groups/add", apiGroupsAdd);
+  route("/api/scenes/save", apiScenesSave);
+  route("/api/scenes/update", apiScenesUpdate);
+  route("/api/scenes/recall", apiScenesRecall);
+  route("/api/scenes/remove", apiScenesRemove);
+  route("/api/groups/remove", apiGroupsRemove);
+  route("/api/fixtures/remove", apiFixturesRemove);
+  route("/api/cues", [](AsyncWebServerRequest* r){ deskRead(r, dk::Reply::Cues, false); });
+  route("/api/cues/go", apiCuesRefused);
+  route("/api/cues/back", apiCuesRefused);
+  route("/api/cues/stop", apiCuesRefused);
+  route("/api/cues/loop", apiCuesRefused);
+  route("/api/show", [](AsyncWebServerRequest* r){ deskRead(r, dk::Reply::Show, false); });
+  route("/api/looks", [](AsyncWebServerRequest* r){ deskRead(r, dk::Reply::Looks, false); });
+  route("/api/looks/add", apiNotOnNode);
+  route("/api/looks/remove", apiNotOnNode);
+  route("/api/looks/capture", apiNotOnNode);
+  route("/api/looks/fire", apiNotOnNode);
+  route("/api/layer", apiNotOnNode);
+  route("/api/layers/add", apiNotOnNode);
+  route("/api/layers/remove", apiNotOnNode);
+  route("/api/lfos", apiNotOnNode);
+  route("/api/sets", apiNotOnNode);
+  route("/api/fan", apiNotOnNode);
+  route("/api/fixtures/limits", apiNotOnNode);
+  route("/api/profiles/add", apiNotOnNode);
+  route("/api/profiles/remove", apiNotOnNode);
+  route("/api/output/send", apiNotOnNode);
+  route("/api/output/send/remove", apiNotOnNode);
+  route("/api/nodes/add", apiNotOnNode);
+  route("/api/nodes/remove", apiNotOnNode);
+  route("/api/discover", apiNotOnNode);
+  route("/api/serial/identify", apiNotOnNode);
+  route("/api/audio", apiNotOnNode);
+  route("/api/audiocfg", apiNotOnNode);
+  route("/api/library", apiAbsent);
+  route("/api/library/manufacturer", apiAbsent);
+  route("/api/library/fixture", apiAbsent);
+  route("/api/library/import", apiAbsent);
+  route("/api/midi", apiAbsent);
+  route("/api/show/open", apiAbsent);
+  route("/api/show/copy-machine", apiAbsent);
+
   for (size_t i = 0; i < vizzz::kRouteCount; i++)
     if (!routeRegistered[i])
       Serial.printf("[web] route table entry %s has no handler\n", vizzz::kRoutes[i].path);
@@ -2953,6 +4327,7 @@ void setup() {
   // flash on every edit and silently reset to defaults on every boot.
   loadFixtures();
   loadVj();
+  loadSceneCache();
 
   memset(webVals,  0, MAX_CH);
   memset(artVals,  0, MAX_CH);
@@ -3159,6 +4534,17 @@ void loop() {
   if (pendingBeacon) {
     pendingBeacon = false;
     sendBeacon();
+  }
+
+  if (pendingSceneReload) {
+    pendingSceneReload = false;
+    loadSceneCache();   // sets the flag again if gLock stays busy
+  }
+
+  // Identify ends: write the flashed channels back (V4).
+  if (identActive && xSemaphoreTake(gLock, pdMS_TO_TICKS(5)) == pdTRUE) {
+    if (identActive && millis() - identStartMs >= identDurMs) identifyRestore_locked();
+    xSemaphoreGive(gLock);
   }
 
   pollArtNet();
