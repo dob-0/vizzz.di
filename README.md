@@ -2,14 +2,14 @@
 
 ESP32 WiFi -> DMX512 firmware node. It outputs DMX512 through a MAX485
 transceiver, accepts Art-Net and sACN input, broadcasts Art-Net for node sync,
-and exposes a browser console in di.iiii's light desk look plus a machine-readable node manifest.
+and serves di.iiii's own light desk UI from flash, plus a machine-readable node manifest.
 
 ## Features
 
 | Feature | Detail |
 |---|---|
 | **3 output modes** | `WEB_ONLY`, `ARTNET_ONLY`, `MERGE_HTP` |
-| **Console UI** | Routes: `/`, `/control`, `/patch`, `/scenes`, `/network`, `/system`, `/vj` (`/performance` alias) |
+| **Desk UI** | di.iiii's desk files from flash at `/` (see [Desk UI in flash](#desk-ui-in-flash-build-step-v1)); the old console pages 301 to it |
 | **DMX output** | 512 channels on `DMX_NUM_1`, GPIO25 TX, GPIO21 DIR |
 | **Art-Net IN/OUT** | Configurable Net/Subnet/Universe, hold-last on loss, optional broadcast output |
 | **sACN IN** | E1.31 listener on port `5568`, same universe as Art-Net |
@@ -76,12 +76,12 @@ sg dialout -c ".venv-pio/bin/pio run -e esp32dev --target upload"
 .venv-pio/bin/pio test -e native
 ```
 
-The console follows di.iiii's light desk tokens (serverXR/src/lighting/ui/style.css): `--bg #0c0c0d`, `--bar #060607`, `--pane #121213`, `--pane2 #1a1a1c`, `--field #060607`, `--cell #161617`, `--line #26262a`, `--text #d8dadb`, `--muted #878d92`, `--accent #35d2dd` (live/selected only), `--danger #e0524a` (Blackout, Panic); mono 11px for data, system sans for UI, 1 px lines, square corners. Top bar: vizzz.di mark, page tabs, Blackout; below it a status row of chips (mode, network, Art-Net, sACN, out, web, STA, peers). Pictures: `docs/console/`.
-
-To work on the console UI without an ESP32, `tools/simulate_node.py` serves the
-real `APP_HTML` from `src/main.cpp` against an in-memory model of the firmware:
+To work on the UI side without an ESP32, `tools/simulate_node.py` serves the same desk files
+the same way the firmware does (gzip, ETag, 304, the 301s) against an in-memory model of the firmware.
+It needs the locked files in `tools/.desk_ui_cache/` and refuses to start without them:
 
 ```bash
+python3 tools/fetch_desk_ui.py --from ../di.iiii --cache tools/.desk_ui_cache   # or without --from: GitHub at the locked commit
 python3 tools/simulate_node.py --port 8088   # then open http://127.0.0.1:8088
 ```
 
@@ -89,7 +89,7 @@ python3 tools/simulate_node.py --port 8088   # then open http://127.0.0.1:8088
 
 di.iiii's desk UI files (`docs/DI_DESK_UI_PLAN.md`) are pinned, never edited here. `desk_ui.lock` names the di.iiii
 commit, the files, and the sha256 of each raw file and of its `gzip -9` output (mtime 0, so reruns are byte-identical).
-`include/desk_ui_gz.h` is generated from it and committed; nothing serves it yet (that is V2).
+`include/desk_ui_gz.h` is generated from it and committed; the firmware serves it (V2, below).
 
 ```bash
 python3 tools/fetch_desk_ui.py                      # fetch at the locked commit, verify sha256, write the header
@@ -98,6 +98,19 @@ python3 tools/fetch_desk_ui.py --check              # fail when the committed he
 python3 tools/fetch_desk_ui.py --update --commit <sha> [--branch <name>]   # bump the pin (a deliberate PR)
 python3 tools/flash_gate.py esp32dev                # used/free of the app slot; exit 1 under 128 KB free
 ```
+
+### How the node serves it (V2)
+
+- `/` is `index.html`; `/app.js`, `/style.css`, `/qr.js`, `/from.js`, `/show.js`, `/caps.js` are their files. Each is sent
+  from PROGMEM (`beginResponse_P`, no heap copy), already gzipped: `Content-Encoding: gzip`, `Content-Type` from the table in
+  `desk_ui_gz.h`, `ETag: "<first 16 hex of the raw file's sha256>"`, `Cache-Control: no-cache`.
+- **304 rule:** a request whose `If-None-Match` lists that ETag (or `*`; a `W/` prefix is accepted) gets `304` with the ETag and
+  no body. `no-cache` means the browser always asks, and the answer costs a few hundred bytes instead of the file.
+- The old console is gone (`APP_HTML` removed). `/control` answers 301 to `/#control`; `/patch`, `/scenes`, `/vj` answer 301 to
+  `/` (di's pages are `setup`, `control`, `touch`, `fader`, `midi`: no page of those names). `/network`, `/system` and
+  `/performance` served the same page and answer 301 to `/`. Until the node-settings section in di's desk exists, Wi-Fi setup
+  is available only through the console POST routes below.
+- Until the `/api` bridge (plan step V4) exists, di's desk loads but cannot reach `api/state` and says it is offline.
 
 `pio run -e esp32dev` runs the flash gate after linking (`MIN_FREE_BYTES` at the top of `tools/flash_gate.py`;
 slot = smallest `app` partition of `board_build.partitions`, default two OTA slots of 1,310,720 B).
@@ -282,7 +295,8 @@ curl 'http://192.168.4.1/set?ch=1&v=255'                                     # o
 | GET | - | yes | `/node/manifest` | - | Firmware node manifest (routes generated from the route table) |
 | GET | - | yes | `/manifest.json` | - | Same firmware node manifest |
 | GET | - | - | `/wifi/scan` | - | JSON SSID scan (same origin only) |
-| GET | - | - | `/` `/control` `/patch` `/scenes` `/network` `/system` `/performance` `/vj` | - | Console pages |
+| GET | - | - | `/` `/app.js` `/style.css` `/qr.js` `/from.js` `/show.js` `/caps.js` | - | di's desk UI files from flash (gzip, ETag, 304) |
+| GET | - | - | `/control` `/patch` `/scenes` `/vj` `/network` `/system` `/performance` | - | 301 to the desk (`/#control` or `/`) |
 | WS | - | - | `/ws` | - | Status push every ~400 ms; refuses a foreign `Origin` |
 
 ## Node Manifest
