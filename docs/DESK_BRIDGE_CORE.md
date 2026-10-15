@@ -170,22 +170,26 @@ Today's NVS blob `fixtures/items` is `FixtureDef[12]` = `{name[16], start, end, 
 becomes `dimmer`, i.e. one channel, and the migration must report it). That helper is in this
 header and tested; nothing in NVS changes in this step.
 
-## 4. Open questions for V4
+## 4. Decisions taken in V4 (2026-10-15; the cloud run's own text was lost with its sandbox, rewritten by the lead)
 
-1. **`on:false`**: refuse with `{error}`, or zero the level roles in the web layer (lossy, a
-   later `on:true` cannot restore them)? Recommendation: refuse until the node has a mute mask.
-2. **Scene names and per-scene fade**: NVS stores only 512 bytes per slot. Add `sN.name` and
-   `sN.fade` keys in V4 (`scenes/save` sends a name), or keep `Scene N`?
-3. **Which 512 bytes `/api/dmx` shows**: the web layer (what the desk controls) or `outVals`
-   (merged, mastered, slew-limited, what is on the cable)? The core takes either; di shows its
-   rendered output, so `outVals` matches di's meaning.
-4. **Freeze size**: copy only what the reply reads (web layer, fixtures, the listed scene slots)
-   or hold `gLock` per pull (no: a pull can wait on TCP).
-5. **`groups/add`** from a non-contiguous selection: refuse or store the bounding range?
-6. **`fixtures/add` defaults**: di writes `ROLE_DEFAULTS` into a new fixture's values (r g b =
-   255, pan/tilt = 128, dimmer = 255). On the node that would light the rig the moment it is
-   patched. Recommendation: patching never writes the web layer; the defaults table is in the
-   header for the UI-facing reply only if V4 needs it.
-7. **Reply cap**: with the windowed pull, a reply at 32 fixtures costs one regeneration per TCP
-   chunk. If V7 measures it as too slow, cache the scenes part as text (plan §3) or move to a
-   resumable section cursor.
+1. **`on:false`** is refused with `{error}`: the node has no mute mask, and zeroing the level roles would be lossy.
+2. **Scene names and per-scene fade** live in NVS keys `sN.name` and `sN.fade` next to the 512-byte slot, so di's
+   `scenes/save` name and fade survive a reboot.
+3. **`/api/dmx` shows `outVals`**, what is on the cable (merged, mastered, slew-limited), which is di's meaning of its
+   rendered output; the web layer is what `api/fixture` writes.
+4. **Freeze per request:** every GET reply allocates ONE block (`DeskBlock`: web layer and outVals copies, the fixture
+   table, groups, scene names/fades, the listed scene snapshots, the writer) under `gLock`, releases the lock, and runs
+   every chunked pull against that copy; the response owns the block (`shared_ptr` with `free`). No lock is held across
+   a pull or a TCP wait. Scene snapshots are copied into the block, so no version counter is needed.
+5. **`groups/add` from a non-contiguous selection** is refused with `{error}`; a node group is one channel range.
+6. **`fixtures/add` never writes the web layer**; patching a fixture cannot light the rig.
+7. **Reply cap:** under 32 KB largest free block (`kMinFreeBlock`) a GET answers 503 `{error:"node busy"}` and counts
+   `api_busy`; `api_replies` counts the served ones. Measured on the node (fw defb77e): `/api/state` 3,981 B in 48 ms at
+   4 fixtures; largest free block 94,196 B idle, 86,004 B with 3 ws clients, 65–82 KB while a desk page polls at ~6 req/s.
+   The windowed-pull CPU cost at 32 fixtures is measured at V7.
+8. **CSRF gate:** `Content-Type: application/json` is required on every `/api/*` POST (415 otherwise); di's `post()`
+   sends exactly that and no custom header, and a cross-site page cannot send it without a CORS preflight, which the
+   DeskApi routes do not answer (no ACAO) — OWASP CSRF cheat sheet, "non-simple requests".
+
+Open for V5–V7: the stream (V5) replaces the 10 Hz `api/dmx` poll; the 0-byte reply seen once after a POST burst
+(ledger N686); MAX_FIXTURES 32 and the v2 blob (V6); phone, latency and the pull cost (V7).
