@@ -217,7 +217,7 @@ class Node:
 
     def status(self):
         return {
-            "ap_ip": "192.168.4.1", "sta_ip": "192.168.88.140", "sta": True,
+            "ip": "192.168.4.1", "sta_ip": "192.168.88.140", "sta_connected": True,   # the firmware's key names (V7)
             "sta_ssid": "sim-net", "wl_status": 3, "ssid": self.ap_ssid,
             "name": self.name, "mdns": self.name.lower(),
             "net_mode": self.net_mode,
@@ -236,7 +236,7 @@ class Node:
             "safe_ceiling": self.ceiling(), "safe_slew_step": self.slew_step(),
             # USB widget input exists only on hardware (no serial in the simulator).
             "usb_active": False, "usb_frames": 0, "usb_baud": USB_WIDGET_BAUD,
-            "fixtures_migrated": 0, "fixtures_unmapped": 0,
+            "fixtures_migrated": 0, "fixtures_unmapped": 0, "ap_fb": False, "rst": "poweron",
             "api_replies": DESK.replies, "api_busy": DESK.busy,
             "heap_free": 180000, "heap_max_block": 110000, "ws_clients": 0,
             "sse_clients": DESK.sse,

@@ -1345,6 +1345,9 @@ static void sha256Hex(const unsigned char* data, size_t len, char out[65]) {
 //   sha256 b4365121c8914c3c9be311dbfbd9c0b0a3aef7816676835787e70dded7d7790d
 // A di bump replaces the file, this hash and DESK_UI_CONTRACT_VERSION together.
 static const char* const kContractSha256 = "b4365121c8914c3c9be311dbfbd9c0b0a3aef7816676835787e70dded7d7790d";
+// V7: test/fixtures/api-contract.v2.json is a byte copy of di.iiii dev 4f3bec9b (see api-contract.v2.source).
+// The node must satisfy v1 and v2.
+static const char* const kContractV2Sha256 = "d07fb57b0e7e43c31831ab37465922c608e8e1b3c127d19e465a89176f69de4a";
 
 static char* readFile(const char* path, size_t* lenOut) {
   FILE* f = fopen(path, "rb");
@@ -1360,15 +1363,22 @@ static char* readFile(const char* path, size_t* lenOut) {
   return buf;
 }
 
-static char* readContract() {
+static char* readContractFile(const char* path, const char* sha, const char* what) {
   size_t n = 0;
-  char* c = readFile("test/fixtures/api-contract.v1.json", &n);
-  TEST_ASSERT_NOT_NULL_MESSAGE(c, "test/fixtures/api-contract.v1.json not readable from the project root");
+  char* c = readFile(path, &n);
+  TEST_ASSERT_NOT_NULL_MESSAGE(c, path);
   char hex[65];
   sha256Hex((const unsigned char*)c, n, hex);
-  TEST_ASSERT_EQUAL_STRING_MESSAGE(kContractSha256, hex, "vendored contract differs from di 091a1a6");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(sha, hex, what);
   TEST_ASSERT_TRUE(jr::valid(c));
   return c;
+}
+
+static char* readContract() {
+  return readContractFile("test/fixtures/api-contract.v1.json", kContractSha256, "vendored contract differs from di 091a1a6");
+}
+static char* readContractV2() {
+  return readContractFile("test/fixtures/api-contract.v2.json", kContractV2Sha256, "vendored v2 contract differs from di dev 4f3bec9b");
 }
 
 // A node at V6 scale: 32 fixtures (one of every profile, then rgb), 8 groups,
@@ -1589,6 +1599,12 @@ static void test_desk_state_matches_vendored_contract() {
   assertStateMatchesContract(contract, gLog.doc);
   TEST_ASSERT_EQUAL_INT(0, jr::count(jr::at(gLog.doc, "fixtures")));
   free(contract);
+  // V7: the same state against contract v2 (same state_keys; it adds caps and the stream).
+  char* v2 = readContractV2();
+  buildBigNode();
+  emit(dk::writeState, gNode.facts);
+  assertStateMatchesContract(v2, gLog.doc);
+  free(v2);
 }
 
 static void test_desk_fixture_and_scene_values_in_state() {
@@ -2264,6 +2280,71 @@ static void test_stream_route_and_caps() {
   TEST_ASSERT_TRUE(dk::gateDesk(r->methods, vizzz::HttpMethod::Get, false) == vizzz::Gate::Allow);
   TEST_ASSERT_TRUE(dk::gateDesk(r->methods, vizzz::HttpMethod::Post, true) == vizzz::Gate::NotAllowed);
 }
+
+// ── V7: contract v2 (stream entry, caps, node_routes). The node satisfies v1 and v2. ──
+static void test_desk_contract_v2_stream_caps_and_node_routes() {
+  char* c = readContractV2();
+  char* v1 = readContract();
+  // Same state keys as v1; entries = v1's 59 calls + the stream.
+  TEST_ASSERT_EQUAL_INT(jr::count(jr::at(v1, "entries")) + 1, jr::count(jr::at(c, "entries")));
+  TEST_ASSERT_EQUAL_INT(jr::count(jr::at(v1, "state_keys.required")), jr::count(jr::at(c, "state_keys.required")));
+  // caps: every key the contract names is written by api/state, node and stream on.
+  buildBigNode();
+  emit(dk::writeState, gNode.facts);
+  const char* keys = jr::at(c, "caps.keys");
+  TEST_ASSERT_NOT_NULL(keys);
+  char k[64], msg[128];
+  int nkeys = 0;
+  for (int i = 0;; i++) {
+    if (!jr::nthMember(keys, i, k, sizeof(k))) break;
+    nkeys++;
+    snprintf(msg, sizeof(msg), "api/state.caps.%s", k);
+    char path[96];
+    snprintf(path, sizeof(path), "caps.%s", k);
+    const char* v = jr::at(gLog.doc, path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(v, msg);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("boolean", jr::typeOf(v), msg);
+  }
+  TEST_ASSERT_EQUAL_INT(4, nkeys);
+  TEST_ASSERT_EQUAL_STRING_LEN("true", jr::at(gLog.doc, "caps.node"), 4);     // opt-in: only an explicit true shows This node
+  TEST_ASSERT_EQUAL_STRING_LEN("true", jr::at(gLog.doc, "caps.stream"), 4);
+  // The stream entry: GET, class a, sse, reply keys s t k d, and our key frame has them.
+  const char* e = contractEntry(c, "GET", "api/dmx/stream");
+  TEST_ASSERT_NOT_NULL(e);
+  char tr[16];
+  jr::str(jr::member(e, "transport"), tr, sizeof(tr));
+  TEST_ASSERT_EQUAL_STRING("sse", tr);
+  const dk::ApiRoute* r = dk::findDeskApi("/api/dmx/stream");
+  TEST_ASSERT_NOT_NULL(r);
+  TEST_ASSERT_EQUAL_INT(0, int(r->cls));                                       // class a
+  uint8_t f[st::kSlots];
+  fillRamp(f, 5);
+  static char buf[st::kBufSize];
+  TEST_ASSERT_TRUE(st::formatKey(buf, sizeof(buf), 1, 1, f, st::Meta{255, false}) > 0);
+  assertReplyMatchesContract(c, "api/dmx/stream", buf);
+  // node_routes: every route exists in kRoutes; console = POST behind X-Vizzz-Console, read = a GET.
+  const char* rows = jr::at(c, "node_routes.routes");
+  TEST_ASSERT_NOT_NULL(rows);
+  char hdr[48], kind[16], path[48], rp[64];
+  jr::str(jr::at(c, "node_routes.header"), hdr, sizeof(hdr));
+  TEST_ASSERT_EQUAL_STRING("X-Vizzz-Console: 1", hdr);
+  TEST_ASSERT_EQUAL_INT(17, jr::count(rows));
+  for (int i = 0;; i++) {
+    const char* row = jr::element(rows, i);
+    if (!row) break;
+    jr::str(jr::member(row, "kind"), kind, sizeof(kind));
+    jr::str(jr::member(row, "path"), path, sizeof(path));
+    snprintf(rp, sizeof(rp), "%s", path);
+    const int ri = vizzz::findRoute(rp);
+    TEST_ASSERT_TRUE_MESSAGE(ri >= 0, rp);
+    const vizzz::RouteKind rk = vizzz::kRoutes[ri].kind;
+    if (!strcmp(kind, "console")) TEST_ASSERT_TRUE_MESSAGE(rk == vizzz::RouteKind::Console, rp);
+    else TEST_ASSERT_TRUE_MESSAGE(rk == vizzz::RouteKind::GetLocal || rk == vizzz::RouteKind::GetShared ||
+                                  rk == vizzz::RouteKind::Operator, rp);
+  }
+  free(v1);
+  free(c);
+}
 #endif
 
 static int runAll() {
@@ -2342,6 +2423,7 @@ static int runAll() {
   RUN_TEST(test_stream_tick_survives_the_millis_wrap);
   RUN_TEST(test_stream_client_cap);
   RUN_TEST(test_stream_route_and_caps);
+  RUN_TEST(test_desk_contract_v2_stream_caps_and_node_routes);
 #endif
   return UNITY_END();
 }

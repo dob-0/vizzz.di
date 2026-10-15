@@ -822,7 +822,7 @@ static constexpr RouteSpec kRoutes[] = {
   {"/", RouteKind::Static}, {"/app.js", RouteKind::Static},
   {"/style.css", RouteKind::Static}, {"/qr.js", RouteKind::Static},
   {"/from.js", RouteKind::Static}, {"/show.js", RouteKind::Static},
-  {"/caps.js", RouteKind::Static},
+  {"/caps.js", RouteKind::Static}, {"/dmxfeed.js", RouteKind::Static},
   {"/control", RouteKind::Static}, {"/patch", RouteKind::Static},
   {"/scenes", RouteKind::Static}, {"/vj", RouteKind::Static},
   {"/network", RouteKind::Static}, {"/system", RouteKind::Static},

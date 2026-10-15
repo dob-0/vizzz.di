@@ -1,29 +1,29 @@
 {
   "repo": "dob-0/di.iiii",
-  "branch": "cloud/desk-honest-render-caps-2026-10-15",
-  "commit": "f0b173de3a2aef9cc0060235bfcb7421a472bf84",
+  "branch": "dev",
+  "commit": "4f3bec9bf7a0dc07c73e1321776a7b87fde4c9a5",
   "contract_version": 1,
   "files": [
     {
       "path": "index.html",
-      "bytes": 50366,
-      "sha256": "fa53e15aae85b83bfd19ecc4f041a1cf296826285d7044a2cf444992aec6d9e4",
-      "gz_bytes": 13212,
-      "gz_sha256": "d546bda9824ebb3793681bd030075cdebb97cbab30f505397d5fe0d9a8f38956"
+      "bytes": 55462,
+      "sha256": "7c02db2b56149849bab53257f90942e2f4f33d3dea27a2f18bc8797a90b20189",
+      "gz_bytes": 14331,
+      "gz_sha256": "37b14d21081f5a05ba651ec5e8db62895c199834a2ab6c81bf340aa9f0ae9ddd"
     },
     {
       "path": "app.js",
-      "bytes": 312409,
-      "sha256": "c297e4e0375fa56bfb3148d4f6446f7fab37e4f4f78cf5332ba190cb8d66ccd9",
-      "gz_bytes": 97130,
-      "gz_sha256": "20f4fac725116dda404ee2c1f110834359ea9deac936583c9e06489630271737"
+      "bytes": 324988,
+      "sha256": "0af4363b6e742682d028218d881eeebb7096b732470c18a21af5d2c3179e4810",
+      "gz_bytes": 101113,
+      "gz_sha256": "2e2d65c1fbe948ded8f95689aa161881b61d5023fa82b84c1a94a25d9d520f74"
     },
     {
       "path": "style.css",
-      "bytes": 86574,
-      "sha256": "91db8765467ff465c18b0541ebfd28e3143f81adc07ec9a777f7a19aac121ec4",
-      "gz_bytes": 21322,
-      "gz_sha256": "16ff480997860264581558c57fa77a5881e8303980eb19d33644854f77c3d404"
+      "bytes": 88203,
+      "sha256": "05130459bef86abb856505c42b4d6f8cba9cdbc2de04091d48d5b8612b0aa54c",
+      "gz_bytes": 21620,
+      "gz_sha256": "ee23220f75e6926c0dccdd72f451b2227f5b67fe1e25c1e229ec3c5500a963a1"
     },
     {
       "path": "qr.js",
@@ -48,10 +48,17 @@
     },
     {
       "path": "caps.js",
-      "bytes": 2668,
-      "sha256": "e90683bc479847d398f49b54e922dc2f2b4b264d0f0a891253a8454ac71c5c56",
-      "gz_bytes": 1230,
-      "gz_sha256": "21edbe1c1956fe325f27297120dee3c642523c0facb6ddaa7e324bf3d6d48a25"
+      "bytes": 6564,
+      "sha256": "f0b7d61a5fbdc88b0ad70e37fd3003450098ffbd9fb1540ad7d3c8e3c20efaac",
+      "gz_bytes": 2742,
+      "gz_sha256": "66596b5517b2d40b69f6b5dabfaef70f122232858174969c1684148c8a8466a6"
+    },
+    {
+      "path": "dmxfeed.js",
+      "bytes": 7918,
+      "sha256": "60f9ec1cd0a7e6cfc2a1144b1c5f6fe6daff9c664202284dbe504ee728e72e8d",
+      "gz_bytes": 2773,
+      "gz_sha256": "c0c6365258b828d3c560ca3b123852d43cee6f2a7d0291929d87608e4fcf5516"
     }
   ]
 }
