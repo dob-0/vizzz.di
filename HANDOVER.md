@@ -30,6 +30,13 @@ address the MIDI tab and Audio controls now hide (the browser refuses them there
   refuse non-contiguous groups; patching never writes the web layer; 503 JSON under 32 KB max block). ArduinoJson 7 pinned in lib_deps.
 The two earlier routines (trig_017au3…, trig_01WnJw…) belong to the info@ login and are not visible from account b.
 
+**LIMIT (owner 04:3x: move to the other, ping all, keep it auto):** account b is at 94 % of its 5 h window; info@ is at 1 %.
+The V4 cloud run continues on its own. Landing it (review, merge, build, flash, proof) is written as a brief:
+`docs/briefs/2026-10-15-v4-landing.md`. The permission classifier refused this session's attempt to arm a watcher that starts a
+headless executor with hardware access, so the landing starts by a lead on the info@ login, or by the owner with the one command
+at the end of the brief. Live sessions dob-f5, dob-2d, dob-e7, dob-6c were pinged (dob-eb refused by the classifier). After V4, a
+logged-in lead dispatches D3 + V5 (RemoteTrigger is OAuth-only).
+
 **Next (in order, plan §4):** review V4 (build on aylmo with the gate) → merge → **flash** (first time since 8168931) → prove on the node:
 di's `DESK_URL=http://192.168.88.66 node serverXR/src/lighting/tests/test-http.js --class a` from the di.iiii checkout on branch
 cloud/desk-api-contract-2026-10-15, `tools/heap_probe.mjs`, `check_http_api.sh`, `net_probe.py verify`; then `di-show http://192.168.88.66/`
