@@ -12,7 +12,10 @@ import sys
 
 MIN_FREE_BYTES = 128 * 1024          # the gate: fail when free flash in the app slot is below this
 DEFAULT_APP_SLOT = 1310720           # esp32dev default.csv: app0 and app1 at 0x140000 each
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+def _root():
+    """Project root. __file__ is not defined when PlatformIO exec()s this as an extra_script."""
+    here = globals().get("__file__")
+    return os.path.dirname(os.path.dirname(os.path.abspath(here))) if here else os.getcwd()
 
 
 def _num(s):
@@ -59,7 +62,7 @@ def _cli():
         del args[i:i + 2]
     target = args[0] if args else "esp32dev"
     if not target.endswith(".bin"):
-        target = os.path.join(ROOT, ".pio", "build", target, "firmware.bin")
+        target = os.path.join(_root(), ".pio", "build", target, "firmware.bin")
     if not os.path.isfile(target):
         raise SystemExit("flash gate: %s not found (build first)" % target)
     return check(target, slot_size(csv))
