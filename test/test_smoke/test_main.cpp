@@ -1585,6 +1585,319 @@ static void test_desk_struct_sizes() {
   TEST_ASSERT_TRUE(sizeof(dk::JsonWriter) <= dk::kChunk + 64);
   TEST_ASSERT_TRUE(32 * sizeof(dk::NodeFixture) <= 704);
 }
+
+// ── V4: the /api routes (vizzz_desk.h kDeskApi, gate, body rules, POST replies) ──
+
+// kDeskApi = the vendored contract (method, path, class) = kRoutes' DeskApi rows.
+static void test_desk_api_table_matches_contract_and_routes() {
+  char* contract = readContract();
+  const char* entries = jr::at(contract, "entries");
+  int calls[3] = {0, 0, 0};
+  char m[16], p[64], c[8], route[72];
+  int n = 0;
+  for (;; n++) {
+    const char* e = jr::element(entries, n);
+    if (!e) break;
+    jr::str(jr::member(e, "method"), m, sizeof(m));
+    jr::str(jr::member(e, "path"), p, sizeof(p));
+    jr::str(jr::member(e, "class"), c, sizeof(c));
+    snprintf(route, sizeof(route), "/%s", p);
+    const dk::ApiRoute* r = dk::findDeskApi(route);
+    TEST_ASSERT_NOT_NULL_MESSAGE(r, route);
+    TEST_ASSERT_TRUE_MESSAGE(r->methods & (strcmp(m, "GET") == 0 ? dk::kGet : dk::kPost), route);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(c[0] - 'a', int(r->cls), route);
+    calls[c[0] - 'a']++;
+    const int ri = vizzz::findRoute(route);
+    TEST_ASSERT_TRUE_MESSAGE(ri >= 0 && vizzz::kRoutes[ri].kind == vizzz::RouteKind::DeskApi, route);
+  }
+  // Plan §2: 23 real, 28 static or refusing, 8 at 404; 59 calls on 57 paths.
+  TEST_ASSERT_EQUAL_INT(23, calls[0]);
+  TEST_ASSERT_EQUAL_INT(28, calls[1]);
+  TEST_ASSERT_EQUAL_INT(8, calls[2]);
+  TEST_ASSERT_EQUAL_INT(59, n);
+  TEST_ASSERT_EQUAL_UINT(57, dk::kDeskApiCount);
+  size_t deskRows = 0;
+  for (size_t i = 0; i < vizzz::kRouteCount; i++)
+    if (vizzz::kRoutes[i].kind == vizzz::RouteKind::DeskApi) {
+      deskRows++;
+      TEST_ASSERT_NOT_NULL_MESSAGE(dk::findDeskApi(vizzz::kRoutes[i].path), vizzz::kRoutes[i].path);
+      TEST_ASSERT_FALSE(vizzz::routeSendsAcao(vizzz::kRoutes[i].kind));
+    }
+  TEST_ASSERT_EQUAL_UINT(dk::kDeskApiCount, deskRows);
+  TEST_ASSERT_EQUAL_STRING("GET, POST", dk::deskMethods(dk::findDeskApi("/api/input")->methods));
+  TEST_ASSERT_EQUAL_STRING("POST", dk::deskMethods(dk::findDeskApi("/api/master")->methods));
+  TEST_ASSERT_EQUAL_STRING("GET", dk::deskMethods(dk::findDeskApi("/api/state")->methods));
+  free(contract);
+}
+
+static void test_desk_gate_and_content_type() {
+  using vizzz::Gate; using vizzz::HttpMethod;
+  const uint8_t post = dk::kPost, get = dk::kGet, both = dk::kGet | dk::kPost;
+  TEST_ASSERT_TRUE(dk::gateDesk(get, HttpMethod::Get, false) == Gate::Allow);
+  TEST_ASSERT_TRUE(dk::gateDesk(get, HttpMethod::Post, true) == Gate::NotAllowed);
+  TEST_ASSERT_TRUE(dk::gateDesk(post, HttpMethod::Get, true) == Gate::NotAllowed);
+  TEST_ASSERT_TRUE(dk::gateDesk(post, HttpMethod::Post, false) == Gate::NeedJson);
+  TEST_ASSERT_TRUE(dk::gateDesk(post, HttpMethod::Post, true) == Gate::Allow);
+  TEST_ASSERT_TRUE(dk::gateDesk(both, HttpMethod::Get, false) == Gate::Allow);
+  TEST_ASSERT_TRUE(dk::gateDesk(both, HttpMethod::Post, true) == Gate::Allow);
+  // Every preflight is refused (no ACAO): the browser never sends a cross-site JSON POST.
+  TEST_ASSERT_TRUE(dk::gateDesk(both, HttpMethod::Options, true) == Gate::PreflightDenied);
+  TEST_ASSERT_TRUE(dk::gateDesk(post, HttpMethod::Other, true) == Gate::NotAllowed);
+  // gateRequest never lets a DeskApi request through by itself.
+  TEST_ASSERT_TRUE(vizzz::gateRequest(vizzz::RouteKind::DeskApi, HttpMethod::Post, true) == Gate::NotAllowed);
+  const char* ok[] = {"application/json", "Application/JSON", "application/json; charset=utf-8",
+                      " application/json", "application/json ;charset=UTF-8"};
+  for (const char* v : ok) TEST_ASSERT_TRUE_MESSAGE(dk::isJsonContentType(v), v);
+  // The three CORS-safelisted types (Fetch standard), and look-alikes, are not JSON.
+  const char* bad[] = {"", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data",
+                       "application/jsonp", "application/json-seq", "application/ld+json", "text/json",
+                       "application/js", "json"};
+  for (const char* v : bad) TEST_ASSERT_FALSE_MESSAGE(dk::isJsonContentType(v), v);
+  TEST_ASSERT_FALSE(dk::isJsonContentType(nullptr));
+}
+
+static void test_desk_body_rules() {
+  // ids: the node's own, nothing else.
+  TEST_ASSERT_EQUAL_INT(0, dk::parseId("f1", 'f', 12));
+  TEST_ASSERT_EQUAL_INT(11, dk::parseId("f12", 'f', 12));
+  TEST_ASSERT_EQUAL_INT(7, dk::parseId("s8", 's', 8));
+  const char* badIds[] = {"f0", "f13", "f01", "f", "F1", "s1", "f1x", "f-1", " f1", "f99999999999", ""};
+  for (const char* b : badIds) TEST_ASSERT_EQUAL_INT_MESSAGE(-1, dk::parseId(b, 'f', 12), b);
+  TEST_ASSERT_EQUAL_INT(-1, dk::parseId(nullptr, 'f', 12));
+  // Names: trimmed, control bytes dropped, bounded, never half a UTF-8 character.
+  char out[dk::kSceneNameMax + 1];
+  TEST_ASSERT_EQUAL_UINT(4, dk::cleanName("  wash\t ", out, sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("wash", out);
+  TEST_ASSERT_EQUAL_UINT(4, dk::cleanName("a\nb\x01" "cd", out, sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("abcd", out);
+  TEST_ASSERT_EQUAL_UINT(0, dk::cleanName("   ", out, sizeof(out)));
+  TEST_ASSERT_EQUAL_UINT(0, dk::cleanName(nullptr, out, sizeof(out)));
+  const size_t n = dk::cleanName("abcdefghijklmnopqrstuvwxyz0123", out, sizeof(out));
+  TEST_ASSERT_EQUAL_UINT(dk::kSceneNameMax, n);
+  // 22 ASCII bytes + a 3-byte "—" would end at byte 25: the dash is dropped whole.
+  TEST_ASSERT_EQUAL_UINT(22, dk::cleanName("abcdefghijklmnopqrstuv\xE2\x80\x94", out, sizeof(out)));
+  char wide[32];
+  TEST_ASSERT_EQUAL_UINT(25, dk::cleanName("abcdefghijklmnopqrstuv\xE2\x80\x94", wide, 26));
+  char small[4];
+  TEST_ASSERT_EQUAL_UINT(1, dk::cleanName("a\xC3\xA9", small, 3));   // "a" + half of "é" -> "a"
+  TEST_ASSERT_EQUAL_STRING("a", small);
+  // Numbers.
+  TEST_ASSERT_EQUAL_UINT32(0, dk::clampFadeMs(-5));
+  TEST_ASSERT_EQUAL_UINT32(0, dk::clampFadeMs(NAN));
+  TEST_ASSERT_EQUAL_UINT32(1500, dk::clampFadeMs(1499.6));
+  TEST_ASSERT_EQUAL_UINT32(dk::kFadeMaxMs, dk::clampFadeMs(1e12));
+  TEST_ASSERT_EQUAL_INT32(0, dk::levelFrom(-1));
+  TEST_ASSERT_EQUAL_INT32(128, dk::levelFrom(127.5));
+  TEST_ASSERT_EQUAL_INT32(255, dk::levelFrom(1000));
+  TEST_ASSERT_EQUAL_INT32(0, dk::levelFrom(NAN));
+  TEST_ASSERT_EQUAL_UINT8(0, dk::unitToByte(-0.5));
+  TEST_ASSERT_EQUAL_UINT8(255, dk::unitToByte(1.5));
+  for (unsigned b = 0; b < 256; b++)   // a position the node printed comes back as the same byte
+    TEST_ASSERT_EQUAL_UINT8(b, dk::unitToByte(dk::posToMilli(uint8_t(b)) / 1000.0));
+}
+
+static void test_desk_patch_rules() {
+  dk::NodeFixture fx[6];
+  fx[0] = mkFixture("a", 1, "rgb", 0, 0);       // 1..3
+  fx[1] = mkFixture("b", 4, "rgb", 0, 0);       // 4..6
+  fx[2] = mkFixture("c", 10, "drgb", 0, 0);     // 10..13
+  fx[3] = mkFixture("off", 7, "dimmer", 0, 0, false);
+  fx[4] = mkFixture("d", 509, "drgb", 0, 0);    // 509..512
+  fx[5] = mkFixture("e", 20, "dimmer", 0, 0);
+  // overlap: listed fixtures only, the ignore mask skips the mover itself.
+  TEST_ASSERT_EQUAL_INT(1, dk::overlapSlot(fx, 6, 5, 3, 0));
+  TEST_ASSERT_EQUAL_INT(-1, dk::overlapSlot(fx, 6, 7, 3, 0));      // the disabled slot does not count
+  TEST_ASSERT_EQUAL_INT(-1, dk::overlapSlot(fx, 6, 5, 3, 1u << 1));
+  TEST_ASSERT_EQUAL_INT(0, dk::overlapSlot(fx, 6, 1, 1, 0));
+  // next free address: the lowest gap that fits.
+  TEST_ASSERT_EQUAL_UINT16(7, dk::nextFreeAddress(fx, 6, 3));
+  TEST_ASSERT_EQUAL_UINT16(14, dk::nextFreeAddress(fx, 6, 4));
+  TEST_ASSERT_EQUAL_UINT16(14, dk::nextFreeAddress(fx, 6, 6));
+  TEST_ASSERT_EQUAL_UINT16(21, dk::nextFreeAddress(fx, 6, 9));
+  dk::NodeFixture full[1] = {mkFixture("all", 1, "dimmer", 0, 0)};
+  full[0].start = 1;
+  TEST_ASSERT_EQUAL_UINT16(2, dk::nextFreeAddress(full, 1, 9));
+  dk::NodeFixture tail[2] = {mkFixture("x", 1, "dimmer", 0, 0), mkFixture("y", 505, "ppttdrgbw", 0, 0)};
+  TEST_ASSERT_EQUAL_UINT16(2, dk::nextFreeAddress(tail, 2, 9));
+  tail[0].start = 2;  // 1 free, 2 taken, 3..504 free
+  TEST_ASSERT_EQUAL_UINT16(3, dk::nextFreeAddress(tail, 2, 9));
+  TEST_ASSERT_EQUAL_UINT16(0, dk::nextFreeAddress(tail, 2, 0));
+  // groups: a selection is one range whose members are exactly the selection.
+  uint16_t s = 0, e = 0;
+  TEST_ASSERT_TRUE(dk::groupRangeFor(fx, 6, 0b000011, &s, &e) == dk::GroupFit::Ok);
+  TEST_ASSERT_EQUAL_UINT16(1, s);
+  TEST_ASSERT_EQUAL_UINT16(6, e);
+  TEST_ASSERT_TRUE(dk::groupRangeFor(fx, 6, 0b000101, &s, &e) == dk::GroupFit::NotContiguous);  // b lies inside 1..13
+  TEST_ASSERT_TRUE(dk::groupRangeFor(fx, 6, 0b000111, &s, &e) == dk::GroupFit::Ok);             // 1..13, the gap is unpatched
+  TEST_ASSERT_TRUE(dk::groupRangeFor(fx, 6, 0b001000, &s, &e) == dk::GroupFit::Empty);          // only a disabled slot
+  TEST_ASSERT_TRUE(dk::groupRangeFor(fx, 6, 0, &s, &e) == dk::GroupFit::Empty);
+  // The new group's members, read back by the state rule, are the selection.
+  dk::GroupRange gr[3] = {{"G1", 1, 64, true}, {"G2", 65, 128, true}, {"G3", 1, 1, false}};
+  dk::DeskFacts d;
+  memset(&d, 0, sizeof(d));
+  d.fixtures = fx; d.fixtureSlots = 6; d.groups = gr; d.groupSlots = 3;
+  TEST_ASSERT_TRUE(dk::detail::groupListed(d, 0));
+  TEST_ASSERT_FALSE(dk::detail::groupListed(d, 1));    // no fixture in 65..128: not shown
+  TEST_ASSERT_FALSE(dk::detail::groupListed(d, 2));    // disabled
+  TEST_ASSERT_EQUAL_INT(2, dk::freeGroupSlot(d));      // a disabled slot first
+  gr[2].enabled = true; gr[2].start = 100; gr[2].end = 101;
+  TEST_ASSERT_EQUAL_INT(1, dk::freeGroupSlot(d));      // then an enabled one with no member
+  gr[1].start = 1; gr[2].start = 1;
+  TEST_ASSERT_EQUAL_INT(-1, dk::freeGroupSlot(d));
+  // identify flashes level and emitter roles, never position or control channels.
+  uint16_t ch[dk::kMaxProfileChannels];
+  dk::NodeFixture mover = mkFixture("m", 100, "ppttdrgbw", 0, 0);
+  TEST_ASSERT_EQUAL_UINT8(5, dk::identifyChannels(mover, ch));   // dimmer r g b w
+  TEST_ASSERT_EQUAL_UINT16(103, ch[0]);                          // 0-based: 100 - 1 + offset 4
+  dk::NodeFixture strobe = mkFixture("s", 1, "ds", 0, 0);
+  TEST_ASSERT_EQUAL_UINT8(1, dk::identifyChannels(strobe, ch));
+  TEST_ASSERT_EQUAL_UINT16(0, ch[0]);
+}
+
+// The contract entry's reply keys (and a class-b refusal's node body keys).
+static void assertPostReplyMatchesContract(const char* contract, const char* method, const char* path,
+                                           const char* doc) {
+  const char* e = contractEntry(contract, method, path);
+  TEST_ASSERT_NOT_NULL_MESSAGE(e, path);
+  char cls[4];
+  jr::str(jr::member(e, "class"), cls, sizeof(cls));
+  const char* shape = cls[0] == 'a' ? jr::member(e, "reply") : jr::at(e, "node.body");
+  char key[64], want[64], msg[256];
+  for (int i = 0;; i++) {
+    const char* tv = jr::nthMember(shape, i, key, sizeof(key));
+    if (!tv) break;
+    jr::str(tv, want, sizeof(want));
+    const char* v = jr::member(doc, key);
+    snprintf(msg, sizeof(msg), "%s %s.%s missing or not %s: %s", method, path, key, want, doc);
+    TEST_ASSERT_NOT_NULL_MESSAGE(v, msg);
+    TEST_ASSERT_TRUE_MESSAGE(jr::typeMatches(v, want), msg);
+  }
+  // test-http.js fails a class-a probe whose reply carries a truthy "error"
+  // (api/output sends di's "error": null).
+  const char* err = jr::member(doc, "error");
+  if (cls[0] == 'a') TEST_ASSERT_TRUE_MESSAGE(!err || !strncmp(err, "null", 4), path);
+}
+
+static const dk::ReplyArgs* gArgs;
+static bool writeReplyFn(dk::JsonWriter& w, const dk::DeskFacts& d) { return dk::writeReply(w, d, *gArgs); }
+
+static const char* emitReply(const dk::DeskFacts& d, dk::Reply kind, uint8_t slot = 0, uint32_t slots = 0) {
+  static dk::ReplyArgs a;
+  memset(&a, 0, sizeof(a));
+  a.kind = kind; a.slot = slot; a.slots = slots; a.error = dk::kNotOnNode;
+  gArgs = &a;
+  emit(writeReplyFn, d);
+  return gLog.doc;
+}
+
+static void test_desk_post_replies_match_vendored_contract() {
+  char* contract = readContract();
+  buildBigNode(12);
+  dk::DeskFacts& d = gNode.facts;
+  static uint32_t fades[8] = {0, 250, 0, 0, 0, 0, 0, 600000};
+  d.sceneFades = fades;
+  dk::InputFacts in = {2, true, 0x12, 0x13, true, false, false, 2, 0, 40, -1, -1, false, "node-1"};
+  d.input = &in;
+  struct Case { const char* path; dk::Reply kind; uint8_t slot; uint32_t slots; };
+  const Case cases[] = {
+    {"api/input", dk::Reply::Input, 0, 0},          {"api/input/release", dk::Reply::Ok, 0, 0},
+    {"api/master", dk::Reply::Ok, 0, 0},            {"api/raw", dk::Reply::Raw, 0, 0},
+    {"api/fx", dk::Reply::Fx, 0, 0},                {"api/chase", dk::Reply::Chase, 0, 0},
+    {"api/output", dk::Reply::Output, 0, 0},        {"api/fixtures/add", dk::Reply::Added, 0, 0b110},
+    {"api/fixture", dk::Reply::Fixture, 3, 0},      {"api/fixtures/all", dk::Reply::Ok, 0, 0},
+    {"api/fixtures/move", dk::Reply::Ok, 0, 0},     {"api/fixtures/readdress", dk::Reply::Moved, 0, 0b1},
+    {"api/fixtures/identify", dk::Reply::Identify, 0, 0b101},
+    {"api/groups/add", dk::Reply::Group, 0, 0},     {"api/scenes/save", dk::Reply::Scene, 1, 0},
+    {"api/scenes/update", dk::Reply::Scene, 7, 0},  {"api/scenes/recall", dk::Reply::Ok, 0, 0},
+    {"api/scenes/remove", dk::Reply::Ok, 0, 0},     {"api/groups/remove", dk::Reply::Ok, 0, 0},
+    {"api/fixtures/remove", dk::Reply::Removed, 0, 0},
+  };
+  for (const Case& c : cases) {
+    const char* doc = emitReply(d, c.kind, c.slot, c.slots);
+    assertPostReplyMatchesContract(contract, "POST", c.path, doc);
+  }
+  // GET api/input: the same writer.
+  assertPostReplyMatchesContract(contract, "GET", "api/input", emitReply(d, dk::Reply::Input));
+  // Captures the contract's later probes read.
+  emitReply(d, dk::Reply::Added, 0, 0b110);
+  char v[64];
+  jr::str(jr::at(gLog.doc, "added.0.id"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("f2", v);
+  TEST_ASSERT_EQUAL_INT(2, jr::count(jr::at(gLog.doc, "added")));
+  TEST_ASSERT_EQUAL_INT(0, jr::num(jr::at(gLog.doc, "added.0.universe")));
+  emitReply(d, dk::Reply::Scene, 1);
+  jr::str(jr::at(gLog.doc, "scene.id"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("s2", v);
+  TEST_ASSERT_EQUAL_INT(250, jr::num(jr::at(gLog.doc, "scene.fadeMs")));      // decision 2: per-slot fade
+  emitReply(d, dk::Reply::Scene, 7);
+  TEST_ASSERT_EQUAL_INT(600000, jr::num(jr::at(gLog.doc, "scene.fadeMs")));
+  jr::str(jr::at(gLog.doc, "scene.name"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("Scene 8", v);                                     // no sN.name: the default
+  emitReply(d, dk::Reply::Group, 0);
+  jr::str(jr::at(gLog.doc, "group.id"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("g1", v);
+  emitReply(d, dk::Reply::Moved, 0, 0b1);
+  TEST_ASSERT_EQUAL_INT(gNode.fixtures[0].start, jr::num(jr::at(gLog.doc, "moved.0.address")));
+  emitReply(d, dk::Reply::Identify, 0, 0b101);
+  jr::str(jr::at(gLog.doc, "identifying.1"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("f3", v);
+  // Input: the node's mode in di's words.
+  emitReply(d, dk::Reply::Input);
+  TEST_ASSERT_EQUAL_STRING_LEN("true", jr::at(gLog.doc, "config.enabled"), 4);
+  jr::str(jr::at(gLog.doc, "config.universes.0.desk"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("htp", v);
+  jr::str(jr::at(gLog.doc, "lines.0.artnet"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("0:1:2", v);                                        // port-address 0x12
+  jr::str(jr::at(gLog.doc, "listening.1.groups.0"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("239.255.0.19", v);                                 // sACN universe 0x13
+  jr::str(jr::at(gLog.doc, "summary.text"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("Following Art-Net on 1 of 1 universe", v);
+  in.mode = 1; in.artActive = false; in.fallbackToWeb = false; in.held = true;
+  emitReply(d, dk::Reply::Input);
+  jr::str(jr::at(gLog.doc, "config.universes.0.desk"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("follow", v);
+  jr::str(jr::at(gLog.doc, "config.loss"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("hold", v);
+  jr::str(jr::at(gLog.doc, "lines.0.state"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("held", v);
+  in.mode = 0;
+  emitReply(d, dk::Reply::Input);
+  TEST_ASSERT_EQUAL_STRING_LEN("false", jr::at(gLog.doc, "summary.enabled"), 5);
+  d.input = nullptr;   // a zeroed fact: input off, still the contract's shape
+  assertPostReplyMatchesContract(contract, "GET", "api/input", emitReply(d, dk::Reply::Input));
+  // Class b: the refusals carry the node body of the contract.
+  assertPostReplyMatchesContract(contract, "POST", "api/looks/add", emitReply(d, dk::Reply::Error));
+  assertPostReplyMatchesContract(contract, "POST", "api/cues/go", emitReply(d, dk::Reply::CuesRefused));
+  jr::str(jr::at(gLog.doc, "error"), v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("not on this node", v);
+  // pullReply rebuilds any reply exactly, pull by pull.
+  emitReply(d, dk::Reply::Scene, 1);
+  static char full[16384];
+  const size_t fullLen = gLog.len;
+  memcpy(full, gLog.doc, fullLen);
+  static dk::JsonWriter w;
+  static char again[16384];
+  size_t at = 0;
+  for (;;) {
+    size_t got = dk::pullReply(d, *gArgs, w, (uint8_t*)again + at, 97, at);
+    if (!got) break;
+    at += got;
+  }
+  TEST_ASSERT_EQUAL_size_t(fullLen, at);
+  TEST_ASSERT_EQUAL_INT(0, memcmp(full, again, fullLen));
+  free(contract);
+}
+
+// Groups with no member are not listed (di never keeps one), so the state's
+// group list is what groups/add + the membership rule can give back.
+static void test_desk_state_hides_memberless_groups() {
+  buildBigNode(4);   // fixtures only in the first channels
+  emit(dk::writeState, gNode.facts);
+  const char* g = jr::at(gLog.doc, "groups");
+  for (int i = 0; jr::element(g, i); i++)
+    TEST_ASSERT_TRUE(jr::count(jr::member(jr::element(g, i), "ids")) > 0);
+  TEST_ASSERT_TRUE(jr::count(g) < 7);
+}
 #endif
 
 static int runAll() {
@@ -1643,6 +1956,12 @@ static int runAll() {
   RUN_TEST(test_desk_small_replies_match_vendored_contract);
   RUN_TEST(test_desk_window_pull_reassembles_state);
   RUN_TEST(test_desk_struct_sizes);
+  RUN_TEST(test_desk_api_table_matches_contract_and_routes);
+  RUN_TEST(test_desk_gate_and_content_type);
+  RUN_TEST(test_desk_body_rules);
+  RUN_TEST(test_desk_patch_rules);
+  RUN_TEST(test_desk_post_replies_match_vendored_contract);
+  RUN_TEST(test_desk_state_hides_memberless_groups);
 #endif
   return UNITY_END();
 }

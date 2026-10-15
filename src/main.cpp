@@ -2298,6 +2298,8 @@ static void sendGateRefusal(AsyncWebServerRequest* r, vizzz::RouteKind kind, viz
 // routes do, freeze the facts a reply reads, and stream the reply through the
 // V3 writer. docs/DESK_BRIDGE_CORE.md §4 has the decisions.
 namespace dk = vizzz::desk;
+static_assert(dk::kFadeMaxMs == FADE_MAX_MS, "the desk fade bound is the fade engine's");
+static_assert(MAX_FIXTURES <= 32, "fixture slot masks are 32 bits");
 
 static const char* const kFxModeNames[] = {"none", "strobe", "chase", "pulse", "sine",
                                            "sparkle", "comet", "bars", "glitch", "radar"};
@@ -2779,8 +2781,10 @@ static void apiFixturesAdd(AsyncWebServerRequest* r) {
   if (!universeZero(doc["universe"])) { deskError(r, 400, "only universe 0 on this node"); return; }
   const uint8_t width = dk::kProfiles[prof].count;
   uint32_t count = 1;
-  if (doc["count"].is<double>()) count = doc["count"].as<double>() < 1 ? 1 : uint32_t(doc["count"].as<double>());
-  if (count > MAX_FIXTURES) count = MAX_FIXTURES;
+  if (doc["count"].is<double>()) {   // clamped as a double: a huge count must not overflow the cast
+    const double cv = doc["count"].as<double>();
+    count = cv < 1 ? 1 : (cv > MAX_FIXTURES ? MAX_FIXTURES : uint32_t(cv));
+  }
   uint16_t address = 0;
   if (!doc["address"].isNull() && !(doc["address"].is<double>() && doc["address"].as<double>() == 0)) {
     const double a = doc["address"].is<double>() ? doc["address"].as<double>() : -1;
@@ -3242,7 +3246,7 @@ static void apiChase(AsyncWebServerRequest* r) {
       if (s >= 0 && nIds < MAX_CUES) ids[nIds++] = uint8_t(s);
     }
   const bool hasHold = doc["holdMs"].is<double>(), hasFade = doc["fadeMs"].is<double>();
-  const uint32_t hold = hasHold ? vizzz::clampCueTimeMs(long(doc["holdMs"].as<double>()), FADE_MAX_MS) : 0;
+  const uint32_t hold = hasHold ? dk::clampFadeMs(doc["holdMs"].as<double>()) : 0;   // 0..FADE_MAX_MS, as /cue/set
   const uint32_t fade = hasFade ? dk::clampFadeMs(doc["fadeMs"].as<double>()) : 0;
   DeskBlock* b = deskAlloc(r, 0);
   if (!b) return;
