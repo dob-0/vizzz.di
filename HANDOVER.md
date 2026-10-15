@@ -3,6 +3,15 @@
 **Node BA6FCC (192.168.88.66):** fw **3f8998b** (V0–V6: di desk served, /api bridge, SSE stream, fixtures v2 with 32 slots). Proven: migration
 (4 rgb back, 12 slots converted, 0 unmapped), 13 fixtures add/remove, http 70/70, net 13/13, 60 min soak on defb77e (0 failures, 0 reboots,
 max block 47–90 KB under a polling desk tab), blackout-vs-cue, USB 8/8 (on defb77e).
+**MOVED TO THE CLOUD (owner 18:5x: he leaves for the venue; aylmo may sleep; nothing depends on aylmo; asks only through the ledger).**
+Three routines on account b, fired 15:0xZ, each opens a draft PR; watch `cloud/` branches:
+- trig_0167eLYPCzy2CVW9YCnd4KBu — **V5.1** the stream's 404 on `Accept: text/event-stream` → `cloud/stream-accept-404-2026-10-15` (vizzz.di, to int).
+- trig_01TK4onWTePsGoFg7K7wYokY — **di.iiii land fold** after #980 → `land/fold-2026-10-15-desk` (PR to dev).
+- trig_01VdZmV2DvXRVJwA5t8AsToz — **V7 cloud half**: contract v2 vendored, desk UI re-pinned to di dev (D1–D5), simulator parity, screens →
+  `cloud/v7-simulator-parity-2026-10-15` (vizzz.di, to int).
+Hardware half, for whoever is next at the node: merge V5.1 + V7, `pio run -e esp32dev` with the gate, flash, `curl -H 'accept: text/event-stream'
+http://192.168.88.66/api/dmx/stream` → 200, `heap_probe --sse 1|3|5` (max block > 64 KB), the desk in a browser on the node, the phone, the lamp.
+
 **OPEN BUG (first thing for the next lead):** `GET /api/dmx/stream` answers **404** when the request carries `Accept: text/event-stream`
 (curl -H 'accept: text/event-stream' → 404; plain curl → 200 with frames). Browsers' EventSource always sends that header, so di's desk on
 the node falls back to polling; `tools/heap_probe.mjs --sse N` fails the same way, so the 1/3/5-client heap numbers are NOT measured.
