@@ -127,5 +127,60 @@ jsonbody 200 'd["cues"]["n"] == 0' "GET /api/cues (class b, empty list)" "$base/
 jsonbody 400 '"error" in d' "POST /api/fixture on:false refused" -X POST -H "$J" -d '{"id":"f1","on":false}' "$base/api/fixture"
 jsonbody 400 '"error" in d' "POST /api/raw universe 1 refused" -X POST -H "$J" -d '{"universe":1,"channel":64,"value":0}' "$base/api/raw"
 jsonbody 200 'isinstance(d["api_replies"], int) and isinstance(d["api_busy"], int)' "/status has api_replies, api_busy" "$base/status"
+# V5 GET /api/dmx/stream: 200 text/event-stream, one event in dmxstream.js's shape, the cap (4) answers 503.
+jsonbody 200 'd["caps"]["stream"] is True' "/api/state says caps.stream" "$base/api/state"
+jsonbody 200 'isinstance(d["sse_clients"], int)' "/status has sse_clients" "$base/status"
+jsonbody 405 'd["allow"] == "GET"' "POST /api/dmx/stream" -X POST -H "$J" -d '{}' "$base/api/dmx/stream"
+has no 'access-control-allow-origin' "no ACAO on the stream" -m 1 "$base/api/dmx/stream"
+stream_out="$(python3 - "$base" <<'PY'
+import http.client, json, sys, time, urllib.parse
+u = urllib.parse.urlparse(sys.argv[1]); host, port = u.hostname, u.port or 80
+def open_stream():
+    c = http.client.HTTPConnection(host, port, timeout=5)
+    c.request("GET", "/api/dmx/stream")
+    return c, c.getresponse()
+def first_event(r):
+    """Reads lines until the first 'data:' line of an 'event: frame'; returns (event name, parsed data)."""
+    name = data = None
+    for _ in range(40):
+        line = r.fp.readline().decode().rstrip("\r\n")
+        if line.startswith("event:"): name = line[6:].strip()
+        elif line.startswith("data:"): data = json.loads(line[5:]); break
+    return name, data
+out = []
+c, r = open_stream()
+ctype = r.getheader("Content-Type") or ""
+out.append(("200 + text/event-stream", r.status == 200 and ctype.startswith("text/event-stream")))
+name, ev = first_event(r)
+d = ev and ev.get("d")
+out.append(("first event is a frame key frame of 512 slots with meta",
+            name == "frame" and ev and ev["k"] == 1 and ev["s"] >= 1 and isinstance(ev["t"], int) and
+            len(d) == 1 and d[0][0] == 0 and d[0][1] == 0 and len(d[0][2]) == 512 and
+            ev["m"]["blackout"] is False and 0 <= ev["m"]["master"] <= 255 and ev["m"]["looks"] == [] and ev["m"]["cues"] is None))
+held = [(c, r)]
+for _ in range(3):                      # clients 2..4
+    held.append(open_stream())
+time.sleep(0.3)
+sc = http.client.HTTPConnection(host, port, timeout=5); sc.request("GET", "/status")
+sse = json.loads(sc.getresponse().read())["sse_clients"]
+out.append(("/status sse_clients = 4 with four streams open (got %s)" % sse, sse == 4))
+c5, r5 = open_stream()
+body = r5.read()
+out.append(("5th client: 503 {error: stream full} (got %s %s)" % (r5.status, body[:60]),
+            r5.status == 503 and json.loads(body) == {"error": "stream full"}))
+for cc, rr in held: rr.close(); cc.close()   # the response holds the socket's file too
+c5.close()
+time.sleep(1.5)
+c6, r6 = open_stream()
+out.append(("a slot is free again after the four close", r6.status == 200))
+r6.close(); c6.close()
+for label, ok in out: print(("ok   " if ok else "FAIL ") + label)
+PY
+)"
+while IFS= read -r line; do
+  echo "$line"
+  if [[ "$line" == ok* ]]; then pass=$((pass+1)); else fail=$((fail+1)); fi
+done <<<"$stream_out"
+[[ -n "$stream_out" ]] || { fail=$((fail+1)); echo "FAIL the stream check did not run"; }
 echo "http api: $pass passed, $fail failed"
 exit $((fail ? 1 : 0))

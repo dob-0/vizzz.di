@@ -884,6 +884,8 @@ static constexpr RouteSpec kRoutes[] = {
   {"/api/library/manufacturer", RouteKind::DeskApi}, {"/api/library/fixture", RouteKind::DeskApi},
   {"/api/library/import", RouteKind::DeskApi}, {"/api/midi", RouteKind::DeskApi},
   {"/api/show/open", RouteKind::DeskApi}, {"/api/show/copy-machine", RouteKind::DeskApi},
+  // Not in the contract (vizzz::desk::kDeskExtra): the pushed DMX frame, plan step V5.
+  {"/api/dmx/stream", RouteKind::DeskApi},
 };
 constexpr size_t kRouteCount = sizeof(kRoutes) / sizeof(kRoutes[0]);
 
@@ -991,27 +993,32 @@ inline bool wsOriginAllowed(const char* origin, const char* host) {
 // Node health facts (plan step V0). /status and the manifest both print these
 // three keys from one HealthFacts, via healthJsonFields(), so they cannot
 // drift. heap_max_block is the largest single allocation that still succeeds
-// (fragmentation), ws_clients the live /ws sockets.
+// (fragmentation), ws_clients the live /ws sockets, sse_clients the live
+// /api/dmx/stream clients (plan step V5).
 struct HealthFacts {
   uint32_t heapFree;
   uint32_t heapMaxBlock;
   uint32_t wsClients;
+  uint32_t sseClients;
 };
 
-constexpr const char* kHealthKeys[] = {"heap_free", "heap_max_block", "ws_clients"};
+constexpr const char* kHealthKeys[] = {"heap_free", "heap_max_block", "ws_clients", "sse_clients"};
 constexpr size_t kHealthKeyCount = sizeof(kHealthKeys) / sizeof(kHealthKeys[0]);
 
-// Writes `"heap_free":N,"heap_max_block":N,"ws_clients":N` (no braces, no
+// Writes `"heap_free":N,"heap_max_block":N,"ws_clients":N,"sse_clients":N` (no braces, no
 // trailing comma) so the caller can splice it into an object. Returns the
 // snprintf result: >= n means it was truncated.
 inline int healthJsonFields(char* dst, size_t n, const HealthFacts& h) {
-  return snprintf(dst, n, "\"%s\":%lu,\"%s\":%lu,\"%s\":%lu",
+  return snprintf(dst, n, "\"%s\":%lu,\"%s\":%lu,\"%s\":%lu,\"%s\":%lu",
                   kHealthKeys[0], (unsigned long)h.heapFree,
                   kHealthKeys[1], (unsigned long)h.heapMaxBlock,
-                  kHealthKeys[2], (unsigned long)h.wsClients);
+                  kHealthKeys[2], (unsigned long)h.wsClients,
+                  kHealthKeys[3], (unsigned long)h.sseClients);
 }
 
 }  // namespace vizzz
 
 // Desk bridge core (plan step V3): profiles, fixture <-> web layer, scenes, streaming JSON.
 #include "vizzz_desk.h"
+// GET /api/dmx/stream (plan step V5): event formatting, change detection, rate/keepalive rule, client cap.
+#include "vizzz_stream.h"
