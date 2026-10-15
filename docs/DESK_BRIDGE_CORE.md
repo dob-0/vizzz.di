@@ -160,15 +160,24 @@ MAX_FIXTURES goes 12 → 32 **only at V6** (plan §7 decision), together with th
 The esp32dev build size is reported in the PR only if it was run (V3 adds no call from main.cpp,
 so the linker drops the code; only the include is compiled).
 
-### V6 migration need (not done here)
+### V6 migration (done, step V6)
 
-Today's NVS blob `fixtures/items` is `FixtureDef[12]` = `{name[16], start, end, x, y, enabled}`,
-24 B each, 288 B. V6 writes a v2 blob under a new key (`items2`, plus `ver = 2`) of
-`NodeFixture[32]`, 704 B, and keeps the v1 blob for rollback. A v1 fixture maps with
-`migrateV1Fixture()`: width = `end - start + 1`, profile = `profileForWidth(width)` (1 dimmer,
-2 ds, 3 rgb, 4 drgb, 5 drgbw, 6 drgbwa, 9 ppttdrgbw; any other width keeps the start and
-becomes `dimmer`, i.e. one channel, and the migration must report it). That helper is in this
-header and tested; nothing in NVS changes in this step.
+NVS namespace `fixtures`: the v1 blob `items` is `FixtureDef[12]` = `{name[16], start, end, x, y, enabled}`,
+24 B each, 288 B (+ `count`, + `prof`, one profile byte per slot). V6 writes a v2 store under new keys:
+`ver = 2`, `items2` = `NodeFixture[32]` (704 B), `count2`; the v1 keys are never written again, so
+an older build still boots with the patch it had at migration. Boot order: v2 if `ver == 2` and the
+blob is 704 B; else a one-time migration of the v1 blob (`migrateV1Blob()` in this header: a stored
+`prof` byte wins when its width still matches, otherwise `migrateV1Fixture()`: width =
+`end - start + 1`, `profileForWidth()` — 1 dimmer, 2 ds, 3 rgb, 4 drgb, 5 drgbw, 6 drgbwa,
+9 ppttdrgbw; any other width keeps the start and becomes `dimmer`), slots 12..31 take the defaults,
+v2 is written; else the defaults (4 rgb at 1/4/7/10). The unmapped widths are reported: serial log
+and `/status` `fixtures_migrated` / `fixtures_unmapped` (active slots only). `repairV2()` repairs
+what NVS returned. The run-time table stays `FixtureDef` + `fixtureProfile[]` (start..end is what
+the console routes and the DMX path read); `saveFixtures()` converts it through
+`deskFixture_locked()`, so a range edited through `/fixture/set` to a width with no profile is stored
+as the profile the desk shows for that width. `MAX_FIXTURES` is `vizzz::desk::kMaxFixtures` = 32.
+`fixturesJSON()` (`/fixtures`) took its 768 B copy plus text buffer from the stack; at 32 slots it
+needs ~4 KB, so it now mallocs them for the call.
 
 ## 4. Decisions taken in V4 (2026-10-15; the cloud run's own text was lost with its sandbox, rewritten by the lead)
 
@@ -192,4 +201,4 @@ header and tested; nothing in NVS changes in this step.
    DeskApi routes do not answer (no ACAO) — OWASP CSRF cheat sheet, "non-simple requests".
 
 Open for V5–V7: the stream (V5) replaces the 10 Hz `api/dmx` poll; the 0-byte reply seen once after a POST burst
-(ledger N686); MAX_FIXTURES 32 and the v2 blob (V6); phone, latency and the pull cost (V7).
+(ledger N686); phone, latency and the pull cost (V7).
