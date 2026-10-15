@@ -8,6 +8,7 @@ Read this before changing the firmware. Keep it short and replace stale facts.
 Branch: `audit/2026-08-24` (pushed to origin; `main` untouched at `42f1963`)
 RAM 52,740 bytes (16.1%), Flash 927,093 bytes (70.7%), native tests 4/4.
 
+- 2026-10-15 desk UI step V3 (branch `cloud/desk-bridge-core-2026-10-15`, draft PR, not merged, nothing flashed): `include/vizzz_desk.h` (pure: 13 di profiles, NodeFixture 22 B <-> web layer, scenes from snapshots, streaming JSON writer <=512 B chunks, WindowSink pull adaptor), design `docs/DESK_BRIDGE_CORE.md`, vendored di contract `test/fixtures/api-contract.v1.json` (091a1a6, sha256-checked). Native 51/51 (`pio test -e native` ran in the cloud sandbox). esp32dev: RAM 57,748 B unchanged, gate 939,808 vs base 939,856 B (main.cpp does not call it yet). Next: V4 wires `/api/*`; read the doc's §4 open questions first.
 - 2026-10-15 desk UI step V1 (not yet merged; firmware build NOT run in the sandbox): pinned di.iiii f0b173d, 7 files, raw 468,729 B, gz -9 139,921 B (sum of `desk_ui.lock`, Python gzip level 9 mtime 0), `include/desk_ui_gz.h` 710,767 B of source (`wc -c`; not flash). Flash cost of the arrays = the 139,921 B gz; free-flash gate untested on a real binary (run `pio run -e esp32dev` on aylmo).
 
 ## Last session - 2026-08-24/25

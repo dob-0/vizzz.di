@@ -970,3 +970,6 @@ inline int healthJsonFields(char* dst, size_t n, const HealthFacts& h) {
 }
 
 }  // namespace vizzz
+
+// Desk bridge core (plan step V3): profiles, fixture <-> web layer, scenes, streaming JSON.
+#include "vizzz_desk.h"

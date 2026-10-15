@@ -15,6 +15,8 @@ ESP32 firmware (Arduino / PlatformIO) that outputs DMX512 via a MAX485 transceiv
 ```
 src/main.cpp          – entire firmware (single-file)
 include/vizzz_core.h – pure C++ helpers (no Arduino deps), unit-tested
+include/vizzz_desk.h – desk bridge core (di desk API: profiles, fixture<->web layer, streaming JSON); see docs/DESK_BRIDGE_CORE.md
+test/fixtures/        – vendored di api-contract.json (sha256-checked by the native tests)
 lib/esp_dmx/          – vendored esp_dmx library (do not modify)
 test/test_smoke/      – Unity tests for vizzz_core.h, run on native platform
 platformio.ini        – two envs: esp32dev (hardware), native (unit tests)
