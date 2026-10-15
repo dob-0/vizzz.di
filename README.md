@@ -99,6 +99,21 @@ python3 tools/fetch_desk_ui.py --update --commit <sha> [--branch <name>]   # bum
 python3 tools/flash_gate.py esp32dev                # used/free of the app slot; exit 1 under 128 KB free
 ```
 
+**Re-pinning the UI to a newer di.iiii (V7, a deliberate PR, never a drive-by):**
+
+1. In a di.iiii checkout at the commit to pin: `git rev-parse HEAD`; list `serverXR/src/lighting/ui/`. A **new file** goes into `desk_ui.lock` as `{"path": "<name>"}` first (`--update` fills the numbers).
+2. `python3 tools/fetch_desk_ui.py --from ../di.iiii --update --commit <sha> --branch dev` rewrites the lock and `include/desk_ui_gz.h`
+   (without `--from` it reads raw.githubusercontent.com at that commit). Then `--check`.
+3. A new file also needs: a `{"/<name>", RouteKind::Static}` row in `kRoutes` (`vizzz_core.h`), a `route("/<name>", ...)` line in `setupWeb()`
+   (`main.cpp`), the file in `tools/check_http_api.sh`'s desk-file list and in the README route table above. `tools/check_routes.py` and the native
+   test `test_static_routes_are_the_desk_files_plus_the_redirects` fail until all of them agree.
+4. If di's `api-contract.json` changed: copy it to `test/fixtures/api-contract.vN.json`, put its sha256 and source commit in `api-contract.vN.source`
+   and in the native test; keep older versions (the node must satisfy every vendored one).
+5. Free flash before building: `new free = old free - (sum of gz_bytes new - sum old)`; then `pio run -e esp32dev` runs the gate (it fails under 128 KB free).
+   Refuse the re-pin if the gate fails.
+6. `python3 tools/fetch_desk_ui.py --from ../di.iiii --cache tools/.desk_ui_cache`, start `tools/simulate_node.py`, run `tools/check_http_api.sh`,
+   di's `DESK_URL=... node serverXR/src/lighting/tests/test-http.js --class a` and `NODE_URL=... node .../tests/test-node-section.js`.
+
 ### How the node serves it (V2)
 
 - `/` is `index.html`; `/app.js`, `/style.css`, `/qr.js`, `/from.js`, `/show.js`, `/caps.js`, `/dmxfeed.js` are their files. Each is sent
@@ -333,7 +348,7 @@ curl 'http://192.168.4.1/set?ch=1&v=255'                                     # o
 
 di's desk page at `/` talks to these. They are di's own desk API, held to di's
 `serverXR/src/lighting/api-contract.json` (vendored as
-`test/fixtures/api-contract.v1.json`, commit 091a1a6): **23 class-a routes really
+`test/fixtures/api-contract.v1.json`, commit 091a1a6; v2, di dev 4f3bec9b, adds `api/dmx/stream`, `caps`, `node_routes`: `api-contract.v2.json`, the node satisfies both): **23 class-a routes really
 work, 28 class-b answer static shapes or `{error:"not on this node"}`, 8 class-c
 answer `404 {error}`**. Mapping rules and decisions: `docs/DESK_BRIDGE_CORE.md`.
 

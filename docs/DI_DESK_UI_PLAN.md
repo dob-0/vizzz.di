@@ -227,3 +227,15 @@ Static RAM 57,748 B (17.6 %), Flash 933,261 B (71.2 %), native 38/38.
 - Static cost of 12→32: `FixtureDef` is 24 B, so +480 B static, +480 B on the stack copy in the fixture snapshot, +~0.5 KB in the NVS blob. Nothing in the table above moves by that.
 - What can break is the reply, not the table: `/api/state` ≈ 47 KB at 32 fixtures. One copy fits (98 KB largest block under load, 2× margin); five concurrent copies (5 clients × 47 KB = 235 KB) do not fit in heap at all, and even today's 12 fixtures (5 × 22 KB) would not. So the limit is safe only with the streaming writer (V3) and the hard reply cap, which is why the order stays V3 → V6. With streaming, no reply ever needs a contiguous block near 47 KB.
 - Rule for the next measurement (V5): the same probe with 1, 3 and 5 clients on `/api/dmx/stream`; `heap_max_block` under load must stay above 64 KB, else the client cap drops.
+
+## 8. V7 cloud half: done / owed to the hardware half (2026-10-15)
+
+**Done (cloud sandbox, nothing flashed):**
+- Contract v2 vendored beside v1 (`api-contract.v2.json` + `.source`, sha256 in the native test); native tests and `check_routes.py` hold the node to both. Keys the writers miss against v2: **none** in `api/state` (state_keys, `caps` audio/midi/node/stream all written), the stream key frame has s/t/k/d, and all 17 `node_routes` exist in `kRoutes` with the right kind. Only `uptime_s` (read by the fold, painted "not reported", neither firmware nor simulator sends it) is missing.
+- Desk UI re-pinned to di dev 4f3bec9b (D1-D5), `dmxfeed.js` served; free flash 221,456 B (gate 131,072 B) PASS.
+- Parity vs `simulate_node.py`: check_http_api 71/71, di `test-http.js --class a` 24/24, di `test-node-section.js` 16/16; screens at 1280x800 and 390x844 (docs/screens/).
+- Simulator `/status` aligned to the firmware's key names (it sent `ap_ip`/`sta`, which the UI accepts only as fallbacks).
+
+**Not pure (for the lead):** `uptime_s` in `/status` is in `main.cpp` (the status writer's format string, 1,024 B buffer: adding it needs the buffer length checked); `/peers`, `/wifi/scan`, `/node/manifest` replies are not compared with a contract here (v2 gives only a prose `what`).
+
+**Owed to the hardware half:** merge V5.1, flash, phone on the node (every page, the This-node fold), fader->DMX latency vs the old console, `heap_probe --sse 1|3|5` (max block > 64 KB), the desk's stream path on the node (Accept: text/event-stream), heap with the larger `app.js`/gz (+9.7 KB flash only, RAM unchanged by design), the lamp.
