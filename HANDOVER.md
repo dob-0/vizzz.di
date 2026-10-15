@@ -3,6 +3,11 @@
 **Node BA6FCC (192.168.88.66):** fw **3f8998b** (V0–V6: di desk served, /api bridge, SSE stream, fixtures v2 with 32 slots). Proven: migration
 (4 rgb back, 12 slots converted, 0 unmapped), 13 fixtures add/remove, http 70/70, net 13/13, 60 min soak on defb77e (0 failures, 0 reboots,
 max block 47–90 KB under a polling desk tab), blackout-vs-cue, USB 8/8 (on defb77e).
+**RELAUNCH (aylmo powered off 19:0x on the owner's word; this session stopped clean, everything pushed):**
+`cd ~/work/vizzz.di && git checkout int/2026-10-15 && git pull && sed -n '1,60p' HANDOVER.md && ledger-open | grep -E 'N866|N824|N827'`
+then `gh pr list -R dob-0/vizzz.di; gh pr list -R dob-0/di.iiii --search 'head:land/fold'` for the three cloud PRs (V5.1, fold, V7 cloud half);
+review, merge, `pio run -e esp32dev` with the gate, flash the node (192.168.88.66, /dev/ttyUSB0), then the hardware half below. Node is on
+fw 3f8998b; its NVS holds 4 rgb fixtures at 1/4/7/10 (v2 store) and the lamp levels are lost at reboot (re-set ch1-6 = 245,0,0,245,0,0).
 **MOVED TO THE CLOUD (owner 18:5x: he leaves for the venue; aylmo may sleep; nothing depends on aylmo; asks only through the ledger).**
 Three routines on account b, fired 15:0xZ, each opens a draft PR; watch `cloud/` branches:
 - trig_0167eLYPCzy2CVW9YCnd4KBu — **V5.1** the stream's 404 on `Accept: text/event-stream` → `cloud/stream-accept-404-2026-10-15` (vizzz.di, to int).
