@@ -786,6 +786,8 @@ inline bool parseIntArg(const char* s, int32_t lo, int32_t hi, int32_t* out) {
 //             /wifi/scan (nearby network names stay on the node's own origin).
 //   GetShared GET only, ACAO "*": JSON reads other origins may read (di reads
 //             /status cross-origin).
+//   Static    GET only, no ACAO: di's desk UI files served from flash (V2) and
+//             the 301s that replace the old console pages. Same gate as GetLocal.
 //   Operator  GET and POST, no header, no ACAO: what di.iiii and phones send
 //             as no-cors simple requests (/set, /master, /blackout, ...).
 //             A cross-site page CAN fire these. Kept on purpose: they are
@@ -794,7 +796,7 @@ inline bool parseIntArg(const char* s, int32_t lo, int32_t hi, int32_t* out) {
 //             cannot add a custom header without a CORS preflight, and the
 //             node answers every preflight on these routes with 403 and no
 //             ACAO, so the browser never sends the request.
-enum class RouteKind : uint8_t { GetLocal, GetShared, Operator, Console };
+enum class RouteKind : uint8_t { GetLocal, GetShared, Operator, Console, Static };
 
 struct RouteSpec {
   const char* path;
@@ -804,10 +806,17 @@ struct RouteSpec {
 constexpr const char* CONSOLE_HEADER = "X-Vizzz-Console";
 
 static constexpr RouteSpec kRoutes[] = {
-  {"/", RouteKind::GetLocal}, {"/control", RouteKind::GetLocal},
-  {"/patch", RouteKind::GetLocal}, {"/scenes", RouteKind::GetLocal},
-  {"/network", RouteKind::GetLocal}, {"/system", RouteKind::GetLocal},
-  {"/performance", RouteKind::GetLocal}, {"/vj", RouteKind::GetLocal},
+  // Static: one entry per file in kDeskUiFiles ("/" is index.html), then the
+  // 301s of kDeskRedirects below. tools/check_routes.py and a native test keep
+  // the three in step.
+  {"/", RouteKind::Static}, {"/app.js", RouteKind::Static},
+  {"/style.css", RouteKind::Static}, {"/qr.js", RouteKind::Static},
+  {"/from.js", RouteKind::Static}, {"/show.js", RouteKind::Static},
+  {"/caps.js", RouteKind::Static},
+  {"/control", RouteKind::Static}, {"/patch", RouteKind::Static},
+  {"/scenes", RouteKind::Static}, {"/vj", RouteKind::Static},
+  {"/network", RouteKind::Static}, {"/system", RouteKind::Static},
+  {"/performance", RouteKind::Static},
   {"/wifi/scan", RouteKind::GetLocal},
 
   {"/status", RouteKind::GetShared}, {"/monitor", RouteKind::GetShared},
@@ -838,6 +847,49 @@ static constexpr RouteSpec kRoutes[] = {
   {"/net/master", RouteKind::Console}, {"/net/scene/recall", RouteKind::Console},
 };
 constexpr size_t kRouteCount = sizeof(kRoutes) / sizeof(kRoutes[0]);
+
+// The old console pages, now 301s into di's desk (hash = a page name in
+// ui/index.html: setup, control, touch, fader, midi). di has no patch, scenes
+// or VJ page of those names, so those go to "/". /network, /system and
+// /performance served the same removed page; they go to "/" as well.
+struct RedirectSpec {
+  const char* path;
+  const char* location;
+};
+static constexpr RedirectSpec kDeskRedirects[] = {
+  {"/control", "/#control"}, {"/patch", "/"}, {"/scenes", "/"}, {"/vj", "/"},
+  {"/network", "/"}, {"/system", "/"}, {"/performance", "/"},
+};
+constexpr size_t kDeskRedirectCount = sizeof(kDeskRedirects) / sizeof(kDeskRedirects[0]);
+
+inline const char* redirectTarget(const char* path) {
+  if (!path) return nullptr;
+  for (size_t i = 0; i < kDeskRedirectCount; i++)
+    if (strcmp(kDeskRedirects[i].path, path) == 0) return kDeskRedirects[i].location;
+  return nullptr;
+}
+
+// A route path -> the kDeskUiFiles path it serves: "/" is the desk page.
+inline const char* deskFilePath(const char* route) {
+  return (route && strcmp(route, "/") == 0) ? "/index.html" : route;
+}
+
+// If-None-Match against our strong ETag (RFC 9110 §13.1.2): "*" matches, else
+// any entry of the comma list equal to "<etag>" (a W/ prefix compares weakly,
+// which the weak comparison for If-None-Match allows). `etag` is the bare hex.
+inline bool etagMatches(const char* inm, const char* etag) {
+  if (!inm || !etag || !*etag) return false;
+  const size_t n = strlen(etag);
+  const char* p = inm;
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == ',') p++;
+    if (p[0] == '*' && (p[1] == 0 || p[1] == ',' || p[1] == ' ')) return true;
+    if (p[0] == 'W' && p[1] == '/') p += 2;
+    if (p[0] == '"' && strncmp(p + 1, etag, n) == 0 && p[1 + n] == '"') return true;
+    while (*p && *p != ',') p++;
+  }
+  return false;
+}
 
 inline int findRoute(const char* path) {
   if (!path) return -1;
@@ -871,6 +923,7 @@ inline Gate gateRequest(RouteKind k, HttpMethod m, bool consoleHeader) {
   switch (k) {
     case RouteKind::GetLocal:
     case RouteKind::GetShared:
+    case RouteKind::Static:
       return m == HttpMethod::Get ? Gate::Allow : Gate::NotAllowed;
     case RouteKind::Operator:
       return (m == HttpMethod::Get || m == HttpMethod::Post) ? Gate::Allow : Gate::NotAllowed;
