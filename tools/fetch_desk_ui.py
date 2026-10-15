@@ -8,6 +8,7 @@ writes include/desk_ui_gz.h.
 
   python3 tools/fetch_desk_ui.py                     fetch from GitHub, verify, write the header
   python3 tools/fetch_desk_ui.py --from ../di.iiii   read a local checkout (it must be at the locked commit's files)
+  python3 tools/fetch_desk_ui.py --cache DIR         also write the verified raw files to DIR (tools/simulate_node.py reads them)
   python3 tools/fetch_desk_ui.py --check             regenerate in memory, fail if the committed header differs
   python3 tools/fetch_desk_ui.py --update [--commit <sha>] [--branch <name>]
                                                      rewrite the lock from what was fetched
@@ -92,6 +93,7 @@ def render(lock, blobs):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--from", dest="local", help="local di.iiii checkout instead of GitHub")
+    ap.add_argument("--cache", help="also write the raw files, verified against the lock, into this directory")
     ap.add_argument("--check", action="store_true", help="fail if the committed header differs from a fresh one")
     ap.add_argument("--update", action="store_true", help="rewrite desk_ui.lock from what was fetched")
     ap.add_argument("--commit", help="with --update: commit to pin (default: the lock's)")
@@ -107,7 +109,7 @@ def main():
             lock["branch"] = a.branch
         lock["contract_version"] = CONTRACT_VERSION
 
-    blobs, bad = {}, []
+    blobs, raws, bad = {}, {}, []
     for f in lock["files"]:
         raw = fetch(f["path"], lock["commit"], a.local)
         gz = gz9(raw)
@@ -119,6 +121,7 @@ def main():
                 if f.get(k) != got[k]:
                     bad.append("%s: %s lock=%s got=%s" % (f["path"], k, f.get(k), got[k]))
         blobs[f["path"]] = gz
+        raws[f["path"]] = raw
     if bad:
         sys.exit("lock mismatch (use --update to re-pin):\n  " + "\n  ".join(bad))
     if a.update:
@@ -126,6 +129,13 @@ def main():
             json.dump(lock, f, indent=2)
             f.write("\n")
         print("lock rewritten:", LOCK)
+
+    if a.cache:
+        os.makedirs(a.cache, exist_ok=True)
+        for name, raw in raws.items():
+            with open(os.path.join(a.cache, name), "wb") as f:
+                f.write(raw)
+        print("cached %d raw files in %s" % (len(raws), a.cache))
 
     text = render(lock, blobs)
     if a.check:

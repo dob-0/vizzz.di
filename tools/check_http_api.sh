@@ -63,5 +63,36 @@ a=[p for p in m["protocols"] if p["id"]=="artnet"][0]; s=[p for p in m["protocol
 assert s["universe"]==a["universe"]+1 and a["universe"]==(a["net"]<<8|a["subnet"]<<4|a["uni"])
 print(len(t))' >/dev/null 2>&1; then pass=$((pass+1)); echo "ok   manifest route_table + net/sub/uni + sACN = PA+1"
 else fail=$((fail+1)); echo "FAIL manifest route_table / universe fields"; fi
+# V2 desk UI served from flash: 7 files (200, gzip, Content-Type, ETag), 304, 301s
+for spec in "/|text/html" "/app.js|application/javascript" "/style.css|text/css" "/qr.js|application/javascript" \
+            "/from.js|application/javascript" "/show.js|application/javascript" "/caps.js|application/javascript"; do
+  path="${spec%%|*}"; mime="${spec##*|}"
+  h="$(hdr "$base$path")"
+  if grep -q '^HTTP/[0-9.]* 200' <<<"$h" && grep -qi '^content-encoding: gzip' <<<"$h" \
+     && grep -qiE "^content-type: $mime" <<<"$h" && grep -qE '^[Ee][Tt]ag: "[0-9a-f]+"' <<<"$h" \
+     && grep -qi '^cache-control: no-cache' <<<"$h"; then
+    pass=$((pass+1)); echo "ok   GET $path 200 + gzip + $mime + ETag + no-cache"
+  else fail=$((fail+1)); echo "FAIL GET $path (want 200, gzip, $mime, ETag, no-cache)"; echo "$h" | sed 's/^/     /'; fi
+done
+etag="$(hdr "$base/app.js" | sed -n 's/^[Ee][Tt]ag: //p')"
+h="$(hdr -H "If-None-Match: $etag" "$base/app.js")"
+body="$(curl -s --max-time 4 -H "If-None-Match: $etag" "$base/app.js" | wc -c)"
+if grep -q '^HTTP/[0-9.]* 304' <<<"$h" && grep -qF "$etag" <<<"$h" && [[ "$body" == 0 ]]; then
+  pass=$((pass+1)); echo "ok   GET /app.js If-None-Match $etag -> 304, no body"
+else fail=$((fail+1)); echo "FAIL If-None-Match $etag on /app.js (want 304, no body; body bytes: $body)"; fi
+expect 200 "GET /app.js If-None-Match of another tag" -H 'If-None-Match: "0000000000000000"' "$base/app.js"
+redir() {  # redir <path> <Location>
+  local h; h="$(hdr "$base$1")"
+  if grep -q '^HTTP/[0-9.]* 301' <<<"$h" && grep -qiE "^location: $2\s*$" <<<"$h"; then
+    pass=$((pass+1)); echo "ok   GET $1 -> 301 $2"
+  else fail=$((fail+1)); echo "FAIL GET $1 (want 301 Location: $2)"; fi
+}
+redir /control /#control
+redir /patch /
+redir /scenes /
+redir /vj /
+redir /network /
+redir /system /
+redir /performance /
 echo "http api: $pass passed, $fail failed"
 exit $((fail ? 1 : 0))

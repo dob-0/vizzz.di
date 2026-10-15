@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Run the vizzz.di browser console on this machine, with no ESP32.
 
-Serves the real APP_HTML extracted from src/main.cpp against an in-memory model
-of the firmware: web layer, master dimmer, safety ceiling and slew, scenes, FX,
+Serves di.iiii's desk UI files the way the firmware does (gzip, ETag, 304, the
+301s for the old console pages) against an in-memory model of the firmware: web layer, master dimmer, safety ceiling and slew, scenes, FX,
 colour, cues, groups and a fake peer table. DMX output is computed the same way
 the firmware computes it, so /monitor and /page show believable numbers.
 
+    python3 tools/fetch_desk_ui.py --from <di.iiii checkout> --cache tools/.desk_ui_cache   # once
     python3 tools/simulate_node.py --port 8088
 
     python3 tools/simulate_node.py --udp      # also Art-Net 6454, sACN 5568, OSC 9000
@@ -18,7 +19,7 @@ priority / sequence handling, and OSC int/float/bundle input. One deviation:
 the ArtPollReply goes to the poll's source address and port (the firmware
 always uses port 6454, which is the same thing for di and tools/net_probe.py).
 """
-import argparse, base64, hashlib, json, math, os, re, socket, struct, threading, time
+import argparse, base64, gzip, hashlib, io, json, math, os, re, socket, struct, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -30,16 +31,62 @@ with open(MAIN, encoding="utf-8") as _f:
 MAX_CH, SCENE_COUNT, PAGE_SIZE, PAGE_COUNT, MAX_FIXTURES = 512, 8, 32, 16, 12
 SAFE_MAX_LEVEL, SAFE_SLEW_STEP = 245, 18
 BURN_SAFE_MAX_LEVEL, BURN_SAFE_SLEW_STEP = 96, 8
-PAGE_ROUTES = ("/", "/control", "/patch", "/scenes", "/network", "/system",
-               "/vj", "/performance")
+DESK_CACHE = os.path.join(ROOT, "tools", ".desk_ui_cache")
+LOCK = os.path.join(ROOT, "desk_ui.lock")
+MIME = {".html": "text/html", ".js": "application/javascript", ".css": "text/css"}
 
 
-def extract_app_html(path=MAIN):
-    src = open(path, encoding="utf-8", errors="replace").read()
-    m = re.search(r'APP_HTML\[\]\s*PROGMEM\s*=\s*R"HTML\((.*?)\)HTML";', src, re.S)
-    if not m:
-        raise SystemExit("APP_HTML literal not found in %s" % path)
-    return m.group(1)
+def gz9(b):
+    """Same stream as tools/fetch_desk_ui.py (level 9, mtime 0, no file name)."""
+    buf = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=buf, compresslevel=9, mtime=0) as g:
+        g.write(b)
+    return buf.getvalue()
+
+
+def load_desk_ui(cache=DESK_CACHE, lock=LOCK):
+    """{route path: (mime, gz bytes, etag)} from the locked raw files, each checked
+    against desk_ui.lock. Exits with a clear message if a file is absent or differs."""
+    with open(lock) as f:
+        meta = json.load(f)
+    files, missing = {}, []
+    for e in meta["files"]:
+        fp = os.path.join(cache, e["path"])
+        if not os.path.isfile(fp):
+            missing.append(e["path"])
+            continue
+        raw = open(fp, "rb").read()
+        if hashlib.sha256(raw).hexdigest() != e["sha256"]:
+            raise SystemExit("desk UI file %s in %s does not match desk_ui.lock (sha256); "
+                             "re-run tools/fetch_desk_ui.py --cache" % (e["path"], cache))
+        route = "/" if e["path"] == "index.html" else "/" + e["path"]
+        files[route] = (MIME[os.path.splitext(e["path"])[1]], gz9(raw), e["sha256"][:16])
+    if missing:
+        raise SystemExit(
+            "desk UI files missing in %s: %s\nfetch them first:\n"
+            "  python3 tools/fetch_desk_ui.py --from <di.iiii checkout> --cache %s\n"
+            "(or without --from to read GitHub at the locked commit)"
+            % (cache, ", ".join(missing), cache))
+    return files
+
+
+def load_redirects(path=None):
+    """vizzz::kDeskRedirects: the same list the firmware answers 301 from."""
+    src = open(path or CORE, encoding="utf-8").read()
+    return dict(re.findall(r'\{"(/[^"]*)",\s*"(/[^"]*)"\}', src[src.index("kDeskRedirects"):]))
+
+
+def etag_matches(header, etag):
+    """vizzz::etagMatches: "*", or any listed entry equal to "<etag>" (W/ allowed)."""
+    for part in header.split(","):
+        part = part.strip()
+        if part == "*":
+            return True
+        if part.startswith("W/"):
+            part = part[2:]
+        if part == '"%s"' % etag:
+            return True
+    return False
 
 
 class Node:
@@ -409,7 +456,10 @@ def load_route_table(path=CORE):
 
 
 ROUTES = load_route_table()
-ROUTE_METHODS = {"GetLocal": "GET", "GetShared": "GET", "Operator": "GET, POST", "Console": "POST"}
+REDIRECTS = load_redirects()
+DESK_UI = load_desk_ui()   # exits with a message when the cached files are absent
+ROUTE_METHODS = {"GetLocal": "GET", "GetShared": "GET", "Operator": "GET, POST", "Console": "POST",
+                 "Static": "GET"}
 FADE_MAX_MS, MAX_GROUPS, MAX_CUES = 600000, 8, 16
 FX_NAMES = ["none", "strobe", "chase", "pulse", "sine", "sparkle", "comet", "bars", "glitch", "radar"]
 
@@ -461,6 +511,23 @@ class Handler(BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
+    def _desk_file(self, p):
+        mime, gz, etag = DESK_UI[p]
+        inm = self.headers.get("If-None-Match")
+        not_modified = bool(inm) and etag_matches(inm, etag)
+        self.send_response(304 if not_modified else 200)
+        if not_modified:
+            self.send_header("Content-Length", "0")
+        else:
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(gz)))
+        self.send_header("ETag", '"%s"' % etag)
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        if not not_modified:
+            self.wfile.write(gz)
+
     def _json(self, obj):
         # Firmware sendJSON(): ACAO only on GetShared reads (audit 2-M7).
         acao = [("Access-Control-Allow-Origin", "*")] if ROUTES.get(self._p) == "GetShared" else []
@@ -499,7 +566,7 @@ class Handler(BaseHTTPRequestHandler):
         if kind is None:
             return self._send(404, "Not found")
         # Firmware route() gate (vizzz::gateRequest, audit 2-H2).
-        allowed = ("GET",) if kind in ("GetLocal", "GetShared") else \
+        allowed = ("GET",) if kind in ("GetLocal", "GetShared", "Static") else \
                   ("GET", "POST") if kind == "Operator" else ("POST",)
         if method not in allowed:
             return self._send(405, json.dumps({"error": "method not allowed", "allow": ROUTE_METHODS[kind]}),
@@ -513,8 +580,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, e.body, "application/json")
 
     def _handle(self, p, q):
-        if p in PAGE_ROUTES:
-            return self._send(200, APP_HTML, "text/html; charset=utf-8")
+        if p in REDIRECTS:   # firmware sendDeskRedirect()
+            return self._send(301, headers=[("Location", REDIRECTS[p])])
+        if p in DESK_UI:     # firmware sendDeskFile()
+            return self._desk_file(p)
 
         n = NODE
         if p == "/status":
@@ -738,9 +807,8 @@ if __name__ == "__main__":
                             (a.sacn_port, lambda p, ad, s: NET.on_sacn(p), NODE.uni15() + 1),
                             (a.osc_port, lambda p, ad, s: NET.on_osc(p), None)):
             threading.Thread(target=udp_loop, args=(a.host, port, h, mc), daemon=True).start()
-    APP_HTML = extract_app_html()
     threading.Thread(target=ticker, daemon=True).start()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
-    print("vizzz.di simulator on http://%s:%d  (%d bytes of console UI)"
-          % (a.host, a.port, len(APP_HTML)))
+    print("vizzz.di simulator on http://%s:%d  (%d gz bytes of desk UI)"
+          % (a.host, a.port, sum(len(v[1]) for v in DESK_UI.values())))
     srv.serve_forever()
