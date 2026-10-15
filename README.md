@@ -116,6 +116,34 @@ python3 tools/flash_gate.py esp32dev                # used/free of the app slot;
 slot = smallest `app` partition of `board_build.partitions`, default two OTA slots of 1,310,720 B).
 The native tests check the header's sizes and etags against the lock.
 
+## Fixture store v2 (build step V6)
+
+The node holds **32 fixtures** (`MAX_FIXTURES`, ids `f1`..`f32`; it was 12). They are stored as
+profile-based `NodeFixture` records (name, start, profile, x, y, enabled; 22 B) in NVS namespace
+`fixtures`:
+
+| key | value |
+|---|---|
+| `ver` | `2` once the v2 store exists |
+| `items2` | `NodeFixture[32]`, 704 B |
+| `count2` | number of used slots, 1..32 |
+| `items`, `count`, `prof` | the **v1** keys: `FixtureDef[12]` (288 B), count, per-slot profile bytes. Never written by a v2 build |
+
+Boot: `ver == 2` and a 704 B `items2` -> load v2 (the blob is repaired: bad profile -> `dimmer`, start
+moved to fit, name terminated). Otherwise, if a v1 `items` blob exists it is migrated once: width
+`end - start + 1` -> profile (1 dimmer, 2 ds, 3 rgb, 4 drgb, 5 drgbw, 6 drgbwa, 9 ppttdrgbw; a stored
+`prof` byte whose width still matches wins), slots 12..31 get defaults, v2 is written, v1 is left
+untouched. A width with no profile keeps its `start` and becomes a 1-channel `dimmer`; the boot log
+prints it (`fixtures: migrated v1 -> v2 ...`) and `/status` carries `fixtures_migrated` (slots
+converted on this boot, 0 otherwise) and `fixtures_unmapped` (active fixtures that lost their width).
+No store at all -> the 4 default `rgb` fixtures at 1/4/7/10. `/factory-reset` clears the whole
+namespace, both versions.
+
+Rollback to a v1 build (any firmware before V6): flash it; it reads only `items`/`count`/`prof`, i.e.
+the patch **as it was when the node first booted V6**. Fixture edits made on a v2 build are not in
+that blob (v2 writes only `items2`/`count2`), and the v2 keys stay in NVS unused. Flashing V6 again
+loads `items2` (`ver == 2`), so those edits come back; there is no route that re-runs the migration.
+
 ## Device Onboarding
 
 For multiple ESP nodes, handle one physical board at a time and track it by MAC.
@@ -264,7 +292,7 @@ curl 'http://192.168.4.1/set?ch=1&v=255'                                     # o
 | POST | yes | - | `/artnet/set` | `net=0-127&subnet=0-15&uni=0-15` | Configure Art-Net port-address (sACN = port-address + 1) |
 | POST | yes | - | `/safety/set` | `burn=0\|1` | Toggle burn-safe mode |
 | POST | yes | - | `/scene/save` | `n=0-7` | Save current web layer |
-| POST | yes | - | `/fixture/set` | `i=0-11&name&start=1-512&end=1-512&x&y=0-255&en&count=1-12` | Configure one fixture |
+| POST | yes | - | `/fixture/set` | `i=0-31&name&start=1-512&end=1-512&x&y=0-255&en&count=1-32` | Configure one fixture |
 | POST | yes | - | `/group/set` | `g=0-7&name=X&start=1-512&end=1-512&en=0\|1` | Configure one group |
 | POST | yes | - | `/group/apply` | `g=0-7&v=0-255` | Apply value to one group range |
 | POST | yes | - | `/cue/count` | `c=1-16` | Set active cue step count |

@@ -234,6 +234,93 @@ inline NodeFixture migrateV1Fixture(const char* name, uint16_t start, uint16_t e
   return f;
 }
 
+// ── V6 fixture store (NVS fixtures/items2) ──────────────────────────────────────
+// v2 = NodeFixture[kMaxFixtures] (704 B) + count, under NEW keys beside the v1
+// blob (items/count/prof), which is never written again once v2 exists, so an
+// older build still reads the patch as it was at migration time.
+constexpr uint8_t kMaxFixtures = 32;
+constexpr uint8_t kV1Slots = 12;            // MAX_FIXTURES of the v1 build: the v1 blob holds this many
+constexpr uint8_t kStoreVersion = 2;
+
+// Layout-identical to main.cpp's FixtureDef (what the v1 blob holds).
+struct V1Fixture {
+  char name[16];
+  uint16_t start;
+  uint16_t end;
+  uint8_t x;
+  uint8_t y;
+  bool enabled;
+};
+static_assert(sizeof(V1Fixture) == 24, "the v1 blob is 12 x 24 B");
+
+struct MigrateReport {
+  uint8_t migrated;   // slots converted (all kV1Slots; the rest of the 32 get defaults)
+  uint8_t unmapped;   // active slots whose width has no profile: kept at `start` as `dimmer`
+};
+
+// The factory patch: 4 enabled rgb at 1/4/7/10, the historic v1 positions for
+// slots 4..11, then 3-wide slots on a grid.
+inline NodeFixture defaultFixture(uint8_t i) {
+  static const uint16_t starts[kV1Slots] = {1, 4, 7, 10, 64, 67, 70, 73, 128, 131, 134, 137};
+  NodeFixture f;
+  memset(&f, 0, sizeof(f));
+  f.name[0] = 'F';
+  const uint8_t n = uint8_t(i + 1);
+  if (n >= 10) { f.name[1] = char('0' + n / 10); f.name[2] = char('0' + n % 10); }
+  else f.name[1] = char('0' + n);
+  f.start = i < kV1Slots ? starts[i] : uint16_t(140 + (i - kV1Slots) * 3);   // 140..199
+  f.profile = uint8_t(profileIndex("rgb"));
+  f.x = uint8_t(32 + (i % 4) * 64);
+  f.y = uint8_t(i < kV1Slots ? 32 + (i / 4) * 96 : 32 + ((i - kV1Slots) / 4) * 28);
+  f.enabled = i < 4;
+  return f;
+}
+
+inline void defaultFixtures(NodeFixture* out, uint8_t* count) {
+  for (uint8_t i = 0; i < kMaxFixtures; i++) out[i] = defaultFixture(i);
+  *count = 4;
+}
+
+// One v1 blob (kV1Slots slots, `prof` = its optional per-slot profile bytes, may
+// be null) into the 32-slot v2 array. A stored profile whose width still matches
+// start..end is kept (what the desk showed); otherwise width -> profile. Slots
+// kV1Slots.. get the defaults. Slots at or past `count` are disabled.
+inline MigrateReport migrateV1Blob(const V1Fixture* v1, const uint8_t* prof, uint8_t count, NodeFixture* out) {
+  MigrateReport rep = {0, 0};
+  for (uint8_t i = 0; i < kMaxFixtures; i++) out[i] = defaultFixture(i);
+  for (uint8_t i = 0; i < kV1Slots; i++) {
+    const bool active = i < count && v1[i].enabled;
+    bool exact = true;
+    NodeFixture f = migrateV1Fixture(v1[i].name, v1[i].start, v1[i].end, v1[i].x, v1[i].y, active, &exact);
+    const uint16_t e = v1[i].end < f.start ? f.start : v1[i].end;
+    if (prof && prof[i] < kProfileCount && profileAt(prof[i])->count == e - f.start + 1 && fixtureFits(f.start, prof[i])) {
+      f.profile = prof[i];
+      exact = true;
+    }
+    if (!exact && active) rep.unmapped++;
+    out[i] = f;
+    rep.migrated++;
+  }
+  return rep;
+}
+
+// Repair a v2 array read from NVS, as loadFixtures() did for v1: a blob of the
+// right size can still carry garbage. A bad profile becomes `dimmer`, a start
+// that does not fit moves to one that does, the name gets its NUL, slots at or
+// past the count are disabled. Returns the count bounded to 1..kMaxFixtures.
+inline uint8_t repairV2(NodeFixture* fx, uint8_t count) {
+  if (count < 1) count = 1;
+  if (count > kMaxFixtures) count = kMaxFixtures;
+  for (uint8_t i = 0; i < kMaxFixtures; i++) {
+    fx[i].name[sizeof(fx[i].name) - 1] = 0;
+    if (!profileAt(fx[i].profile)) fx[i].profile = uint8_t(profileIndex("dimmer"));
+    if (fx[i].start < 1) fx[i].start = 1;
+    if (!fixtureFits(fx[i].start, fx[i].profile)) fx[i].start = uint16_t(kChannels - fixtureWidth(fx[i]) + 1);
+    fx[i].enabled = fx[i].enabled && i < count;
+  }
+  return count;
+}
+
 // ── Streaming JSON writer ─────────────────────────────────────────────────────
 // Formats into buf and hands each full buffer to the sink, so no chunk is longer
 // than kChunk and the document is never whole in memory. A sink that returns

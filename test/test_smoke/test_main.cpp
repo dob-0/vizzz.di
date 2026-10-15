@@ -917,6 +917,137 @@ static void test_desk_v1_fixture_migration() {
   TEST_ASSERT_TRUE(dk::fixtureFits(f.start, f.profile));
 }
 
+// ── V6 fixture store ──────────────────────────────────────────────────────────
+// A v1 blob as the real node holds it: 12 slots, 4 active rgb at 1/4/7/10.
+static void v1Blob(dk::V1Fixture* v1) {
+  static const uint16_t st[12] = {1, 4, 7, 10, 64, 67, 70, 73, 128, 131, 134, 137};
+  for (int i = 0; i < 12; i++) {
+    memset(&v1[i], 0, sizeof(v1[i]));
+    snprintf(v1[i].name, sizeof(v1[i].name), "F%d", i + 1);
+    v1[i].start = st[i];
+    v1[i].end = uint16_t(st[i] + 2);
+    v1[i].x = uint8_t(32 + (i % 4) * 64);
+    v1[i].y = uint8_t(32 + (i / 4) * 96);
+    v1[i].enabled = i < 4;
+  }
+}
+
+static void test_v6_store_sizes_and_ids() {
+  TEST_ASSERT_EQUAL_UINT32(22, sizeof(dk::NodeFixture));
+  TEST_ASSERT_EQUAL_UINT32(704, sizeof(dk::NodeFixture) * dk::kMaxFixtures);
+  TEST_ASSERT_EQUAL_UINT32(288, sizeof(dk::V1Fixture) * dk::kV1Slots);
+  char id[8];
+  for (int i = 1; i <= 32; i++) {
+    snprintf(id, sizeof(id), "f%d", i);
+    TEST_ASSERT_EQUAL_INT(i - 1, dk::parseId(id, 'f', dk::kMaxFixtures));
+  }
+  TEST_ASSERT_EQUAL_INT(-1, dk::parseId("f33", 'f', dk::kMaxFixtures));
+  TEST_ASSERT_EQUAL_INT(-1, dk::parseId("f0", 'f', dk::kMaxFixtures));
+}
+
+static void test_v6_defaults_32() {
+  dk::NodeFixture fx[dk::kMaxFixtures];
+  uint8_t count = 0;
+  dk::defaultFixtures(fx, &count);
+  TEST_ASSERT_EQUAL_UINT8(4, count);
+  static const uint16_t st[4] = {1, 4, 7, 10};
+  for (int i = 0; i < 32; i++) {
+    TEST_ASSERT_EQUAL_STRING("rgb", dk::kProfiles[fx[i].profile].name);
+    TEST_ASSERT_TRUE(dk::fixtureFits(fx[i].start, fx[i].profile));
+    TEST_ASSERT_EQUAL(i < 4, fx[i].enabled);
+    TEST_ASSERT_EQUAL_UINT32(strlen(fx[i].name), i < 9 ? 2 : 3);
+    for (int j = 0; j < i; j++) TEST_ASSERT_NOT_EQUAL(fx[j].start, fx[i].start);   // no two slots share an address
+  }
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_UINT16(st[i], fx[i].start);
+  TEST_ASSERT_EQUAL_STRING("F32", fx[31].name);
+  TEST_ASSERT_EQUAL_UINT16(199, dk::fixtureEnd(fx[31]));
+}
+
+static void test_v6_migrate_real_node_blob() {
+  dk::V1Fixture v1[12];
+  v1Blob(v1);
+  uint8_t prof[12];
+  memset(prof, dk::kNoProfile, sizeof(prof));
+  dk::NodeFixture fx[dk::kMaxFixtures];
+  dk::MigrateReport r = dk::migrateV1Blob(v1, prof, 4, fx);
+  TEST_ASSERT_EQUAL_UINT8(12, r.migrated);
+  TEST_ASSERT_EQUAL_UINT8(0, r.unmapped);
+  static const uint16_t st[4] = {1, 4, 7, 10};
+  for (int i = 0; i < 4; i++) {          // the hardware check: 4 rgb at 1/4/7/10
+    TEST_ASSERT_TRUE(fx[i].enabled);
+    TEST_ASSERT_EQUAL_STRING("rgb", dk::kProfiles[fx[i].profile].name);
+    TEST_ASSERT_EQUAL_UINT16(st[i], fx[i].start);
+    TEST_ASSERT_EQUAL_UINT16(uint16_t(st[i] + 2), dk::fixtureEnd(fx[i]));
+    TEST_ASSERT_EQUAL_UINT8(uint8_t(32 + i * 64), fx[i].x);
+  }
+  for (int i = 4; i < 32; i++) TEST_ASSERT_FALSE(fx[i].enabled);
+  TEST_ASSERT_EQUAL_UINT8(4, dk::repairV2(fx, 4));
+}
+
+static void test_v6_migrate_unmapped_and_prof() {
+  dk::V1Fixture v1[12];
+  v1Blob(v1);
+  v1[1].end = uint16_t(v1[1].start + 6);      // width 7: no profile
+  v1[2].end = uint16_t(v1[2].start + 3);      // width 4 with a stored rgbw profile
+  v1[9].end = uint16_t(v1[9].start + 6);      // width 7 but a disabled slot: not reported
+  uint8_t prof[12];
+  memset(prof, dk::kNoProfile, sizeof(prof));
+  prof[2] = uint8_t(dk::profileIndex("rgbw"));
+  prof[3] = uint8_t(dk::profileIndex("ds"));  // stale: width is 3, not 2: ignored
+  dk::NodeFixture fx[dk::kMaxFixtures];
+  dk::MigrateReport r = dk::migrateV1Blob(v1, prof, 4, fx);
+  TEST_ASSERT_EQUAL_UINT8(12, r.migrated);
+  TEST_ASSERT_EQUAL_UINT8(1, r.unmapped);
+  TEST_ASSERT_EQUAL_STRING("dimmer", dk::kProfiles[fx[1].profile].name);
+  TEST_ASSERT_EQUAL_UINT16(v1[1].start, fx[1].start);
+  TEST_ASSERT_EQUAL_UINT16(v1[1].start, dk::fixtureEnd(fx[1]));
+  TEST_ASSERT_TRUE(fx[1].enabled);
+  TEST_ASSERT_EQUAL_STRING("rgbw", dk::kProfiles[fx[2].profile].name);
+  TEST_ASSERT_EQUAL_STRING("rgb", dk::kProfiles[fx[3].profile].name);
+  // no prof blob at all (a build before V4): width -> profile
+  r = dk::migrateV1Blob(v1, nullptr, 4, fx);
+  TEST_ASSERT_EQUAL_STRING("drgb", dk::kProfiles[fx[2].profile].name);
+  TEST_ASSERT_EQUAL_UINT8(1, r.unmapped);
+  // count smaller than the enabled flags: slots past it are off
+  v1[5].enabled = true;
+  dk::migrateV1Blob(v1, nullptr, 2, fx);
+  TEST_ASSERT_TRUE(fx[1].enabled);
+  TEST_ASSERT_FALSE(fx[2].enabled);
+  TEST_ASSERT_FALSE(fx[5].enabled);
+}
+
+static void test_v6_v2_round_trip_and_bounds() {
+  dk::NodeFixture a[dk::kMaxFixtures], b[dk::kMaxFixtures];
+  uint8_t count = 0;
+  dk::defaultFixtures(a, &count);
+  for (int i = 0; i < 32; i++) {              // 32 patched, one of every profile then rgb
+    a[i].enabled = true;
+    a[i].profile = uint8_t(i % dk::kProfileCount);
+    a[i].start = uint16_t(1 + i * 9);
+    a[i].x = uint8_t(i * 7);
+  }
+  memcpy(b, a, sizeof(a));                    // NVS: putBytes / getBytes of the raw array
+  TEST_ASSERT_EQUAL_UINT8(32, dk::repairV2(b, 32));
+  TEST_ASSERT_EQUAL_MEMORY(a, b, sizeof(a));  // a clean blob is not changed by the repair
+  // bounds: count 0 -> 1, 200 -> 32, slots at or past the count are off
+  TEST_ASSERT_EQUAL_UINT8(1, dk::repairV2(b, 0));
+  TEST_ASSERT_TRUE(b[0].enabled);
+  TEST_ASSERT_FALSE(b[1].enabled);
+  memcpy(b, a, sizeof(a));
+  TEST_ASSERT_EQUAL_UINT8(32, dk::repairV2(b, 200));
+  // garbage: bad profile, start 0, start past the end of the universe, no NUL
+  memcpy(b, a, sizeof(a));
+  b[3].profile = 77;
+  b[4].start = 0;
+  b[5].start = 600;
+  memset(b[6].name, 'x', sizeof(b[6].name));
+  dk::repairV2(b, 32);
+  TEST_ASSERT_EQUAL_STRING("dimmer", dk::kProfiles[b[3].profile].name);
+  TEST_ASSERT_EQUAL_UINT16(1, b[4].start);
+  for (int i = 0; i < 32; i++) TEST_ASSERT_TRUE(dk::fixtureFits(b[i].start, b[i].profile));
+  TEST_ASSERT_EQUAL_UINT32(15, strlen(b[6].name));
+}
+
 // Collects every chunk the writer hands over.
 #if defined(ARDUINO)
 constexpr size_t kLogCap = 4096;
@@ -2179,6 +2310,11 @@ static int runAll() {
   RUN_TEST(test_desk_fixture_roles_round_trip_through_web_layer);
   RUN_TEST(test_desk_stage_position_round_trips_every_byte);
   RUN_TEST(test_desk_v1_fixture_migration);
+  RUN_TEST(test_v6_store_sizes_and_ids);
+  RUN_TEST(test_v6_defaults_32);
+  RUN_TEST(test_v6_migrate_real_node_blob);
+  RUN_TEST(test_v6_migrate_unmapped_and_prof);
+  RUN_TEST(test_v6_v2_round_trip_and_bounds);
   RUN_TEST(test_desk_writer_escapes_and_formats);
   RUN_TEST(test_desk_writer_chunk_bound_and_stop);
 #if !defined(ARDUINO)
