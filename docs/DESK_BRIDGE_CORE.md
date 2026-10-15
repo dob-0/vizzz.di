@@ -126,20 +126,39 @@ fact between pulls would cut a number in half and break the JSON.
 Plan §7 (measured on the node, fw 8168931): largest free block **110,580 B idle, 98,292 B with
 5 /ws clients**; static RAM 57,748 B.
 
-| item | bytes | where | measured how |
-|---|---|---|---|
-| `Profile` × 13, `Role` names × 13 | table in flash, 0 B RAM | `.rodata` | `sizeof` in the native test (host) |
-| `NodeFixture` | 22 | RAM per slot | native `sizeof`, `static_assert` |
-| fixture table at 12 / 32 slots | 264 / 704 | static | 22 × n |
-| `JsonWriter` | 536 on the host | stack of the caller (async_tcp task) | native `sizeof` |
-| `DeskFacts` | pointers + scalars, see PR | stack | native `sizeof` |
-| per-request frozen facts (V4) | ≈ 512 + 22 n + 64 | heap, one per open reply | estimate |
-| `/api/state` reply | never held whole; ≤ 512 B per chunk | — | native test |
+Measured natively (x86-64 host, `pio test -e native`, test output lines starting `desk:`):
+
+| item | bytes | where |
+|---|---|---|
+| `kProfiles` (13 × `Profile` 32 B) + `kRoles` (13 × 16 B) | 416 + 208 on the host, in flash on the node | `.rodata` |
+| `NodeFixture` | 22 (`static_assert`) | RAM per slot |
+| fixture table at 12 / 32 slots | 264 / 704 | static |
+| `GroupRange` | 22 (same layout as `GroupDef`) | static |
+| `JsonWriter` | 552 on the host (512 B buffer + bookkeeping + 2 pointers) | stack of the caller (async_tcp task) |
+| `DeskFacts` | 216 on the host (pointers and scalars; smaller with 32-bit pointers) | stack |
+| `WindowSink` | 40 on the host | stack |
+| per-request frozen facts (V4) | ≈ 512 + 22 n + 64, *estimate* | heap, one per open reply |
+| largest chunk handed to a sink | 512 (`kChunk`), asserted | — |
+
+Reply sizes from the test's synthetic node (short names `F1`…, every profile once then `rgb`,
+6 of 8 scene slots saved, 7 groups):
+
+| reply | bytes |
+|---|---|
+| `api/state`, 32 fixtures | 25,111 in 50 chunks |
+| `api/state`, 12 fixtures | 12,147 |
+| `api/dmx` (512 channels) | 1,896 |
+
+These are smaller than plan §3's 47.0 / 22.3 KB, which used di's own fixture/profile JSON (longer
+names, 8 di profiles, more keys per fixture). Neither is a measurement on the node.
+
+Pull adaptor cost (re-run per pull, measured as bytes formatted for one full reply at 32 fixtures):
+1,436-byte pulls → 19 pulls, 274,478 B formatted (×10.9); 5,744-byte pulls → 6 pulls,
+108,590 B (×4.3). CPU time on the ESP32 is **not measured** (V4/V7).
 
 MAX_FIXTURES goes 12 → 32 **only at V6** (plan §7 decision), together with the v2 NVS blob.
-Host `sizeof` values are for x86-64; on the ESP32 (32-bit pointers) `DeskFacts` is smaller and
-`NodeFixture`/`JsonWriter` are the same (no pointers in the former; the latter's pointers shrink).
-The esp32dev build size is reported in the PR only if it was run.
+The esp32dev build size is reported in the PR only if it was run (V3 adds no call from main.cpp,
+so the linker drops the code; only the include is compiled).
 
 ### V6 migration need (not done here)
 
