@@ -14,7 +14,11 @@ DeskApi route rule; its reviewer verdict (lead reviewed instead). The branch is 
 **DONE 11:2xZ:** D3 → di.iiii PR #976 (verified: dmxfeed 8/8, class-a ok, lint 60 routes); D4 → di.iiii PR #975 (bundle hashes = desk_ui.lock 7/7
 with `--gz python`); V5 → vizzz.di PR #9 MERGED into int (68/68, gate 231,376 B free, http 70/70). V5 NOT flashed yet: the 60 min soak on
 defb77e runs until ~12:25Z; then flash + `heap_probe --sse 1|3|5`. di.iiii merge order on dev: #939 → #941 → #976 → #975 (owner).
-**RUNNING (fired 11:27Z, account b cloud):** trig_01N3ZajwWnZrjjgJ66yZ891F — **V6** fixtures v2 + MAX_FIXTURES 32 (Sonnet) →
+**12:0xZ:** V6 → vizzz.di PR #10 MERGED into int (73/73, gate 231,248 B free, http 70/70; flash with V5 after the soak). D5 → di.iiii
+PR #977 (screens looked right: six rectangle groups under Setup, hidden on a machine). **di.iiii batch PR #980** (land/batch-2026-10-15-desk)
+merges #939 #941 #976 #975 #977 into dev in order; push gates passed on aylmo; D5's Playwright test needs the CI browser; the owner
+presses Merge when CI is green (the classifier refuses a self-merge from this session).
+**Earlier (fired 11:27Z, account b cloud):** trig_01N3ZajwWnZrjjgJ66yZ891F — **V6** fixtures v2 + MAX_FIXTURES 32 (Sonnet) →
 `cloud/desk-fixtures-v2-2026-10-15`; trig_012wMM8UEQEjbaXo4Yn8y3rx — **D5** 'This node' section (Opus) → `cloud/desk-node-section-2026-10-15`.
 **Lamp:** a Cameo Thunder Wash 100 RGB at A001 in mode 6Ch2 (intensity, strobe, duration, R, G, B per Open Fixture Library); the node
 holds ch1-6 = 245,0,0,245,0,0 (red); owner plugs the DMX cable; light not yet seen.
