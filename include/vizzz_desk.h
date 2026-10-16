@@ -22,8 +22,8 @@ constexpr uint16_t kChannels = 512;
 // (and so as the contract and the UI). `def` is di's ROLE_DEFAULTS value, `kind`
 // di's roleKind(): emitter, level, position, fine, control.
 // None: a channel the node never drives (gobo, prism, reset, lamp…): it stays at the web layer's 0.
-enum class Role : uint8_t { Dimmer, R, G, B, W, A, Warm, Cool, Strobe, Pan, PanFine, Tilt, TiltFine, None };
-constexpr uint8_t kRoleCount = 14;
+enum class Role : uint8_t { Dimmer, R, G, B, W, A, Warm, Cool, Strobe, Pan, PanFine, Tilt, TiltFine, None, Halo };
+constexpr uint8_t kRoleCount = 15;
 
 enum class Kind : uint8_t { Emitter, Level, Position, Fine, Control };
 constexpr uint8_t kKindCount = 5;
@@ -41,6 +41,7 @@ constexpr RoleInfo kRoles[kRoleCount] = {
   {"warm", 255, Kind::Emitter},   {"cool", 0, Kind::Emitter},     {"strobe", 0, Kind::Control},
   {"pan", 128, Kind::Position},   {"panFine", 0, Kind::Fine},     {"tilt", 128, Kind::Position},
   {"tiltFine", 0, Kind::Fine},   {"none", 0, Kind::Control},
+  {"halo", 0, Kind::Level},   // the LED ring round a head's lens: its own master; its colour is r g b
 };
 
 inline const char* roleName(Role r) { return kRoles[uint8_t(r)].name; }
@@ -57,7 +58,7 @@ inline int roleIndex(const char* name) {
 // Copied, names and channel order unchanged, from di's built-in PROFILES in
 // serverXR/src/lighting/engine.js @ 091a1a6. A profile is its ordered channel
 // list; a role's DMX offset is its index in roles[]. constexpr POD in .rodata.
-constexpr uint8_t kMaxProfileChannels = 16;   // 9 for di's generic set; 16 for the U-Plus moving head (2026-10-16)
+constexpr uint8_t kMaxProfileChannels = 30;   // 9 for di's generic set; 16 / 24 / 30 for the heads (2026-10-16)
 
 struct Profile {
   const char* name;
@@ -95,6 +96,22 @@ constexpr Profile kProfiles[] = {
                                  detail::R::TiltFine, detail::R::None, detail::R::None, detail::R::None}},
   {"up-pl5403-8", "U-PLUS", 8, {detail::R::Dimmer, detail::R::R, detail::R::G, detail::R::B, detail::R::W,
                                 detail::R::Strobe, detail::R::None, detail::R::None}},
+  // The 250 W LED head of the owner's paper manual (photos 2026-10-16; di.iiii docs/moxir/devices/led250-head-24-30ch.md):
+  // pan, pan fine, tilt, tilt fine, speed, dimmer, [dimmer fine], strobe, colour, [colour fine], rot gobo, gobo rot, [fine],
+  // fixed gobo, prism, prism rot, [fine], focus, [fine], zoom, [fine], frost, halo master, halo r g b, effect ×3, function.
+  // Wheels, prism, focus, zoom, frost, effects and function stay 0 (open white, near, no reset). The strobe's open value is
+  // not in the manual (unlabelled bands) — walked on the unit, setup day.
+  {"led250-24", "LED-HEAD", 24, {detail::R::Pan, detail::R::PanFine, detail::R::Tilt, detail::R::TiltFine, detail::R::None,
+                                 detail::R::Dimmer, detail::R::Strobe, detail::R::None, detail::R::None, detail::R::None,
+                                 detail::R::None, detail::R::None, detail::R::None, detail::R::None, detail::R::None,
+                                 detail::R::None, detail::R::Halo, detail::R::R, detail::R::G, detail::R::B,
+                                 detail::R::None, detail::R::None, detail::R::None, detail::R::None}},
+  {"led250-30", "LED-HEAD", 30, {detail::R::Pan, detail::R::PanFine, detail::R::Tilt, detail::R::TiltFine, detail::R::None,
+                                 detail::R::Dimmer, detail::R::None, detail::R::Strobe, detail::R::None, detail::R::None,
+                                 detail::R::None, detail::R::None, detail::R::None, detail::R::None, detail::R::None,
+                                 detail::R::None, detail::R::None, detail::R::None, detail::R::None, detail::R::None,
+                                 detail::R::None, detail::R::None, detail::R::Halo, detail::R::R, detail::R::G,
+                                 detail::R::B, detail::R::None, detail::R::None, detail::R::None, detail::R::None}},
 };
 constexpr uint8_t kProfileCount = sizeof(kProfiles) / sizeof(kProfiles[0]);
 constexpr uint8_t kGenericProfileCount = 13;   // di's own generic set (engine.js); the device charts follow it

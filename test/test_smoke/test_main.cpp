@@ -808,11 +808,13 @@ static void test_desk_profiles_match_di_engine() {
     "ppttdrgbw _MOVING: pan,panFine,tilt,tiltFine,dimmer,r,g,b,w",
     "up-b380f-16 U-PLUS: none,strobe,dimmer,none,none,none,none,none,none,pan,panFine,tilt,tiltFine,none,none,none",
     "up-pl5403-8 U-PLUS: dimmer,r,g,b,w,strobe,none,none",
+    "led250-24 LED-HEAD: pan,panFine,tilt,tiltFine,none,dimmer,strobe,none,none,none,none,none,none,none,none,none,halo,r,g,b,none,none,none,none",
+    "led250-30 LED-HEAD: pan,panFine,tilt,tiltFine,none,dimmer,none,strobe,none,none,none,none,none,none,none,none,none,none,none,none,none,none,halo,r,g,b,none,none,none,none",
   };
   TEST_ASSERT_EQUAL_UINT(sizeof(kDi) / sizeof(kDi[0]), dk::kProfileCount);
   for (uint8_t i = 0; i < dk::kProfileCount; i++) {
     const dk::Profile& p = dk::kProfiles[i];
-    char line[160];
+    char line[256];
     size_t n = (size_t)snprintf(line, sizeof(line), "%s %s: ", p.name, p.cat);
     TEST_ASSERT_TRUE(p.count >= 1 && p.count <= dk::kMaxProfileChannels);
     for (uint8_t c = 0; c < p.count; c++)
@@ -828,7 +830,7 @@ static void test_desk_profiles_match_di_engine() {
   static const char* const kRoleDi[] = {
     "dimmer 255 level", "r 255 emitter", "g 255 emitter", "b 255 emitter", "w 0 emitter", "a 0 emitter",
     "warm 255 emitter", "cool 0 emitter", "strobe 0 control", "pan 128 position", "panFine 0 fine",
-    "tilt 128 position", "tiltFine 0 fine", "none 0 control",
+    "tilt 128 position", "tiltFine 0 fine", "none 0 control", "halo 0 level",
   };
   for (uint8_t r = 0; r < dk::kRoleCount; r++) {
     char line[48];
@@ -851,6 +853,11 @@ static void test_desk_profiles_match_di_engine() {
   const dk::NodeFixture wf = mkFixture("wash", 17, "up-pl5403-8", 0, 0);
   TEST_ASSERT_EQUAL_UINT16(24, dk::fixtureEnd(wf));
   TEST_ASSERT_EQUAL_UINT(5, dk::identifyChannels(wf, ident));
+  const dk::NodeFixture hf = mkFixture("head", 1, "led250-24", 0, 0);
+  TEST_ASSERT_EQUAL_UINT16(24, dk::fixtureEnd(hf));
+  TEST_ASSERT_EQUAL_INT(0, dk::offsetOf(dk::kProfiles[hf.profile], dk::Role::Pan));
+  TEST_ASSERT_EQUAL_INT(5, dk::offsetOf(dk::kProfiles[hf.profile], dk::Role::Dimmer));
+  TEST_ASSERT_EQUAL_UINT(5, dk::identifyChannels(hf, ident));   // dimmer, halo, r, g, b
 }
 
 static void test_desk_fixture_roles_round_trip_through_web_layer() {
