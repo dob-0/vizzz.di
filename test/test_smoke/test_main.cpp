@@ -806,18 +806,23 @@ static void test_desk_profiles_match_di_engine() {
     "rgbw _GENERIC: r,g,b,w", "rgbaw _GENERIC: r,g,b,a,w", "dwwcw _GENERIC: dimmer,warm,cool",
     "ptdrgb _MOVING: pan,tilt,dimmer,r,g,b",
     "ppttdrgbw _MOVING: pan,panFine,tilt,tiltFine,dimmer,r,g,b,w",
+    "up-b380f-16 U-PLUS: none,strobe,dimmer,none,none,none,none,none,none,pan,panFine,tilt,tiltFine,none,none,none",
+    "up-pl5403-8 U-PLUS: dimmer,r,g,b,w,strobe,none,none",
+    "led250-24 LED-HEAD: pan,panFine,tilt,tiltFine,none,dimmer,strobe,none,none,none,none,none,none,none,none,none,halo,r,g,b,none,none,none,none",
+    "led250-30 LED-HEAD: pan,panFine,tilt,tiltFine,none,dimmer,none,strobe,none,none,none,none,none,none,none,none,none,none,none,none,none,none,halo,r,g,b,none,none,none,none",
   };
   TEST_ASSERT_EQUAL_UINT(sizeof(kDi) / sizeof(kDi[0]), dk::kProfileCount);
   for (uint8_t i = 0; i < dk::kProfileCount; i++) {
     const dk::Profile& p = dk::kProfiles[i];
-    char line[160];
+    char line[256];
     size_t n = (size_t)snprintf(line, sizeof(line), "%s %s: ", p.name, p.cat);
     TEST_ASSERT_TRUE(p.count >= 1 && p.count <= dk::kMaxProfileChannels);
     for (uint8_t c = 0; c < p.count; c++)
       n += (size_t)snprintf(line + n, sizeof(line) - n, "%s%s", c ? "," : "", dk::roleName(p.roles[c]));
     TEST_ASSERT_EQUAL_STRING(kDi[i], line);
-    for (uint8_t a = 0; a < p.count; a++)  // di: a profile never repeats a role
-      for (uint8_t b = uint8_t(a + 1); b < p.count; b++) TEST_ASSERT_TRUE(p.roles[a] != p.roles[b]);
+    for (uint8_t a = 0; a < p.count; a++)  // di: a profile never repeats a role (none is no role)
+      for (uint8_t b = uint8_t(a + 1); b < p.count; b++)
+        TEST_ASSERT_TRUE(p.roles[a] == dk::Role::None || p.roles[a] != p.roles[b]);
     TEST_ASSERT_EQUAL_INT(i, dk::profileIndex(p.name));
   }
   TEST_ASSERT_EQUAL_INT(-1, dk::profileIndex("spot"));
@@ -825,7 +830,7 @@ static void test_desk_profiles_match_di_engine() {
   static const char* const kRoleDi[] = {
     "dimmer 255 level", "r 255 emitter", "g 255 emitter", "b 255 emitter", "w 0 emitter", "a 0 emitter",
     "warm 255 emitter", "cool 0 emitter", "strobe 0 control", "pan 128 position", "panFine 0 fine",
-    "tilt 128 position", "tiltFine 0 fine",
+    "tilt 128 position", "tiltFine 0 fine", "none 0 control", "halo 0 level",
   };
   for (uint8_t r = 0; r < dk::kRoleCount; r++) {
     char line[48];
@@ -835,6 +840,24 @@ static void test_desk_profiles_match_di_engine() {
     TEST_ASSERT_EQUAL_INT(r, dk::roleIndex(dk::kRoles[r].name));
   }
   TEST_ASSERT_EQUAL_INT(-1, dk::roleIndex("gobo"));
+  // `none` is no role: never an offset, never a value, never a roleKinds entry, never identified.
+  const dk::Profile& beam = dk::kProfiles[dk::profileIndex("up-b380f-16")];
+  TEST_ASSERT_EQUAL_INT(-1, dk::offsetOf(beam, dk::Role::None));
+  TEST_ASSERT_EQUAL_INT(2, dk::offsetOf(beam, dk::Role::Dimmer));
+  TEST_ASSERT_EQUAL_INT(9, dk::offsetOf(beam, dk::Role::Pan));
+  const dk::NodeFixture bf = mkFixture("beam", 1, "up-b380f-16", 0, 0);
+  TEST_ASSERT_EQUAL_UINT16(16, dk::fixtureEnd(bf));
+  uint16_t ident[dk::kMaxProfileChannels];
+  TEST_ASSERT_EQUAL_UINT(1, dk::identifyChannels(bf, ident));
+  TEST_ASSERT_EQUAL_UINT16(2, ident[0]);
+  const dk::NodeFixture wf = mkFixture("wash", 17, "up-pl5403-8", 0, 0);
+  TEST_ASSERT_EQUAL_UINT16(24, dk::fixtureEnd(wf));
+  TEST_ASSERT_EQUAL_UINT(5, dk::identifyChannels(wf, ident));
+  const dk::NodeFixture hf = mkFixture("head", 1, "led250-24", 0, 0);
+  TEST_ASSERT_EQUAL_UINT16(24, dk::fixtureEnd(hf));
+  TEST_ASSERT_EQUAL_INT(0, dk::offsetOf(dk::kProfiles[hf.profile], dk::Role::Pan));
+  TEST_ASSERT_EQUAL_INT(5, dk::offsetOf(dk::kProfiles[hf.profile], dk::Role::Dimmer));
+  TEST_ASSERT_EQUAL_UINT(5, dk::identifyChannels(hf, ident));   // dimmer, halo, r, g, b
 }
 
 static void test_desk_fixture_roles_round_trip_through_web_layer() {
@@ -1396,7 +1419,7 @@ static void buildBigNode(uint8_t fixtureSlots = 32) {
   for (int c = 0; c < 512; c++) { n.web[c] = uint8_t(c * 7); n.out[c] = uint8_t(255 - c % 256); }
   uint16_t at = 1;
   for (uint8_t k = 0; k < 32; k++) {
-    const char* prof = k < dk::kProfileCount ? dk::kProfiles[k].name : "rgb";
+    const char* prof = k < dk::kGenericProfileCount ? dk::kProfiles[k].name : "rgb";   // generic set only: a 16-ch chart would straddle the 16-ch groups
     char nm[16];
     snprintf(nm, sizeof(nm), "F%u", k + 1u);
     n.fixtures[k] = mkFixture(nm, at, prof, uint8_t(k * 8), uint8_t(255 - k * 8));
@@ -1543,7 +1566,7 @@ static void test_desk_state_matches_vendored_contract() {
   TEST_ASSERT_EQUAL_STRING_LEN("[0]", jr::at(s, "status.universes"), 3);
   TEST_ASSERT_EQUAL_STRING_LEN("false", jr::at(s, "caps.midi"), 5);
   TEST_ASSERT_EQUAL_STRING_LEN("true", jr::at(s, "caps.stream"), 4);   // V5: this node streams api/dmx/stream
-  // Content: 32 fixtures, 7 groups, 6 saved scenes, all 13 profiles, the node's own fx modes.
+  // Content: 32 fixtures, 7 groups, 6 saved scenes, all 15 profiles (13 generic + 2 U-Plus), the node's own fx modes.
   TEST_ASSERT_EQUAL_INT(32, jr::count(jr::at(s, "fixtures")));
   TEST_ASSERT_EQUAL_INT(7, jr::count(jr::at(s, "groups")));
   TEST_ASSERT_EQUAL_INT(6, jr::count(jr::at(s, "scenes")));
