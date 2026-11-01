@@ -117,7 +117,7 @@ Routes are a table, not a list of `server.on()` calls (audit 2026-10-15 2-H2/2-M
    for di's desk API (`/api/*`, V4): GET like GetLocal, POST gated by `Content-Type: application/json`
    (415 otherwise, no ACAO: the CORS preflight is the CSRF guard), bodies parsed with ArduinoJson 7.4.2
    into a bounded buffer (413 over 2 KB), replies streamed from a per-request frozen `DeskBlock`.
-   Every `/api/*` path must be in `test/fixtures/api-contract.v1.json` (di's contract): `check_routes.py`
+   Every `/api/*` path must be in `test/fixtures/api-contract.v1.json` or `.v2.json` (di's contract; v2 adds the stream, `caps`, `node_routes`): `check_routes.py`
    holds kRoutes DeskApi = kDeskApi = README = contract.
 2. In `setupWeb()` register with `route("/my/route", handler)` — never `server.on()`.
    The gate (405/403/preflight) runs before the handler; the manifest lists it by itself.

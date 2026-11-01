@@ -3608,6 +3608,7 @@ static void setupWeb() {
   route("/from.js", [](AsyncWebServerRequest* r){ sendDeskFile(r, "/from.js"); });
   route("/show.js", [](AsyncWebServerRequest* r){ sendDeskFile(r, "/show.js"); });
   route("/caps.js", [](AsyncWebServerRequest* r){ sendDeskFile(r, "/caps.js"); });
+  route("/dmxfeed.js", [](AsyncWebServerRequest* r){ sendDeskFile(r, "/dmxfeed.js"); });
   route("/control", [](AsyncWebServerRequest* r){ sendDeskRedirect(r, "/control"); });
   route("/patch", [](AsyncWebServerRequest* r){ sendDeskRedirect(r, "/patch"); });
   route("/scenes", [](AsyncWebServerRequest* r){ sendDeskRedirect(r, "/scenes"); });

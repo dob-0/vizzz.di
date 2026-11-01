@@ -1,0 +1,6 @@
+api-contract.v2.json is a byte copy of dob-0/di.iiii serverXR/src/lighting/api-contract.json
+on branch dev at 4f3bec9bf7a0dc07c73e1321776a7b87fde4c9a5 (the file last changed in 7913b478; D1-D5 landed).
+sha256 d07fb57b0e7e43c31831ab37465922c608e8e1b3c127d19e465a89176f69de4a
+contract_version in the file is still 1; what is new against api-contract.v1.json (091a1a6): the entry
+GET api/dmx/stream (transport sse), the `caps` section (audio midi node stream) and `node_routes` (17 routes).
+The native test (test_desk_contract_v2_*) checks this sha256. v1 stays: the node must satisfy both.
