@@ -69,12 +69,12 @@ Boards, in steps ("not all at once"):
 
 Shapes follow the same steps: bare board and small box first, rail / rack later.
 
-**Open decision — how "mix" works:**
+**Decided 2026-11-16 (owner: "a") — how "mix" works: A.**
 
-- **A (advised)** — every board is one PCB built from the shared blocks. Strongest at shows
+- **A (chosen)** — every board is one PCB built from the shared blocks. Strongest at shows
   (no connectors between boards), one more PCB per mix.
-- **B (runner-up)** — one CORE board + stackable block boards on our own connector. Any mix by
-  stacking, but connectors are the weak point under vibration and current.
+- B (not chosen, kept as a later mode) — one CORE board + stackable block boards on our own
+  connector. Any mix by stacking, but connectors are the weak point under vibration and current.
 
 ## 5. The di look on the board
 
@@ -103,7 +103,7 @@ meaning, square corners.
 
 ## 8. Still the owner's to decide
 
-1. Mix: A or B (section 4).
+1. ~~Mix: A or B~~ — A, decided 2026-11-16 (section 4).
 2. Licence — this repo has none today. Advice: CERN-OHL-S-2.0 for the boards.
 3. Funding: if NLnet funds this, its rule bans generative AI in funded work (memory 2026-11-16) —
    decide before applying.
